@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::cooling::ConfigState;
 use crate::session::SessionState;
 
 /// Everything the daemon persists between runs.
@@ -10,6 +11,9 @@ use crate::session::SessionState;
 pub struct PersistedState {
     /// The session lifecycle, so a running session resumes after a restart.
     pub session: SessionState,
+    /// Configurations in effect and edits still cooling off.
+    #[serde(default)]
+    pub configs: ConfigState,
 }
 
 /// Saves and loads [`PersistedState`].
