@@ -33,7 +33,7 @@ The endpoint comes from `Endpoint::for_current_user()`, with no `#[cfg]`:
 - It runs on tokio. All connections and a 1-second ticker share one `Service` behind a `std::sync::Mutex`, which is held only for the synchronous handling of a request, never across an `.await`.
 - Every change is applied to a copy of `PersistedState`, saved through `StateStore`, and only then kept, so a failed save leaves nothing half-applied.
 - The settings file is re-read every 5 seconds, on `ListConfigs` and before `StartSession`. If it's invalid, the last good configs stay in effect and the problem is reported in `Status`.
-- File locations come from `APPDATA`/`LOCALAPPDATA` (Windows) or `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, falling back to `~/.config` and `~/.local/state` (Linux).
+- **Portable install:** all files live in a `data` folder next to the executables (`data/settings.toml`, `data/state.json` and its backups), not in `%APPDATA%`, `%LOCALAPPDATA%` or `~/.config`. The install folder must be writable without admin, e.g. a zip unpacked in the user's folder or `%LOCALAPPDATA%\Programs\Focus`. If it isn't (e.g. Program Files), the daemon refuses to start and says why.
 - On first run the daemon writes a starter `settings.toml` and never overwrites an existing one.
 
 **UI.** `focus-ui` is now an IPC client. It opens one connection per call and polls `Status` every second, so a restarted daemon is picked up without reconnect logic. This supersedes ADR 0002.
@@ -44,5 +44,9 @@ The endpoint comes from `Endpoint::for_current_user()`, with no `#[cfg]`:
 - Closing or killing the UI never ends a session.
 - On Windows, the named pipe's default security lets other local users open the pipe for reading. Requests need write access, which they don't get. Tightening the pipe's security descriptor is left for hardening.
 - The workspace gains `ipc-transport`, which `docs/DESIGN.md`'s folder layout doesn't list.
-- Dependencies added: `interprocess` (local sockets), `tokio`, `tracing` and `tracing-subscriber` (developer diagnostics), and `anyhow` (binaries only). `deny.toml` now allows `0BSD`, which `interprocess`'s helper crates use. `directories` was dropped because it pulls in an MPL-2.0 crate.
+- Dependencies added: `interprocess` (local sockets), `tokio`, `tracing` and `tracing-subscriber` (developer diagnostics), and `anyhow` (binaries only). `deny.toml` now allows `0BSD`, which `interprocess`'s helper crates use. No platform-directories crate is needed because of the portable layout.
+- Upgrading means replacing the executables and keeping `data/`. Installers in step 9 must preserve it.
+- Linux `.deb`/`.rpm` packages install to read-only `/usr/bin`, which conflicts with the portable layout. Step 9 decides between per-user data for those packages only and shipping only the portable archive.
+- A few things can't live in the folder: the named pipe (not a file), and the registry entries for autostart (step 6) and native messaging (step 4) under `HKCU` on Windows. The native-messaging manifest file itself stays in the install folder on Windows. Linux browsers only look in their own config folder, so step 4 adds one small manifest there.
+- When run with `cargo run`, the files land in `target/<profile>/data`, and `cargo clean` wipes them.
 - Polling once a second costs two local connections a second while the window is open. Push updates can replace this if it ever matters.

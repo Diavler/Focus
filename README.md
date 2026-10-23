@@ -7,7 +7,7 @@ An offline-first focus app for Windows and KDE Plasma (Wayland), written in Rust
 Try it:
 
 ```sh
-cargo run -p focus-daemon   # first run writes starter settings and prints their path
+cargo run -p focus-daemon   # first run writes starter settings to target/debug/data/
 cargo run -p focus-ui       # in another terminal
 ```
 

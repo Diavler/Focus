@@ -20,8 +20,22 @@ const STARTER_SETTINGS: &str = include_str!("../starter-settings.toml");
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
-    let Paths { settings, state } = Paths::from_env(|name| std::env::var(name).ok())
-        .context("couldn't work out where to keep settings: set APPDATA or HOME")?;
+    let exe = std::env::current_exe().context("couldn't find the daemon's own path")?;
+    let install = exe
+        .parent()
+        .context("the daemon's path has no parent folder")?;
+    let Paths {
+        data,
+        settings,
+        state,
+    } = Paths::portable(install);
+    std::fs::create_dir_all(&data).with_context(|| {
+        format!(
+            "can't write to {}; put Focus in a folder you can write to without admin \
+             (not Program Files)",
+            data.display()
+        )
+    })?;
     write_starter_settings(&settings)?;
 
     // Bind before touching state, so a second daemon exits without reading or writing anything.
@@ -56,9 +70,6 @@ async fn main() -> anyhow::Result<()> {
 
 /// Creates the settings file with starter content if it doesn't exist; never overwrites one.
 fn write_starter_settings(path: &Path) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
