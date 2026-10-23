@@ -9,3 +9,19 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+focus-core.workspace = true
+ipc-proto.workspace = true
+ipc-transport.workspace = true
+config-toml.workspace = true
+state-json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+focus-core = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

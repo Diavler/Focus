@@ -1,0 +1,732 @@
+//! The daemon's state and how each request changes it. No sockets here, so it's tested directly.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use focus_core::ports::{
+    Clock, ConfigSource, History, HistoryEvent, PersistedState, StateStore, StateStoreError,
+};
+use focus_core::{SessionError, SessionSpec, SessionState, Strictness, Timestamp, Verdict};
+use ipc_proto::{BrowserStatus, DaemonError, PendingSummary, Request, Response, StatusReport};
+use thiserror::Error;
+
+/// The adapters the daemon runs on, chosen by the composition root (or a test).
+#[derive(Clone)]
+pub struct Ports {
+    /// The current time.
+    pub clock: Arc<dyn Clock>,
+    /// The settings file.
+    pub configs: Arc<dyn ConfigSource>,
+    /// Where state is saved.
+    pub store: Arc<dyn StateStore>,
+    /// Where events are recorded.
+    pub history: Arc<dyn History>,
+}
+
+/// Why the daemon couldn't start.
+#[derive(Debug, Error)]
+pub enum StartupError {
+    /// Saved state exists but can't be used (e.g. it's from a newer version).
+    #[error("couldn't load saved state: {0}")]
+    State(#[source] StateStoreError),
+}
+
+/// Owns the persisted state and answers requests.
+///
+/// Every change is made to a copy, saved, and only then kept, so a failed save never leaves the
+/// daemon claiming something that isn't on disk.
+pub struct Service {
+    ports: Ports,
+    state: PersistedState,
+    settings_problem: Option<String>,
+    browsers: BTreeMap<String, BrowserStatus>,
+    cooling_off: Duration,
+}
+
+impl Service {
+    /// Loads saved state (a running session resumes) and the settings file.
+    ///
+    /// Corrupt state that the store couldn't recover is replaced by a fresh state.
+    pub fn open(ports: Ports, cooling_off: Duration) -> Result<Self, StartupError> {
+        let state = match ports.store.load() {
+            Ok(state) => state.unwrap_or_default(),
+            Err(StateStoreError::Corrupt { reason }) => {
+                tracing::warn!("saved state was corrupt, starting fresh: {reason}");
+                PersistedState::default()
+            }
+            Err(error) => return Err(StartupError::State(error)),
+        };
+        let mut service = Self {
+            ports,
+            state,
+            settings_problem: None,
+            browsers: BTreeMap::new(),
+            cooling_off,
+        };
+        service.reload_settings();
+        Ok(service)
+    }
+
+    /// The persisted state as it is now.
+    pub fn state(&self) -> &PersistedState {
+        &self.state
+    }
+
+    /// Answers one request. Expired sessions and due config changes are handled first.
+    pub fn handle(&mut self, request: Request) -> Response {
+        self.tick();
+        let now = self.now();
+        let result = match request {
+            Request::Status => Ok(Response::Status(self.status())),
+            Request::ListConfigs => {
+                self.reload_settings();
+                Ok(Response::Configs {
+                    configs: self.state.configs.applied().to_vec(),
+                })
+            }
+            Request::StartSession {
+                config,
+                strictness,
+                duration_secs,
+            } => self
+                .start(&config, strictness, Duration::from_secs(duration_secs))
+                .map(|()| Response::Done),
+            Request::EndSession => self
+                .update(|state| state.session.request_end_early(now).map_err(session_error))
+                .map(|outcome| Response::EndSession { outcome }),
+            Request::ConfirmEndSession { reason } => self
+                .update(|state| {
+                    state
+                        .session
+                        .confirm_end_early(&reason, now)
+                        .map_err(session_error)
+                })
+                .map(|()| Response::Done),
+            Request::CancelEndSession => self
+                .update(|state| state.session.cancel_end_request().map_err(session_error))
+                .map(|()| Response::Done),
+            Request::Heartbeat {
+                browser,
+                incognito_allowed,
+            } => {
+                let status = BrowserStatus {
+                    browser: browser.clone(),
+                    last_seen: now,
+                    incognito_allowed,
+                };
+                self.browsers.insert(browser, status);
+                Ok(Response::Done)
+            }
+            Request::RulesFor { url, config } => self.rules_for(&url, config.as_deref()),
+        };
+        result.unwrap_or_else(|error| Response::Error { error })
+    }
+
+    /// Ends an expired session and applies due config changes, saving if anything changed.
+    pub fn tick(&mut self) {
+        let now = self.now();
+        // Checked first so the common case (nothing due) doesn't copy the whole state.
+        let expired = self
+            .state
+            .session
+            .running()
+            .is_some_and(|running| now >= running.ends_at());
+        let due = self
+            .state
+            .configs
+            .pending()
+            .iter()
+            .any(|change| change.apply_after <= now);
+        if !expired && !due {
+            return;
+        }
+        let result = self.update(|state| {
+            state.session.tick(now);
+            state.configs.apply_due(now);
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::warn!("{error}");
+        }
+    }
+
+    /// Re-reads the settings file and syncs it into the configs in effect, with cooling-off for
+    /// the running session's config. If the file can't be used, the configs in effect stay.
+    pub fn reload_settings(&mut self) {
+        let desired = match self.ports.configs.load() {
+            Ok(desired) => desired,
+            Err(error) => {
+                let problem = error.to_string();
+                if self.settings_problem.as_ref() != Some(&problem) {
+                    tracing::warn!("keeping the current configs: {problem}");
+                }
+                self.settings_problem = Some(problem);
+                return;
+            }
+        };
+        self.settings_problem = None;
+        let (now, cooling_off) = (self.now(), self.cooling_off);
+        let result = self.update(|state| {
+            state.session.tick(now);
+            let protected: Vec<&str> = state
+                .session
+                .running()
+                .map(|running| running.spec().config.name.as_str())
+                .into_iter()
+                .collect();
+            Ok(state.configs.sync(desired, &protected, now, cooling_off))
+        });
+        match result {
+            Ok(report) => {
+                for name in &report.queued {
+                    tracing::info!("edit to \"{name}\" is cooling off");
+                }
+            }
+            Err(error) => tracing::warn!("{error}"),
+        }
+    }
+
+    fn start(
+        &mut self,
+        name: &str,
+        strictness: Strictness,
+        duration: Duration,
+    ) -> Result<(), DaemonError> {
+        self.reload_settings();
+        let config =
+            self.state
+                .configs
+                .get(name)
+                .cloned()
+                .ok_or_else(|| DaemonError::UnknownConfig {
+                    name: name.to_owned(),
+                })?;
+        let spec = SessionSpec {
+            config,
+            strictness,
+            duration,
+        };
+        let now = self.now();
+        self.update(|state| state.session.start(spec, now).map_err(session_error))
+    }
+
+    fn rules_for(&self, url: &str, config: Option<&str>) -> Result<Response, DaemonError> {
+        let config =
+            match config {
+                Some(name) => Some(self.state.configs.get(name).ok_or_else(|| {
+                    DaemonError::UnknownConfig {
+                        name: name.to_owned(),
+                    }
+                })?),
+                None => self
+                    .state
+                    .session
+                    .running()
+                    .map(|running| &running.spec().config),
+            };
+        Ok(match config {
+            Some(config) => Response::Verdict {
+                verdict: config.verdict(url),
+                config: Some(config.name.clone()),
+            },
+            None => Response::Verdict {
+                verdict: Verdict::Allow,
+                config: None,
+            },
+        })
+    }
+
+    fn status(&self) -> StatusReport {
+        StatusReport {
+            now: self.now(),
+            session: self.state.session.clone(),
+            pending_changes: self
+                .state
+                .configs
+                .pending()
+                .iter()
+                .map(|change| PendingSummary {
+                    config: change.config.clone(),
+                    apply_after: change.apply_after,
+                    deleted: change.replacement.is_none(),
+                })
+                .collect(),
+            settings_problem: self.settings_problem.clone(),
+            browsers: self.browsers.values().cloned().collect(),
+        }
+    }
+
+    /// Applies `change` to a copy of the state; if it succeeds and changed something, saves the
+    /// copy and keeps it. Otherwise the state is untouched.
+    fn update<T>(
+        &mut self,
+        change: impl FnOnce(&mut PersistedState) -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let mut next = self.state.clone();
+        let value = change(&mut next)?;
+        if next != self.state {
+            self.ports
+                .store
+                .save(&next)
+                .map_err(|error| DaemonError::Storage {
+                    message: error.to_string(),
+                })?;
+            let previous = std::mem::replace(&mut self.state, next);
+            self.record_history(&previous.session);
+        }
+        Ok(value)
+    }
+
+    /// Records session starts and ends between `before` and the current state.
+    fn record_history(&self, before: &SessionState) {
+        let after = &self.state.session;
+        let mut events = Vec::new();
+        if let Some(running) = after.running() {
+            let already_running = before
+                .running()
+                .is_some_and(|earlier| earlier.started_at() == running.started_at());
+            if !already_running {
+                events.push(HistoryEvent::SessionStarted {
+                    at: running.started_at(),
+                    config: running.spec().config.name.clone(),
+                    strictness: running.spec().strictness,
+                });
+            }
+        }
+        if let (Some(ended), Some(_)) = (after.ended(), before.running()) {
+            events.push(HistoryEvent::SessionEnded {
+                at: ended.ended_at(),
+                reason: ended.reason().clone(),
+            });
+        }
+        for event in &events {
+            if let Err(error) = self.ports.history.record(event) {
+                tracing::warn!("couldn't record {event:?}: {error}");
+            }
+        }
+    }
+
+    fn now(&self) -> Timestamp {
+        self.ports.clock.now()
+    }
+}
+
+fn session_error(error: SessionError) -> DaemonError {
+    DaemonError::Session { error }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use config_toml::TomlConfigSource;
+    use focus_core::ports::NoopHistory;
+    use focus_core::testing::{
+        FakeClock, MemoryStateStore, RecordingHistory, state_store_contract,
+    };
+    use focus_core::{EndEarlyResponse, EndReason, RuleAction};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    const MINUTE: Duration = Duration::from_secs(60);
+    const SETTINGS: &str = r#"
+        [configs.coding]
+        feed_only = ["reddit.com"]
+        allow = ["reddit.com/r/rust/comments/*"]
+        apps = ["discord"]
+
+        [configs.writing]
+        mode = "allowlist"
+        allow = ["docs.google.com"]
+    "#;
+
+    /// A service on fakes, plus handles to them so tests can move time and edit settings.
+    struct Harness {
+        _dir: TempDir,
+        settings: PathBuf,
+        clock: Arc<FakeClock>,
+        store: Arc<MemoryStateStore>,
+        history: Arc<RecordingHistory>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.toml");
+            std::fs::write(&settings, SETTINGS).unwrap();
+            Self {
+                _dir: dir,
+                settings,
+                clock: Arc::new(FakeClock::default()),
+                store: Arc::new(MemoryStateStore::default()),
+                history: Arc::new(RecordingHistory::default()),
+            }
+        }
+
+        fn ports(&self) -> Ports {
+            Ports {
+                clock: self.clock.clone(),
+                configs: Arc::new(TomlConfigSource::new(&self.settings)),
+                store: self.store.clone(),
+                history: self.history.clone(),
+            }
+        }
+
+        /// Opens a service, as the daemon does at startup.
+        fn open(&self) -> Service {
+            Service::open(self.ports(), Duration::from_secs(24 * 60 * 60)).unwrap()
+        }
+
+        fn write_settings(&self, text: &str) {
+            write(&self.settings, text);
+        }
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn start(service: &mut Service, config: &str, strictness: Strictness) -> Response {
+        service.handle(Request::StartSession {
+            config: config.into(),
+            strictness,
+            duration_secs: 25 * 60,
+        })
+    }
+
+    fn status(service: &mut Service) -> StatusReport {
+        match service.handle(Request::Status) {
+            Response::Status(status) => status,
+            other => panic!("expected status, got {other:?}"),
+        }
+    }
+
+    fn error(response: Response) -> DaemonError {
+        match response {
+            Response::Error { error } => error,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    fn config_names(service: &mut Service) -> Vec<String> {
+        match service.handle(Request::ListConfigs) {
+            Response::Configs { configs } => configs.into_iter().map(|c| c.name).collect(),
+            other => panic!("expected configs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn starts_a_session_saves_it_and_records_history() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(config_names(&mut service), ["coding", "writing"]);
+        assert_eq!(
+            start(&mut service, "coding", Strictness::Deep),
+            Response::Done
+        );
+
+        let running = status(&mut service).session;
+        assert_eq!(
+            running.running().unwrap().spec().config.name,
+            "coding",
+            "status shows the session"
+        );
+        let saved = harness.store.load().unwrap().unwrap();
+        assert_eq!(saved.session, running, "the session was saved");
+        assert!(matches!(
+            harness.history.events()[..],
+            [HistoryEvent::SessionStarted { .. }]
+        ));
+    }
+
+    #[test]
+    fn unknown_config_is_refused() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(
+            error(start(&mut service, "gaming", Strictness::Light)),
+            DaemonError::UnknownConfig {
+                name: "gaming".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_restarted_service_resumes_the_session() {
+        let harness = Harness::new();
+        let mut first = harness.open();
+        start(&mut first, "coding", Strictness::Locked);
+        drop(first);
+
+        harness.clock.advance(10 * MINUTE);
+        let mut second = harness.open();
+        let status = status(&mut second);
+        let running = status.session.running().expect("still running");
+        assert_eq!(running.time_left(status.now), 15 * MINUTE);
+        assert_eq!(
+            error(second.handle(Request::EndSession)),
+            DaemonError::Session {
+                error: SessionError::Locked
+            }
+        );
+    }
+
+    #[test]
+    fn deep_end_flow_over_requests() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Deep);
+        let Response::EndSession {
+            outcome: EndEarlyResponse::WaitUntil(_),
+        } = service.handle(Request::EndSession)
+        else {
+            panic!("Deep sessions wait before ending");
+        };
+        let confirm = || Request::ConfirmEndSession {
+            reason: "meeting".into(),
+        };
+        assert!(matches!(
+            error(service.handle(confirm())),
+            DaemonError::Session {
+                error: SessionError::StillWaiting { .. }
+            }
+        ));
+        harness.clock.advance(Duration::from_secs(30));
+        assert_eq!(service.handle(confirm()), Response::Done);
+        assert!(matches!(
+            harness.history.events().last(),
+            Some(HistoryEvent::SessionEnded {
+                reason: EndReason::EndedEarly { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_timer_completes_the_session() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Locked);
+        harness.clock.advance(30 * MINUTE);
+        service.tick();
+        assert_eq!(
+            service.state().session.ended().unwrap().reason(),
+            &EndReason::Completed
+        );
+        assert_eq!(harness.store.load().unwrap().unwrap(), *service.state());
+    }
+
+    #[test]
+    fn edits_to_the_running_config_cool_off() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Light);
+        harness.write_settings(
+            "[configs.coding]\n[configs.writing]\nallow = [\"x.com\"]\nmode = \"allowlist\"\n",
+        );
+        service.reload_settings();
+
+        let status = status(&mut service);
+        assert_eq!(status.pending_changes.len(), 1);
+        assert_eq!(status.pending_changes[0].config, "coding");
+        let coding = service.state().configs.get("coding").unwrap();
+        assert_eq!(coding.apps, ["discord"], "the old version stays in effect");
+        let writing = service.state().configs.get("writing").unwrap();
+        assert_eq!(
+            writing.verdict("x.com"),
+            Verdict::Allow,
+            "other configs change now"
+        );
+
+        service.handle(Request::EndSession);
+        service.reload_settings();
+        assert_eq!(
+            service.state().configs.get("coding").unwrap().apps,
+            ["discord"]
+        );
+
+        harness.clock.advance(Duration::from_secs(24 * 60 * 60));
+        service.tick();
+        assert!(
+            service
+                .state()
+                .configs
+                .get("coding")
+                .unwrap()
+                .apps
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn broken_settings_keep_the_current_configs() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        harness.write_settings("[configs.coding]\ninclude = [\"nope\"]\n");
+        assert_eq!(config_names(&mut service), ["coding", "writing"]);
+        let problem = status(&mut service).settings_problem.unwrap();
+        assert!(problem.contains("nope"), "{problem}");
+
+        harness.write_settings(SETTINGS);
+        service.reload_settings();
+        assert_eq!(status(&mut service).settings_problem, None);
+    }
+
+    #[test]
+    fn rules_follow_the_running_session_or_the_named_config() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        let rules = |service: &mut Service, config: Option<&str>| {
+            service.handle(Request::RulesFor {
+                url: "https://www.reddit.com/".into(),
+                config: config.map(str::to_owned),
+            })
+        };
+        let hidden = Verdict::Restrict(RuleAction::HideFeed);
+        assert_eq!(
+            rules(&mut service, None),
+            Response::Verdict {
+                verdict: Verdict::Allow,
+                config: None
+            },
+            "no session, nothing restricted"
+        );
+        assert_eq!(
+            rules(&mut service, Some("coding")),
+            Response::Verdict {
+                verdict: hidden,
+                config: Some("coding".into())
+            }
+        );
+        start(&mut service, "coding", Strictness::Light);
+        assert_eq!(
+            rules(&mut service, None),
+            Response::Verdict {
+                verdict: hidden,
+                config: Some("coding".into())
+            }
+        );
+        assert!(matches!(
+            error(rules(&mut service, Some("gaming"))),
+            DaemonError::UnknownConfig { .. }
+        ));
+    }
+
+    #[test]
+    fn heartbeats_show_in_status() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        let beat = |browser: &str| Request::Heartbeat {
+            browser: browser.into(),
+            incognito_allowed: false,
+        };
+        assert_eq!(service.handle(beat("edge")), Response::Done);
+        assert_eq!(service.handle(beat("chrome")), Response::Done);
+        let browsers: Vec<_> = status(&mut service)
+            .browsers
+            .into_iter()
+            .map(|b| b.browser)
+            .collect();
+        assert_eq!(browsers, ["chrome", "edge"]);
+    }
+
+    /// A memory store whose saves start failing when told to.
+    #[derive(Default)]
+    struct FlakyStore {
+        inner: MemoryStateStore,
+        failing: AtomicBool,
+    }
+
+    impl StateStore for FlakyStore {
+        fn load(&self) -> Result<Option<PersistedState>, StateStoreError> {
+            self.inner.load()
+        }
+
+        fn save(&self, state: &PersistedState) -> Result<(), StateStoreError> {
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(StateStoreError::Unavailable {
+                    reason: "disk full".into(),
+                });
+            }
+            self.inner.save(state)
+        }
+    }
+
+    #[test]
+    fn flaky_store_passes_the_contract_while_healthy() {
+        state_store_contract(FlakyStore::default);
+    }
+
+    #[test]
+    fn nothing_changes_when_saving_fails() {
+        let harness = Harness::new();
+        let store = Arc::new(FlakyStore::default());
+        let ports = Ports {
+            store: store.clone(),
+            history: Arc::new(NoopHistory),
+            ..harness.ports()
+        };
+        let mut service = Service::open(ports, Duration::ZERO).unwrap();
+        store.failing.store(true, Ordering::SeqCst);
+
+        assert!(matches!(
+            error(start(&mut service, "coding", Strictness::Light)),
+            DaemonError::Storage { .. }
+        ));
+        assert_eq!(service.state().session, SessionState::Idle);
+        assert_eq!(
+            store.inner.load().unwrap().unwrap().session,
+            SessionState::Idle
+        );
+    }
+
+    /// A store whose saved state is corrupt beyond recovery. Like `NewerStore` below, it injects a
+    /// failure on purpose, so it is exempt from the contract suite (see CLAUDE.md).
+    struct CorruptStore;
+
+    impl StateStore for CorruptStore {
+        fn load(&self) -> Result<Option<PersistedState>, StateStoreError> {
+            Err(StateStoreError::Corrupt {
+                reason: "garbage".into(),
+            })
+        }
+
+        fn save(&self, _state: &PersistedState) -> Result<(), StateStoreError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn corrupt_state_starts_fresh_but_newer_state_refuses_to_start() {
+        let harness = Harness::new();
+        let ports = Ports {
+            store: Arc::new(CorruptStore),
+            ..harness.ports()
+        };
+        let service = Service::open(ports, Duration::ZERO).unwrap();
+        assert_eq!(service.state().session, SessionState::Idle);
+
+        struct NewerStore;
+        impl StateStore for NewerStore {
+            fn load(&self) -> Result<Option<PersistedState>, StateStoreError> {
+                Err(StateStoreError::Unavailable {
+                    reason: "version 2".into(),
+                })
+            }
+            fn save(&self, _state: &PersistedState) -> Result<(), StateStoreError> {
+                Ok(())
+            }
+        }
+        let ports = Ports {
+            store: Arc::new(NewerStore),
+            ..harness.ports()
+        };
+        assert!(matches!(
+            Service::open(ports, Duration::ZERO),
+            Err(StartupError::State(_))
+        ));
+    }
+}
