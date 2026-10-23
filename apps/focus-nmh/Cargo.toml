@@ -9,3 +9,18 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+ipc-proto.workspace = true
+ipc-transport.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# `io-std`: the browser talks to the host over stdin/stdout.
+tokio = { workspace = true, features = ["io-std"] }
+
+[dev-dependencies]
+focus-core = { workspace = true, features = ["testing"] }
+focus-daemon = { path = "../focus-daemon" }
+config-toml.workspace = true
+tempfile.workspace = true

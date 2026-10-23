@@ -648,6 +648,18 @@ dependencies = [
 [[package]]
 name = "focus-nmh"
 version = "0.1.0"
+dependencies = [
+ "config-toml",
+ "focus-core",
+ "focus-daemon",
+ "ipc-proto",
+ "ipc-transport",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
 
 [[package]]
 name = "focus-ui"
