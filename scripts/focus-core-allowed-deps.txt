@@ -1,0 +1,4 @@
+# Direct (normal + build) dependencies focus-core may have.
+# focus-core does no I/O: adding a crate here needs an ADR in docs/adr/.
+serde
+thiserror

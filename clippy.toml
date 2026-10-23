@@ -1,0 +1,3 @@
+# `unwrap()`/`expect()` are denied outside tests (see workspace lints).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

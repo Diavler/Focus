@@ -1,0 +1,15 @@
+# Crates that must never appear anywhere in focus-core's dependency tree,
+# even transitively: they mean OS, network, async-runtime or disk access.
+tokio
+async-std
+mio
+reqwest
+hyper
+interprocess
+keyring
+rusqlite
+windows
+windows-sys
+nix
+zbus
+libc
