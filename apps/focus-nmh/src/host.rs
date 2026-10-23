@@ -6,19 +6,17 @@
 
 use std::io;
 
-use ipc_proto::{DaemonError, PROTOCOL_VERSION, Request, Response};
+use ipc_proto::{DaemonError, PROTOCOL_VERSION, Request, Response, decode};
 use ipc_transport::{Client, ClientError, Endpoint};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::framing::{read_message, write_message};
+use crate::framing::{Frame, MAX_INCOMING, MAX_OUTGOING, read_message, write_message};
 
-/// One request from the extension.
+/// Just the `id`, read on its own so even a malformed request gets an answer it can be matched to.
 #[derive(Deserialize)]
-struct Incoming {
+struct IdOnly {
     id: u64,
-    version: u32,
-    message: serde_json::Value,
 }
 
 /// One answer to the extension.
@@ -30,50 +28,54 @@ struct Outgoing<'a> {
     message: &'a Response,
 }
 
-/// Relays messages until the browser closes the pipe.
+/// Relays messages until the browser closes the pipe. A bad or oversized message gets an error
+/// answer; only a broken pipe ends the relay.
 pub async fn run<R, W>(reader: &mut R, writer: &mut W, endpoint: &Endpoint) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut daemon: Option<Client> = None;
-    while let Some(message) = read_message(reader).await? {
-        let (id, response) = match serde_json::from_slice::<Incoming>(&message) {
-            Ok(incoming) => (incoming.id, answer(incoming, &mut daemon, endpoint).await),
-            Err(error) => (
+    while let Some(frame) = read_message(reader).await? {
+        let (id, response) = match frame {
+            Frame::TooLarge(size) => (
                 0,
                 error_response(DaemonError::BadRequest {
-                    message: error.to_string(),
+                    message: format!(
+                        "message of {size} bytes is over the {MAX_INCOMING}-byte limit"
+                    ),
                 }),
             ),
+            Frame::Message(bytes) => {
+                let id = serde_json::from_slice::<IdOnly>(&bytes).map_or(0, |only| only.id);
+                (id, answer(&bytes, &mut daemon, endpoint).await)
+            }
         };
-        let outgoing = Outgoing {
-            id,
-            version: PROTOCOL_VERSION,
-            message: &response,
-        };
-        let bytes = serde_json::to_vec(&outgoing)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let mut bytes = encode(id, &response);
+        if bytes.len() > MAX_OUTGOING {
+            bytes = encode(
+                id,
+                &error_response(DaemonError::Internal {
+                    message: "the answer is too large to send to the browser".into(),
+                }),
+            );
+        }
         write_message(writer, &bytes).await?;
     }
     Ok(())
 }
 
 /// Checks one request and forwards it.
-async fn answer(incoming: Incoming, daemon: &mut Option<Client>, endpoint: &Endpoint) -> Response {
-    if incoming.version != PROTOCOL_VERSION {
-        return error_response(DaemonError::UnsupportedVersion {
-            daemon: PROTOCOL_VERSION,
-            client: incoming.version,
+async fn answer(bytes: &[u8], daemon: &mut Option<Client>, endpoint: &Endpoint) -> Response {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return error_response(DaemonError::BadRequest {
+            message: "the message isn't UTF-8".into(),
         });
-    }
-    let request = match serde_json::from_value::<Request>(incoming.message) {
+    };
+    // `decode` reads `version` and `message` and ignores the extra `id`.
+    let request = match decode::<Request>(text) {
         Ok(request) => request,
-        Err(error) => {
-            return error_response(DaemonError::BadRequest {
-                message: error.to_string(),
-            });
-        }
+        Err(error) => return error_response(error.into()),
     };
     if !allowed_from_browser(&request) {
         return error_response(DaemonError::BadRequest {
@@ -91,37 +93,56 @@ fn allowed_from_browser(request: &Request) -> bool {
     )
 }
 
-/// Sends `request` over the kept connection, reconnecting once if it broke (e.g. the daemon
-/// restarted since the last message).
+/// Sends `request` over the kept connection. If that connection turns out to be dead (the daemon
+/// restarted since the last message), reconnects and sends it once more. A request that timed
+/// out is not resent: the daemon may already have handled it, and waiting again would hold up
+/// the heartbeats queued behind it.
 async fn forward(request: &Request, daemon: &mut Option<Client>, endpoint: &Endpoint) -> Response {
-    for attempt in 0..2 {
-        if daemon.is_none() {
-            match Client::connect(endpoint).await {
-                Ok(client) => *daemon = Some(client),
+    let mut retried = false;
+    loop {
+        let mut client = match daemon.take() {
+            Some(client) => client,
+            None => match Client::connect(endpoint).await {
+                Ok(client) => client,
                 Err(error) => return unreachable(&error),
-            }
-        }
-        let Some(client) = daemon.as_mut() else {
-            continue;
+            },
         };
         match client.request(request).await {
-            Ok(response) => return response,
-            Err(ClientError::Daemon(error)) => return error_response(error),
+            Ok(response) => {
+                *daemon = Some(client);
+                return response;
+            }
+            Err(ClientError::Daemon(error)) => {
+                *daemon = Some(client);
+                return error_response(error);
+            }
+            // The connection may be out of step after a garbled answer, so it isn't kept.
             Err(ClientError::Protocol(message)) => {
                 return error_response(DaemonError::Internal { message });
             }
             Err(error) => {
-                *daemon = None;
-                if attempt == 1 {
+                let timed_out =
+                    matches!(&error, ClientError::Io(io) if io.kind() == io::ErrorKind::TimedOut);
+                if timed_out || retried {
                     return unreachable(&error);
                 }
+                retried = true;
             }
         }
     }
-    unreachable(&"no connection")
 }
 
-fn unreachable(error: &dyn std::fmt::Display) -> Response {
+fn encode(id: u64, response: &Response) -> Vec<u8> {
+    let outgoing = Outgoing {
+        id,
+        version: PROTOCOL_VERSION,
+        message: response,
+    };
+    // Responses are plain data with string keys, which serde_json always encodes.
+    serde_json::to_vec(&outgoing).unwrap_or_default()
+}
+
+fn unreachable(error: &ClientError) -> Response {
     error_response(DaemonError::Unreachable {
         message: error.to_string(),
     })

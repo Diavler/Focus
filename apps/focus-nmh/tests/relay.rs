@@ -11,11 +11,11 @@ use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_core::testing::{FakeClock, MemoryStateStore};
 use focus_daemon::{Ports, Service, serve};
-use focus_nmh::framing::{read_message, write_message};
+use focus_nmh::framing::{Frame, read_message};
 use ipc_transport::{Endpoint, bind};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::io::{DuplexStream, duplex};
+use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -84,8 +84,13 @@ impl Browser {
 
     /// Sends raw bytes as one message and returns the parsed answer.
     async fn send_raw(&mut self, bytes: &[u8]) -> Value {
-        write_message(&mut self.pipe, bytes).await.unwrap();
-        let answer = read_message(&mut self.pipe).await.unwrap().unwrap();
+        // Framed by hand: browsers may send hosts more than the 1 MiB `write_message` allows.
+        let length = u32::try_from(bytes.len()).unwrap().to_ne_bytes();
+        self.pipe.write_all(&length).await.unwrap();
+        self.pipe.write_all(bytes).await.unwrap();
+        let Some(Frame::Message(answer)) = read_message(&mut self.pipe).await.unwrap() else {
+            panic!("expected an answer from the host");
+        };
         serde_json::from_slice(&answer).unwrap()
     }
 
@@ -150,6 +155,24 @@ async fn refuses_requests_the_browser_may_not_send() {
     let malformed = browser.send_raw(b"not json").await;
     assert_eq!(malformed["id"], 0);
     assert_eq!(malformed["message"]["error"]["kind"], "bad_request");
+
+    let unversioned = browser
+        .send_raw(br#"{"id":9,"message":{"type":"status"}}"#)
+        .await;
+    assert_eq!(
+        unversioned["id"], 9,
+        "a readable id is kept even when the rest is malformed"
+    );
+    assert_eq!(unversioned["message"]["error"]["kind"], "bad_request");
+
+    let huge = vec![b' '; focus_nmh::framing::MAX_INCOMING + 1];
+    let too_large = browser.send_raw(&huge).await;
+    assert_eq!(too_large["message"]["error"]["kind"], "bad_request");
+    let status = browser.send(10, json!({"type": "status"})).await;
+    assert_eq!(
+        status["type"], "status",
+        "the relay survives an oversized message"
+    );
 
     let newer = browser
         .send_raw(br#"{"id":5,"version":99,"message":{"type":"status"}}"#)

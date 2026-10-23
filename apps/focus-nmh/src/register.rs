@@ -104,7 +104,9 @@ pub enum RegisterError {
     #[error("\"{0}\" isn't an extension ID (32 letters a-p, shown on chrome://extensions)")]
     BadExtensionId(String),
     /// Linux registration needs the home folder.
-    #[error("HOME isn't set, so the browsers' config folders can't be found")]
+    #[error(
+        "neither XDG_CONFIG_HOME nor HOME is set, so the browsers' config folders can't be found"
+    )]
     NoHome,
     /// No supported browser's config folder exists.
     #[error("no Chromium-based browser found under ~/.config (Chrome, Chromium, Edge or Brave)")]
@@ -127,6 +129,8 @@ pub struct Machine<'a> {
     pub install: &'a Path,
     /// The user's home folder (Linux).
     pub home: Option<&'a Path>,
+    /// `$XDG_CONFIG_HOME`, which Chromium browsers use instead of `~/.config` when it's set.
+    pub xdg_config_home: Option<&'a Path>,
     /// Whether a path exists; a parameter so tests needn't touch the disk.
     pub exists: &'a dyn Fn(&Path) -> bool,
 }
@@ -141,7 +145,11 @@ impl Machine<'_> {
 
     /// `(browser config folder, manifest path)` for each browser installed on Linux.
     fn linux_manifests(&self) -> Result<Vec<PathBuf>, RegisterError> {
-        let config = self.home.ok_or(RegisterError::NoHome)?.join(".config");
+        let config = match (self.xdg_config_home, self.home) {
+            (Some(config), _) => config.to_path_buf(),
+            (None, Some(home)) => home.join(".config"),
+            (None, None) => return Err(RegisterError::NoHome),
+        };
         Ok(BROWSERS
             .iter()
             .map(|browser| config.join(browser.config_dir))
@@ -277,8 +285,13 @@ fn run(action: &Action) -> io::Result<()> {
 }
 
 /// Runs Windows' built-in `reg.exe`, which only needs admin for `HKLM`; these keys are `HKCU`.
+///
+/// Called by its full path: a bare `reg` is searched for in this program's own (user-writable)
+/// folder first, where a planted `reg.exe` would run instead.
 fn reg(args: &[&str]) -> io::Result<()> {
-    let output = Command::new("reg").args(args).output()?;
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let reg_exe = PathBuf::from(system_root).join("System32").join("reg.exe");
+    let output = Command::new(reg_exe).args(args).output()?;
     if output.status.success() {
         Ok(())
     } else {
@@ -310,6 +323,7 @@ mod tests {
             platform,
             install: Path::new("Focus"),
             home: Some(Path::new("home")),
+            xdg_config_home: None,
             exists,
         }
     }
@@ -364,6 +378,23 @@ mod tests {
         assert!(matches!(
             register_plan(&machine(Platform::Linux, &nothing), ID),
             Err(RegisterError::NoBrowser)
+        ));
+    }
+
+    #[test]
+    fn linux_prefers_xdg_config_home() {
+        let xdg = Path::new("xdg");
+        let chrome = xdg.join("google-chrome");
+        let only_chrome = |path: &Path| path == chrome;
+        let machine = Machine {
+            xdg_config_home: Some(xdg),
+            ..machine(Platform::Linux, &only_chrome)
+        };
+        let actions = register_plan(&machine, ID).unwrap();
+        assert!(matches!(
+            &actions[..],
+            [Action::WriteFile { path, .. }]
+                if *path == chrome.join("NativeMessagingHosts").join("dev.focus.nmh.json")
         ));
     }
 

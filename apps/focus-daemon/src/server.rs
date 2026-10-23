@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use ipc_proto::{DaemonError, DecodeError, PROTOCOL_VERSION, Request, Response, decode, encode};
+use ipc_proto::{DaemonError, Request, Response, decode, encode};
 use ipc_transport::{Connection, Listener};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
@@ -71,14 +71,8 @@ async fn answer(mut connection: Connection, shared: Shared) {
         };
         let response = match decode::<Request>(&line) {
             Ok(request) => handle(&shared, request).await,
-            Err(DecodeError::UnsupportedVersion { version }) => Response::Error {
-                error: DaemonError::UnsupportedVersion {
-                    daemon: PROTOCOL_VERSION,
-                    client: version,
-                },
-            },
-            Err(DecodeError::Malformed { message }) => Response::Error {
-                error: DaemonError::BadRequest { message },
+            Err(error) => Response::Error {
+                error: error.into(),
             },
         };
         if connection.send_line(&encode(&response)).await.is_err() {

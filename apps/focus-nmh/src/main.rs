@@ -25,9 +25,19 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let dry_run = args.iter().any(|arg| arg == "--dry-run");
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(PathBuf::from);
+    let var = |name: &str| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let (home, xdg_config_home) = (var("HOME"), var("XDG_CONFIG_HOME"));
+    let machine = |install| Machine {
+        platform: Platform::current(),
+        install,
+        home: home.as_deref(),
+        xdg_config_home: xdg_config_home.as_deref(),
+        exists: &|path: &Path| path.exists(),
+    };
     match args.first().map(String::as_str) {
         Some(origin) if origin.starts_with("chrome-extension://") => relay(&install).await,
         Some("--register") => {
@@ -39,15 +49,9 @@ async fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
-            apply(
-                register::register_plan(&machine(&install, home.as_deref()), id),
-                dry_run,
-            )
+            apply(register::register_plan(&machine(&install), id), dry_run)
         }
-        Some("--unregister") => apply(
-            register::unregister_plan(&machine(&install, home.as_deref())),
-            dry_run,
-        ),
+        Some("--unregister") => apply(register::unregister_plan(&machine(&install)), dry_run),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -89,15 +93,6 @@ fn apply(plan: Result<Vec<Action>, register::RegisterError>, dry_run: bool) -> E
             eprintln!("focus-nmh: {error}");
             ExitCode::FAILURE
         }
-    }
-}
-
-fn machine<'a>(install: &'a Path, home: Option<&'a Path>) -> Machine<'a> {
-    Machine {
-        platform: Platform::current(),
-        install,
-        home,
-        exists: &|path: &Path| path.exists(),
     }
 }
 
