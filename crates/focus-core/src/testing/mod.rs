@@ -1,0 +1,41 @@
+//! Fakes for every port and the contract suites every implementation must pass.
+//!
+//! Enabled by the `testing` feature. Adapters add
+//! `focus-core = { workspace = true, features = ["testing"] }` to their dev-dependencies and run
+//! the matching `*_contract` function from their own tests.
+
+mod contracts;
+mod fakes;
+
+pub use contracts::{
+    clock_contract, config_source_contract, enforcer_contract, history_contract, notifier_contract,
+    state_store_contract,
+};
+pub use fakes::{
+    FakeClock, FakeConfigSource, FakeEnforcer, FakeNotifier, MemoryStateStore, RecordingHistory,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::{ConfigSourceError, NoopHistory};
+    use crate::{BlockConfig, Mode};
+
+    #[test]
+    fn fakes_pass_their_contracts() {
+        clock_contract(&FakeClock::default());
+        config_source_contract(&FakeConfigSource::new(vec![
+            BlockConfig::new("coding", Mode::Blocklist),
+            BlockConfig::new("writing", Mode::Allowlist),
+        ]));
+        config_source_contract(&FakeConfigSource::failing(ConfigSourceError::Unavailable {
+            reason: "no file".into(),
+        }));
+        state_store_contract(MemoryStateStore::default);
+        enforcer_contract(&FakeEnforcer::default());
+        enforcer_contract(&FakeEnforcer::with_running(["discord", "Steam"]));
+        notifier_contract(&FakeNotifier::default());
+        history_contract(&RecordingHistory::default());
+        history_contract(&NoopHistory);
+    }
+}
