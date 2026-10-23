@@ -23,14 +23,18 @@ ADR 0001 puts sessions in a per-user daemon that the UI and the native messaging
 
 **Transport: a new crate, `ipc-transport`.** It holds endpoints, line framing (max 1 MiB per line) and a typed `Client`. It's separate so `ipc-proto` stays pure and the UI and NMH don't depend on the daemon.
 
-The endpoint comes from `Endpoint::for_current_user()`, with no `#[cfg]`:
-- If `XDG_RUNTIME_DIR` is set (Linux desktops), a socket file in that directory, which only the user can open.
-- Otherwise (Windows), the named pipe `focus-daemon-<user>`.
+The endpoint comes from `Endpoint::for_install(install_folder)`, with no `#[cfg]`, so every process of an install agrees on it regardless of environment variables:
+- On Windows, the named pipe `focus-daemon-<user>`.
+- Elsewhere, the socket file `<install>/data/daemon.sock`, inside the portable install. Abstract sockets, which have no permissions, are used only in tests.
 
-**Single instance.** `bind` refuses if a connect to the endpoint already succeeds. On Windows the first pipe instance is also exclusive. On Linux a stale socket file left by a crash is replaced. The daemon binds before it reads any state, so a second daemon exits without touching anything.
+Connects wait at most 3 s and requests at most 5 s, so a stuck daemon shows up as an error instead of hanging the UI.
+
+**Single instance.** Before binding, the daemon takes an exclusive lock on `data/daemon.lock` (`File::try_lock`, which needs Rust 1.89). The OS releases it when the process dies, so there's never a stale lock. Only the lock holder binds, and `bind` replaces a socket file nobody answers on (left by a crash). Without the lock, two daemons starting at the same moment could both treat a live socket as stale. A second daemon exits before binding, reading or writing anything.
 
 **Daemon.**
-- It runs on tokio. All connections and a 1-second ticker share one `Service` behind a `std::sync::Mutex`, which is held only for the synchronous handling of a request, never across an `.await`.
+- It runs on tokio. All connections and a 1-second ticker share one `Service` behind a `std::sync::Mutex`. The service does blocking file I/O, so it only runs inside `spawn_blocking`, never on the async worker threads, and the lock is never held across an `.await`. On shutdown the service is taken out of the mutex, so a blocking call that was already queued can't save after `serve` returns.
+- `StartSession` is capped at 12 hours (`SessionState::MAX_DURATION`), so a bad client can't lock the user in indefinitely.
+- A tick that has nothing due returns without copying the state.
 - Every change is applied to a copy of `PersistedState`, saved through `StateStore`, and only then kept, so a failed save leaves nothing half-applied.
 - The settings file is re-read every 5 seconds, on `ListConfigs` and before `StartSession`. If it's invalid, the last good configs stay in effect and the problem is reported in `Status`.
 - **Portable install:** all files live in a `data` folder next to the executables (`data/settings.toml`, `data/state.json` and its backups), not in `%APPDATA%`, `%LOCALAPPDATA%` or `~/.config`. The install folder must be writable without admin, e.g. a zip unpacked in the user's folder or `%LOCALAPPDATA%\Programs\Focus`. If it isn't (e.g. Program Files), the daemon refuses to start and says why.
@@ -42,7 +46,7 @@ The endpoint comes from `Endpoint::for_current_user()`, with no `#[cfg]`:
 
 - The build plan's done-when holds: an in-process integration test starts a session over IPC, restarts the daemon and finds the session still running.
 - Closing or killing the UI never ends a session.
-- On Windows, the named pipe's default security lets other local users open the pipe for reading. Requests need write access, which they don't get. Tightening the pipe's security descriptor is left for hardening.
+- **Open hardening item (Windows):** another local user could create `\\.\pipe\focus-daemon-<you>` before your daemon starts. Your UI would then talk to their process, and your daemon would see "already running" and exit. Fix in a follow-up: create the pipe with a current-user-only security descriptor, and have clients check the server process's owner (`GetNamedPipeServerProcessId`). The pipe's default security already stops other users from sending requests to *your* daemon.
 - The workspace gains `ipc-transport`, which `docs/DESIGN.md`'s folder layout doesn't list.
 - Dependencies added: `interprocess` (local sockets), `tokio`, `tracing` and `tracing-subscriber` (developer diagnostics), and `anyhow` (binaries only). `deny.toml` now allows `0BSD`, which `interprocess`'s helper crates use. No platform-directories crate is needed because of the portable layout.
 - Upgrading means replacing the executables and keeping `data/`. Installers in step 9 must preserve it.

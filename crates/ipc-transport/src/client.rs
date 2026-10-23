@@ -10,6 +10,9 @@ use thiserror::Error;
 use crate::connection::Connection;
 use crate::endpoint::Endpoint;
 
+/// How long to wait for the daemon to answer one request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Why a request didn't get a successful answer.
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -42,12 +45,17 @@ impl Client {
     }
 
     /// Sends `request` and returns the answer; a [`Response::Error`] becomes [`ClientError::Daemon`].
+    /// Gives up with a `TimedOut` I/O error if the daemon doesn't answer within a few seconds.
     pub async fn request(&mut self, request: &Request) -> Result<Response, ClientError> {
-        self.connection.send_line(&encode(request)).await?;
-        let line = self
-            .connection
-            .recv_line()
-            .await?
+        let exchange = async {
+            self.connection.send_line(&encode(request)).await?;
+            self.connection.recv_line().await
+        };
+        let line = tokio::time::timeout(REQUEST_TIMEOUT, exchange)
+            .await
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::TimedOut, "the daemon didn't answer in time")
+            })??
             .ok_or(ClientError::Closed)?;
         match decode::<Response>(&line).map_err(|error| ClientError::Protocol(error.to_string()))? {
             Response::Error { error } => Err(ClientError::Daemon(error)),

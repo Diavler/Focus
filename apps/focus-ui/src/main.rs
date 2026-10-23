@@ -2,6 +2,7 @@
 
 mod daemon;
 
+use std::path::Path;
 use std::time::Duration;
 
 use focus_core::{
@@ -47,8 +48,26 @@ struct App {
     reason: String,
     probe: String,
     probe_result: Option<String>,
+    /// What the last URL check asked; a new check is sent when this would change.
+    probe_asked: Option<ProbeKey>,
     error: Option<String>,
     polls: u32,
+    /// A status request is on its way, so polls don't pile up if the daemon is slow.
+    status_pending: bool,
+    /// A configs request is on its way.
+    configs_pending: bool,
+    /// An action (start, end, ...) is on its way; its buttons are disabled until it answers.
+    action_pending: bool,
+}
+
+/// One URL check: the URL and what it was checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProbeKey {
+    url: String,
+    /// The running session's config, if a session was running.
+    session: Option<String>,
+    /// The config picked in the setup view, used when no session is running.
+    selected: Option<String>,
 }
 
 /// User actions, timer ticks and daemon answers.
@@ -68,15 +87,20 @@ enum Message {
     ActionDone(Result<(), String>),
     ProbeChanged(String),
     ProbeChecked {
-        url: String,
+        key: ProbeKey,
         result: Result<String, String>,
     },
 }
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        let app = Self {
-            endpoint: Endpoint::for_current_user(),
+        // The daemon's endpoint depends on the install folder, which holds both executables.
+        let install = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .unwrap_or_default();
+        let mut app = Self {
+            endpoint: Endpoint::for_install(&install),
             status: None,
             unreachable: None,
             configs: Vec::new(),
@@ -87,8 +111,12 @@ impl App {
             reason: String::new(),
             probe: String::new(),
             probe_result: None,
+            probe_asked: None,
             error: None,
             polls: 0,
+            status_pending: false,
+            configs_pending: false,
+            action_pending: false,
         };
         let boot = Task::batch([app.fetch_status(), app.fetch_configs()]);
         (app, boot)
@@ -98,18 +126,40 @@ impl App {
         match message {
             Message::Poll => {
                 self.polls = self.polls.wrapping_add(1);
-                if self.polls % CONFIGS_EVERY_POLLS == 0 || self.configs.is_empty() {
-                    return Task::batch([self.fetch_status(), self.fetch_configs()]);
+                let mut tasks = Vec::new();
+                if !self.status_pending {
+                    tasks.push(self.fetch_status());
                 }
-                return self.fetch_status();
+                let configs_due =
+                    self.polls.is_multiple_of(CONFIGS_EVERY_POLLS) || self.configs.is_empty();
+                if configs_due && !self.configs_pending {
+                    tasks.push(self.fetch_configs());
+                }
+                return Task::batch(tasks);
             }
-            Message::StatusLoaded(Ok(status)) => {
-                self.status = Some(status);
-                self.unreachable = None;
+            Message::StatusLoaded(result) => {
+                self.status_pending = false;
+                match result {
+                    Ok(status) => {
+                        self.status = Some(status);
+                        self.unreachable = None;
+                    }
+                    Err(problem) => self.unreachable = Some(problem),
+                }
+                return self.check_probe();
             }
-            Message::StatusLoaded(Err(problem)) => self.unreachable = Some(problem),
-            Message::ConfigsLoaded(Ok(configs)) => self.set_configs(configs),
-            Message::ConfigsLoaded(Err(problem)) => self.unreachable = Some(problem),
+            Message::ConfigsLoaded(result) => {
+                self.configs_pending = false;
+                match result {
+                    Ok(configs) => {
+                        self.set_configs(configs);
+                        // The rules may have changed, so check the URL again.
+                        self.probe_asked = None;
+                    }
+                    Err(problem) => self.unreachable = Some(problem),
+                }
+                return self.check_probe();
+            }
             Message::ConfigPicked(name) => {
                 self.selected = Some(name);
                 return self.check_probe();
@@ -139,16 +189,18 @@ impl App {
                 return self.act(Request::CancelEndSession);
             }
             Message::ActionDone(result) => {
+                self.action_pending = false;
                 self.error = result.err();
-                return Task::batch([self.fetch_status(), self.check_probe()]);
+                // The URL check follows once the new status arrives.
+                return self.fetch_status();
             }
             Message::ProbeChanged(probe) => {
                 self.probe = probe;
                 return self.check_probe();
             }
-            Message::ProbeChecked { url, result } => {
-                // Answers can arrive out of order; only show the one for the current text.
-                if url == self.probe {
+            Message::ProbeChecked { key, result } => {
+                // Answers can arrive out of order; only show the one for what's on screen now.
+                if self.probe_key().as_ref() == Some(&key) {
                     self.probe_result = Some(result.unwrap_or_else(|error| error));
                 }
             }
@@ -168,41 +220,60 @@ impl App {
         self.configs = configs;
     }
 
-    fn fetch_status(&self) -> Task<Message> {
+    fn fetch_status(&mut self) -> Task<Message> {
+        self.status_pending = true;
         Task::perform(daemon::status(self.endpoint.clone()), Message::StatusLoaded)
     }
 
-    fn fetch_configs(&self) -> Task<Message> {
+    fn fetch_configs(&mut self) -> Task<Message> {
+        self.configs_pending = true;
         Task::perform(
             daemon::configs(self.endpoint.clone()),
             Message::ConfigsLoaded,
         )
     }
 
-    fn act(&self, request: Request) -> Task<Message> {
+    fn act(&mut self, request: Request) -> Task<Message> {
+        self.action_pending = true;
         Task::perform(
             daemon::act(self.endpoint.clone(), request),
             Message::ActionDone,
         )
     }
 
+    /// What a URL check would ask right now, or `None` if the probe box is empty.
+    fn probe_key(&self) -> Option<ProbeKey> {
+        let url = self.probe.trim();
+        (!url.is_empty()).then(|| ProbeKey {
+            url: url.to_owned(),
+            session: self
+                .running()
+                .map(|running| running.spec().config.name.clone()),
+            selected: self.selected.clone(),
+        })
+    }
+
     /// Asks the daemon what the running session (or, with none, the selected config) does with
-    /// the URL in the probe box.
-    fn check_probe(&self) -> Task<Message> {
-        let url = self.probe.trim().to_owned();
-        if url.is_empty() {
+    /// the URL in the probe box, unless that exact question was already asked.
+    fn check_probe(&mut self) -> Task<Message> {
+        let key = self.probe_key();
+        if key == self.probe_asked {
             return Task::none();
         }
-        let running = self.running().is_some();
-        let config = if running { None } else { self.selected.clone() };
-        let probe = self.probe.clone();
-        Task::perform(
-            daemon::check(self.endpoint.clone(), url, config),
-            move |result| Message::ProbeChecked {
-                url: probe.clone(),
-                result,
-            },
-        )
+        self.probe_asked.clone_from(&key);
+        let Some(key) = key else {
+            return Task::none();
+        };
+        // With a session running, the daemon checks against the session's own copy of the rules.
+        let config = match key.session {
+            Some(_) => None,
+            None => key.selected.clone(),
+        };
+        let request = daemon::check(self.endpoint.clone(), key.url.clone(), config);
+        Task::perform(request, move |result| Message::ProbeChecked {
+            key: key.clone(),
+            result,
+        })
     }
 
     /// Polls the daemon once a second.
@@ -221,7 +292,7 @@ impl App {
                 page = page.push(
                     column![
                         text("Can't reach the Focus daemon.").size(20),
-                        text("Start it with `cargo run -p focus-daemon`; this window reconnects by itself."),
+                        text("Start focus-daemon from this folder (`cargo run -p focus-daemon` in development); this window reconnects by itself."),
                         text(problem).size(13).style(text::secondary),
                     ]
                     .spacing(8),
@@ -290,9 +361,10 @@ impl App {
             slider(MINUTES, self.minutes, Message::MinutesChanged),
         ]
         .spacing(8);
+        let can_start = self.selected.is_some() && !self.action_pending;
         let start = button("Start session")
             .style(button::success)
-            .on_press_maybe(self.selected.is_some().then_some(Message::Start));
+            .on_press_maybe(can_start.then_some(Message::Start));
 
         let mut setup = column![text("New session").size(24), config].spacing(18);
         if let Some(summary) = self.selected_config().map(config_summary) {
@@ -332,7 +404,7 @@ impl App {
         match running.spec().strictness.end_early_policy() {
             EndEarlyPolicy::Immediate => button("End session")
                 .style(button::danger)
-                .on_press(Message::EndEarly)
+                .on_press_maybe(self.idle_then(Message::EndEarly))
                 .into(),
             EndEarlyPolicy::Forbidden => text("Locked: this session can't be ended early.")
                 .style(text::secondary)
@@ -340,7 +412,7 @@ impl App {
             EndEarlyPolicy::WaitAndReason { .. } => match running.end_allowed_at() {
                 None => button("Ask to end early")
                     .style(button::secondary)
-                    .on_press(Message::EndEarly)
+                    .on_press_maybe(self.idle_then(Message::EndEarly))
                     .into(),
                 Some(allowed_at) => {
                     self.deep_end_form(allowed_at.saturating_duration_since(status.now))
@@ -352,7 +424,11 @@ impl App {
     /// The wait countdown and reason box for ending a Deep session.
     fn deep_end_form(&self, wait: Duration) -> Element<'_, Message> {
         let ready = wait.is_zero() && !self.reason.trim().is_empty();
-        let confirm = ready.then_some(Message::ConfirmEnd);
+        let confirm = if ready {
+            self.idle_then(Message::ConfirmEnd)
+        } else {
+            None
+        };
         let status = if wait.is_zero() {
             "Why are you ending early?".to_owned()
         } else {
@@ -370,7 +446,7 @@ impl App {
                 button("End session")
                     .style(button::danger)
                     .on_press_maybe(confirm),
-                button("Keep focusing").on_press(Message::CancelEnd),
+                button("Keep focusing").on_press_maybe(self.idle_then(Message::CancelEnd)),
             ]
             .spacing(12),
         ]
@@ -391,6 +467,12 @@ impl App {
             text(result),
         ]
         .spacing(8)
+    }
+
+    /// `message`, unless an action is still waiting for the daemon (so double clicks don't send
+    /// it twice).
+    fn idle_then(&self, message: Message) -> Option<Message> {
+        (!self.action_pending).then_some(message)
     }
 
     fn selected_config(&self) -> Option<&BlockConfig> {

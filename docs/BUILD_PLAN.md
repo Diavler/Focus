@@ -32,7 +32,7 @@ In `focus-core`: `BlockConfig`, `SharedList`, `Rule`, `RuleAction` (Ask, Delay, 
 **Done when:** contract tests pass with dry-run mode, and a manual checklist is verified on Windows and on a KDE Plasma Wayland VM.
 
 ### 6. Minimal Iced UI
-Pick a config, strictness and duration; start a session; show status and time left. Respect strictness (no end button in Locked, wait + typed reason in Deep). UI and daemon restart each other if killed; both register for autostart at login (HKCU Run key / systemd user service).
+Pick a config, strictness and duration; start a session; show status and time left. Respect strictness (no end button in Locked, wait + typed reason in Deep). UI and daemon restart each other if killed; both register for autostart at login (HKCU Run key / systemd user service), controlled by a `start_at_login` setting in the TOML that the daemon applies itself. Turning it off loosens protection, so that change goes through cooling-off like any other.
 **Done when:** you can run a full Locked session end to end, and killing either process brings it back.
 
 ## MVP

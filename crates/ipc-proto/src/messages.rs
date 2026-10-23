@@ -147,6 +147,15 @@ pub enum DaemonError {
         /// Why.
         error: SessionError,
     },
+    /// The daemon hit a bug while handling the request; nothing changed.
+    #[error("internal daemon error: {message}")]
+    Internal {
+        /// What failed.
+        message: String,
+    },
+    /// The daemon is stopping and no longer takes requests.
+    #[error("the daemon is shutting down")]
+    ShuttingDown,
     /// The change couldn't be saved, so it wasn't made.
     #[error("couldn't save state: {message}")]
     Storage {

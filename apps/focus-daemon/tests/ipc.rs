@@ -32,7 +32,7 @@ fn unique_endpoint() -> Endpoint {
 /// Settings and state files in a temporary directory, plus a fake clock shared by every daemon
 /// started from it, as if the same user restarted the daemon.
 struct Home {
-    _dir: TempDir,
+    dir: TempDir,
     settings: PathBuf,
     state: PathBuf,
     clock: Arc<FakeClock>,
@@ -50,7 +50,7 @@ impl Home {
         Self {
             state: dir.path().join("state").join("state.json"),
             settings,
-            _dir: dir,
+            dir,
             clock: Arc::new(FakeClock::default()),
         }
     }
@@ -203,5 +203,26 @@ async fn heartbeats_and_rules_over_ipc() {
         .unwrap();
     assert_eq!(verdict.to_string(), "Hide feed");
     assert_eq!(config.as_deref(), Some("coding"));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn install_socket_replaces_a_file_left_by_a_crash() {
+    // On Windows the install endpoint is the user's real named pipe, which a running daemon
+    // may hold; the socket-file behaviour under test only exists on Linux.
+    if std::env::consts::FAMILY == "windows" {
+        return;
+    }
+    let home = Home::new();
+    let endpoint = Endpoint::for_install(home.dir.path());
+    let Endpoint::Path(socket) = &endpoint else {
+        panic!("expected a socket file, got {endpoint}");
+    };
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    std::fs::write(socket, "left behind by a crash").unwrap();
+
+    let daemon = home.start_daemon(&endpoint).await;
+    let mut client = Client::connect(&endpoint).await.unwrap();
+    assert!(client.status().await.is_ok());
     daemon.stop().await;
 }

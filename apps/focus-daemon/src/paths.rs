@@ -12,6 +12,8 @@ pub struct Paths {
     pub settings: PathBuf,
     /// The JSON state the daemon owns.
     pub state: PathBuf,
+    /// Locked by the running daemon, so only one runs per install.
+    pub lock: PathBuf,
 }
 
 impl Paths {
@@ -22,6 +24,7 @@ impl Paths {
         Self {
             settings: data.join("settings.toml"),
             state: data.join("state.json"),
+            lock: data.join("daemon.lock"),
             data,
         }
     }
@@ -38,5 +41,6 @@ mod tests {
         assert_eq!(paths.data, install.join("data"));
         assert_eq!(paths.settings, install.join("data").join("settings.toml"));
         assert_eq!(paths.state, install.join("data").join("state.json"));
+        assert_eq!(paths.lock, install.join("data").join("daemon.lock"));
     }
 }

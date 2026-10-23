@@ -19,7 +19,7 @@ Offline-first focus app (Rust, Iced) for Windows and KDE Plasma on Wayland. It b
 
 - **S:** one reason to change per crate and module. Rule matching, session state, scheduling and IPC live apart. If a module needs "and" to describe it, split it.
 - **O:** add behaviour with a new adapter crate or feature flag, not by editing `focus-core`. Prefer `enum` + `match` inside the core for closed sets (rule actions, strictness) and traits at the boundary for open sets (platforms, services).
-- **L:** every implementation of a port, fakes included, must pass the shared contract tests for that port (exposed from `focus-core` behind a `testing` Cargo feature and run from each adapter's tests).
+- **L:** every implementation of a port, fakes included, must pass the shared contract tests for that port (exposed from `focus-core` behind a `testing` Cargo feature and run from each adapter's tests). The only exception is a test stub that exists to inject a failure (e.g. a store whose `load` always errors); say so in its doc comment.
 - **I:** keep traits small and focused (`CalendarSource`, `TaskSource`, `Enforcer`, `Notifier`, `ConfigSource`, `StateStore`, `History`, `Clock`). Don't add methods a caller doesn't need; add a new trait instead.
 - **D:** the core depends only on its traits. Concrete adapters are constructed in `focus-daemon` (the composition root) and injected. No global state, no singletons, no `lazy_static` config.
 

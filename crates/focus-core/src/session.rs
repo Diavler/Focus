@@ -84,6 +84,12 @@ pub enum SessionError {
     /// The requested duration was zero.
     #[error("a session needs a duration longer than zero")]
     ZeroDuration,
+    /// The requested duration is longer than [`SessionState::MAX_DURATION`].
+    #[error("a session can last at most {max:?}")]
+    TooLong {
+        /// The longest allowed duration.
+        max: Duration,
+    },
     /// No session is running.
     #[error("no session is running")]
     NotRunning,
@@ -105,6 +111,10 @@ pub enum SessionError {
 }
 
 impl SessionState {
+    /// The longest session that can be started, so a mistyped or hostile duration can't lock the
+    /// user in for days.
+    pub const MAX_DURATION: Duration = Duration::from_secs(12 * 60 * 60);
+
     /// Starts a session at `now`. Fails if one is running (after expiring a finished one).
     pub fn start(&mut self, spec: SessionSpec, now: Timestamp) -> Result<(), SessionError> {
         self.tick(now);
@@ -113,6 +123,11 @@ impl SessionState {
         }
         if spec.duration.is_zero() {
             return Err(SessionError::ZeroDuration);
+        }
+        if spec.duration > Self::MAX_DURATION {
+            return Err(SessionError::TooLong {
+                max: Self::MAX_DURATION,
+            });
         }
         *self = Self::Running(RunningSession {
             ends_at: now.saturating_add(spec.duration),
@@ -330,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_zero_duration_and_a_second_session() {
+    fn refuses_bad_durations_and_a_second_session() {
         let clock = FakeClock::default();
         let mut state = SessionState::default();
         let zero = SessionSpec {
@@ -341,6 +356,22 @@ mod tests {
             state.start(zero, clock.now()),
             Err(SessionError::ZeroDuration)
         );
+        let too_long = SessionSpec {
+            duration: SessionState::MAX_DURATION + Duration::from_secs(1),
+            ..spec(Strictness::Locked)
+        };
+        assert_eq!(
+            state.start(too_long, clock.now()),
+            Err(SessionError::TooLong {
+                max: SessionState::MAX_DURATION
+            })
+        );
+        let longest = SessionSpec {
+            duration: SessionState::MAX_DURATION,
+            ..spec(Strictness::Locked)
+        };
+        state.start(longest, clock.now()).unwrap();
+        state = SessionState::default();
         state.start(spec(Strictness::Light), clock.now()).unwrap();
         assert_eq!(
             state.start(spec(Strictness::Deep), clock.now()),

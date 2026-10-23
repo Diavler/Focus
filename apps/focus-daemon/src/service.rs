@@ -126,6 +126,21 @@ impl Service {
     /// Ends an expired session and applies due config changes, saving if anything changed.
     pub fn tick(&mut self) {
         let now = self.now();
+        // Checked first so the common case (nothing due) doesn't copy the whole state.
+        let expired = self
+            .state
+            .session
+            .running()
+            .is_some_and(|running| now >= running.ends_at());
+        let due = self
+            .state
+            .configs
+            .pending()
+            .iter()
+            .any(|change| change.apply_after <= now);
+        if !expired && !due {
+            return;
+        }
         let result = self.update(|state| {
             state.session.tick(now);
             state.configs.apply_due(now);
@@ -308,7 +323,9 @@ mod tests {
 
     use config_toml::TomlConfigSource;
     use focus_core::ports::NoopHistory;
-    use focus_core::testing::{FakeClock, MemoryStateStore, RecordingHistory};
+    use focus_core::testing::{
+        FakeClock, MemoryStateStore, RecordingHistory, state_store_contract,
+    };
     use focus_core::{EndEarlyResponse, EndReason, RuleAction};
     use tempfile::TempDir;
 
@@ -639,6 +656,11 @@ mod tests {
     }
 
     #[test]
+    fn flaky_store_passes_the_contract_while_healthy() {
+        state_store_contract(FlakyStore::default);
+    }
+
+    #[test]
     fn nothing_changes_when_saving_fails() {
         let harness = Harness::new();
         let store = Arc::new(FlakyStore::default());
@@ -661,7 +683,8 @@ mod tests {
         );
     }
 
-    /// A store whose saved state is corrupt beyond recovery.
+    /// A store whose saved state is corrupt beyond recovery. Like `NewerStore` below, it injects a
+    /// failure on purpose, so it is exempt from the contract suite (see CLAUDE.md).
     struct CorruptStore;
 
     impl StateStore for CorruptStore {
