@@ -2,7 +2,7 @@
 
 An offline-first focus app for Windows and KDE Plasma (Wayland), written in Rust with a native [Iced](https://iced.rs) UI. It blocks distracting sites and apps during focus sessions, which you start by hand or from Google Calendar and Todoist, and it makes every bypass slow and deliberate. It needs no admin rights, no account and no server.
 
-**Status:** early prototype, at build step 0 (repository skeleton). Nothing works yet.
+**Status:** early prototype, at build step 1. The core rules and session logic work, and a demo window lets you run a session and try URLs against the example configs: `cargo run -p focus-ui`. Nothing is blocked yet (see [ADR 0002](docs/adr/0002-temporary-in-process-demo-ui.md)).
 
 ## Docs
 

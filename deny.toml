@@ -5,6 +5,12 @@ all-features = true
 
 [advisories]
 # Defaults: deny known vulnerabilities, unmaintained and yanked crates.
+# Each ignore is an "unmaintained" notice (no known vulnerability) deep in iced's tree with no
+# replacement yet. Re-check them whenever iced is upgraded.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste: via wgpu's Metal backend (iced renderer); no safe upgrade" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: via cosmic-text/fontdb (iced text); no safe upgrade" },
+]
 
 [licenses]
 # Compatible with shipping the app as MIT OR Apache-2.0.
@@ -14,6 +20,8 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
     "ISC",
     "Zlib",
     "Unicode-3.0",

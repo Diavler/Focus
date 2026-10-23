@@ -1,6 +1,6 @@
 [package]
 name = "focus-ui"
-description = "Iced desktop UI for Focus"
+description = "Iced desktop UI for Focus (in-process demo until build step 3; see ADR 0002)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,11 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+focus-core.workspace = true
+# `tokio` provides `iced::time::every` for the countdown.
+iced = { workspace = true, features = ["tokio"] }
+
+[dev-dependencies]
+focus-core = { workspace = true, features = ["testing"] }
