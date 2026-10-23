@@ -1,0 +1,18 @@
+[package]
+name = "ipc-transport"
+description = "Local-socket transport for Focus IPC: per-user endpoints, line framing and a client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ipc-proto.workspace = true
+focus-core.workspace = true
+interprocess.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

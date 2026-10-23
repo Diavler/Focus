@@ -19,11 +19,20 @@ expect_used = "warn"
 # Shared versions; each crate opts in with `name.workspace = true`.
 [workspace.dependencies]
 focus-core = { path = "crates/focus-core" }
+ipc-proto = { path = "crates/ipc-proto" }
+ipc-transport = { path = "crates/ipc-transport" }
+config-toml = { path = "crates/config-toml" }
+state-json = { path = "crates/state-json" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 toml = "1.1.8"
 tempfile = "3.27.0"
+anyhow = "1.0.104"
+interprocess = { version = "2.4.7", features = ["tokio"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "net"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # Iced defaults minus `linux-theme-detection`, which pulls in zbus 5 (unmaintained zvariant;
 # see deny.toml). Our own D-Bus code will use zbus 6.

@@ -65,7 +65,8 @@ pub enum SessionState {
 }
 
 /// The result of asking to end a session early.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EndEarlyResponse {
     /// The session has ended.
     Ended,
@@ -74,7 +75,8 @@ pub enum EndEarlyResponse {
 }
 
 /// Why a session transition was refused.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionError {
     /// A session is already running.
     #[error("a session is already running")]
