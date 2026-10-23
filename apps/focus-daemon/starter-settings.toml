@@ -1,0 +1,23 @@
+# Focus settings. Edits to the configuration a session is running wait 24 hours before they take
+# effect (cooling-off); other edits apply within a few seconds. See docs/DESIGN.md.
+#
+# Rule keys: allow, ask, delay, feed_only (hide feeds, allow single posts), block.
+# Patterns: "site.com" (whole site and subdomains), "site.com/" (front page only),
+# "site.com/path/*" (* matches anything).
+
+[lists.social]
+block = ["x.com", "instagram.com", "tiktok.com"]
+
+[lists.video]
+block = ["twitch.tv", "netflix.com"]
+
+[configs.coding]
+mode = "blocklist"
+include = ["social", "video"]
+feed_only = ["reddit.com", "youtube.com"]
+allow = ["reddit.com/r/rust/comments/*", "docs.rs", "github.com"]
+apps = ["discord", "steam"]
+
+[configs.writing]
+mode = "allowlist"
+allow = ["docs.google.com", "dictionary.com"]
