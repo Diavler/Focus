@@ -1,6 +1,6 @@
 # 2. Temporary in-process demo UI
 
-- Status: accepted (temporary; superseded once build step 3 rewires the UI)
+- Status: superseded by [ADR 0004](0004-ipc-protocol-and-daemon.md)
 - Date: 2026-10-23
 
 ## Context
