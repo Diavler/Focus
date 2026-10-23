@@ -1,0 +1,11 @@
+[package]
+name = "integrations"
+description = "iCal and Todoist adapters for the CalendarSource and TaskSource ports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
