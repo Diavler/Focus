@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo deny check)",
+      "Bash(cargo deny check *)",
+      "Bash(cargo test --all)",
+      "Bash(cargo fmt --all -- --check)",
+      "Bash(bash scripts/check-core-deps.sh)",
+      "Bash(cargo clippy --all-targets --all-features -- -D warnings)",
+      "Bash(cargo search *)",
+      "Bash(cargo tree *)",
+      "Bash(cargo --version)"
+    ]
+  }
+}

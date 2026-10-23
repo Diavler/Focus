@@ -44,7 +44,7 @@ Offline-first focus app (Rust, Iced) for Windows and KDE Plasma on Wayland. It b
 
 - Start each task by restating the goal and listing the files you'll touch; ask if the step in `docs/BUILD_PLAN.md` is ambiguous.
 - Small, reviewable changes. Conventional commit messages (`feat(core): ...`, `fix(nmh): ...`).
-- Commit only when asked, on a feature branch, never directly on `main`.
+- Work on a feature branch, never directly on `main`. When a step's checks pass, commit, push, open the PR, then run `/code-review --comment` on it. Otherwise commit only when asked.
 - At the end of a task, summarise what changed, what's tested, what needs manual testing, and anything you deferred.
 - The developer is a CS student learning Rust: briefly explain non-obvious Rust (lifetimes, trait objects, async, `Send`/`Sync`) in your summary when you use it.
 
