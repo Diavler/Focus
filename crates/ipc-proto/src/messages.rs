@@ -153,6 +153,12 @@ pub enum DaemonError {
         /// What failed.
         message: String,
     },
+    /// The daemon isn't running or didn't answer (reported by a relay such as `focus-nmh`).
+    #[error("the Focus daemon isn't reachable: {message}")]
+    Unreachable {
+        /// What went wrong.
+        message: String,
+    },
     /// The daemon is stopping and no longer takes requests.
     #[error("the daemon is shutting down")]
     ShuttingDown,

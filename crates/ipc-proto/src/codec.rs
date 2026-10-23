@@ -4,6 +4,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::messages::DaemonError;
+
 /// The protocol version this build speaks. Bump it on any incompatible message change.
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -22,6 +24,19 @@ pub enum DecodeError {
         /// The JSON parser's explanation.
         message: String,
     },
+}
+
+impl From<DecodeError> for DaemonError {
+    /// How a request that couldn't be decoded is answered.
+    fn from(error: DecodeError) -> Self {
+        match error {
+            DecodeError::UnsupportedVersion { version } => Self::UnsupportedVersion {
+                daemon: PROTOCOL_VERSION,
+                client: version,
+            },
+            DecodeError::Malformed { message } => Self::BadRequest { message },
+        }
+    }
 }
 
 #[derive(Serialize)]
