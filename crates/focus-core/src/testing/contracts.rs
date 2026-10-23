@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::config::{BlockConfig, Mode};
+use crate::cooling::ConfigState;
 use crate::ports::{
     Clock, ConfigSource, Enforcer, History, HistoryEvent, Notifier, PersistedState, StateStore,
 };
@@ -130,7 +131,7 @@ pub fn history_contract(history: &dyn History) {
     }
 }
 
-/// A persisted state with a running Deep session and a pending end request.
+/// A persisted state with a running Deep session, a pending end request and a queued config edit.
 fn running_state() -> PersistedState {
     let mut session = SessionState::default();
     let spec = SessionSpec {
@@ -149,5 +150,19 @@ fn running_state() -> PersistedState {
         requested.is_ok(),
         "contract fixture failed to request an end"
     );
-    PersistedState { session }
+    let mut configs = ConfigState::default();
+    let coding = BlockConfig::new("coding", Mode::Blocklist);
+    configs.sync(vec![coding], &[], SANE_EPOCH, Duration::ZERO);
+    configs.sync(
+        Vec::new(),
+        &["coding"],
+        SANE_EPOCH,
+        ConfigState::DEFAULT_COOLING_OFF,
+    );
+    assert_eq!(
+        configs.pending().len(),
+        1,
+        "contract fixture failed to queue a change"
+    );
+    PersistedState { session, configs }
 }
