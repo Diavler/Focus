@@ -20,7 +20,7 @@ In `focus-core`: `BlockConfig`, `SharedList`, `Rule`, `RuleAction` (Ask, Delay, 
 
 ### 3. IPC and daemon
 `ipc-proto`: versioned, serde-tagged messages (`StartSession`, `EndSession`, `Status`, `ListConfigs`, extension `Heartbeat`, `RulesFor(url)`). `focus-daemon`: composition root, single instance per user, serves IPC over `interprocess` local sockets, resumes a running session after restart.
-**Done when:** an integration test starts the daemon in-process, starts a session over IPC, restarts the daemon and sees the session still running.
+**Done when:** an integration test starts the daemon in-process, starts a session over IPC, restarts the daemon and sees the session still running, and `focus-ui` no longer runs sessions in-process (retire the demo from ADR 0002).
 
 ### 4. Native messaging host and Chromium extension
 `focus-nmh`: stdin/stdout length-prefixed JSON ↔ daemon IPC. Per-user host registration (HKCU on Windows, `~/.config/<browser>/NativeMessagingHosts` on Linux) via a `focus-nmh --register` command. Extension (TypeScript, MV3, `webextension-polyfill`, Chromium-only code in `src/platform/`): heartbeat every few seconds; `declarativeNetRequest` rules for Block; interstitial page for Ask and Delay; content scripts that hide feeds on Reddit and YouTube; reports whether it's allowed in incognito.
