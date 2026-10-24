@@ -37,6 +37,7 @@ import {
   actionOf,
   frictionFromStatus,
   isStopped,
+  parkRefusal,
   sessionFromStatus,
   unlockRefusal,
   type Friction,
@@ -276,6 +277,36 @@ async function grantAndGo(tabId: number, url: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Later: parks `url` (with `title`, if known) in Focus's parking lot, which sends it to the
+ * Todoist inbox when it can, then closes the tab. Returns why it failed, or null.
+ */
+async function later(tabId: number, url: string, title: string): Promise<string | null> {
+  if (siteOf(url) === null) return "Only web pages can be saved for later.";
+  let response;
+  try {
+    response = await client.request({ type: "park", text: title, url });
+  } catch {
+    return "Saving for later needs the Focus app running.";
+  }
+  const refusal = parkRefusal(response);
+  if (refusal === null) await browser.tabs.remove(tabId).catch(() => undefined);
+  return refusal;
+}
+
+/** Shows on the toolbar button why Later failed, for a few seconds. */
+async function flagLaterFailure(tabId: number, why: string): Promise<void> {
+  await browser.action.setBadgeText({ tabId, text: "!" });
+  await browser.action.setTitle({ tabId, title: why });
+  setTimeout(() => {
+    void browser.action.setBadgeText({ tabId, text: "" }).catch(() => undefined);
+    void browser.action.setTitle({ tabId, title: LATER_TITLE }).catch(() => undefined);
+  }, 6000);
+}
+
+/** The toolbar button's tooltip. */
+const LATER_TITLE = "Later: save this page to Focus's parking lot and close it";
+
 /** Drift tracking for the running session (fresh when the session changed). */
 async function driftState(session: RunningSession): Promise<DriftState> {
   const { drift } = (await browser.storage.session.get("drift")) as { drift?: DriftState };
@@ -349,7 +380,8 @@ type Message =
   | { kind: "tabs" }
   | { kind: "close-tab"; id: number }
   | { kind: "tab-cap" }
-  | { kind: "tab-continue"; url: string };
+  | { kind: "tab-continue"; url: string }
+  | { kind: "later"; url: string };
 
 browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.MessageSender) => {
   const request = message as Message;
@@ -379,6 +411,10 @@ browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.Message
         () => true,
         () => false,
       );
+    case "later":
+      return tabId === undefined
+        ? Promise.resolve("No tab to close.")
+        : later(tabId, request.url, "").catch(() => "Focus couldn't save this for later.");
     case "tab-cap":
       return knownFriction().then(({ friction }) => friction.tab_cap);
     case "tab-continue":
@@ -418,6 +454,12 @@ browser.tabs.onRemoved.addListener((tabId) => {
 });
 
 browser.tabs.onCreated.addListener((tab) => void capTab(tab));
+
+browser.action.onClicked.addListener(async (tab) => {
+  if (tab.id === undefined) return;
+  const why = await later(tab.id, tab.url ?? "", tab.title ?? "").catch(() => "Focus couldn't save this for later.");
+  if (why !== null) await flagLaterFailure(tab.id, why);
+});
 
 browser.alarms.onAlarm.addListener(({ name }) => {
   if (name.startsWith("grant:")) void endGrant(Number(name.slice("grant:".length)));

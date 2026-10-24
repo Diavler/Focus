@@ -88,17 +88,18 @@ pub fn decode<T: DeserializeOwned>(line: &str) -> Result<T, DecodeError> {
 mod tests {
     use std::time::Duration;
 
-    use focus_core::ports::SecretKey;
+    use focus_core::ports::{SecretKey, Silencing};
     use focus_core::{
         AutoStartRule, BlockConfig, CalendarEvent, ConfigEntry, EditableSettings, EndEarlyResponse,
-        Friction, Mode, PlanSource, PlannedStart, RuleAction, RulePatterns, SessionError,
-        SessionSpec, SessionState, StopError, Strictness, Task, Timestamp, UnlockError, Verdict,
+        Friction, Hotkey, Mode, ParkError, ParkingLot, PlanSource, PlannedStart, RuleAction,
+        RulePatterns, SessionError, SessionSpec, SessionState, StopError, Strictness, Task,
+        Timestamp, UnlockError, Verdict,
     };
 
     use super::*;
     use crate::{
-        BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
-        SourceState, SourceStatus, StatusReport,
+        BrowserStatus, DaemonError, ParkingStatus, PendingSummary, PlanStatus, PlanView, Request,
+        Response, SourceState, SourceStatus, StatusReport,
     };
 
     fn round_trip<T>(message: T)
@@ -136,6 +137,7 @@ mod tests {
                 tab_cap: 6,
                 ..Friction::default()
             },
+            parking_hotkey: Hotkey::Off,
             revision: "abc".into(),
         }
     }
@@ -189,6 +191,14 @@ mod tests {
             Request::DelayVisit {
                 url: "https://news.ycombinator.com/".into(),
             },
+            Request::Park {
+                text: "Serde flatten".into(),
+                url: Some("https://serde.rs/attr-flatten.html".into()),
+            },
+            Request::ParkingLot,
+            Request::Unpark { id: 3 },
+            Request::ClearSentParked,
+            Request::OpenNotificationSettings,
         ] {
             round_trip(request);
         }
@@ -227,6 +237,13 @@ mod tests {
                 friction: Friction::default(),
                 friction_loosen_after: Some(Timestamp::from_millis(88)),
                 unlocks_left: 2,
+                parking_lot: ParkingStatus {
+                    total: 3,
+                    waiting: 1,
+                    problem: Some("offline".into()),
+                },
+                notifications: Some(Silencing::AskUser),
+                parking_hotkey: Hotkey::CtrlAltP,
                 plan: PlanStatus {
                     calendar: SourceStatus {
                         state: SourceState::Failing {
@@ -291,6 +308,19 @@ mod tests {
                 until: Timestamp::from_millis(600_000),
             },
             Response::Delay { seconds: 20 },
+            Response::ParkingLot {
+                items: {
+                    let mut lot = ParkingLot::default();
+                    lot.park("a thought", None, Timestamp::from_millis(1))
+                        .unwrap();
+                    lot.items().to_vec()
+                },
+            },
+            Response::Error {
+                error: DaemonError::Park {
+                    error: ParkError::Full { max: 500 },
+                },
+            },
             Response::Error {
                 error: DaemonError::Unlock {
                     error: UnlockError::BudgetSpent {

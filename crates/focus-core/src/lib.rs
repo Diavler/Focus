@@ -7,9 +7,11 @@ mod delay;
 mod editable;
 mod enforcement;
 mod friction;
+mod hotkey;
 mod kill_switch;
 mod login;
 mod matcher;
+mod parking;
 mod pattern;
 mod plan;
 pub mod ports;
@@ -35,9 +37,11 @@ pub use enforcement::{
     select_apps,
 };
 pub use friction::{Friction, FrictionSetting, PendingFriction};
+pub use hotkey::Hotkey;
 pub use kill_switch::{KillSwitch, StopError, StopPolicy};
 pub use login::{LoginSetting, Settings};
 pub use matcher::evaluate;
+pub use parking::{MAX_PARKED, MAX_PARKED_TEXT, ParkError, ParkedItem, ParkingLot};
 pub use pattern::{PatternError, UrlPattern};
 pub use plan::{CalendarEvent, Fetched, PlanCache, Task};
 pub use rule::{Rule, RuleAction, Verdict};

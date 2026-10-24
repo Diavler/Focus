@@ -5,8 +5,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use focus_core::{
-    ACTIONS, AutoStartRule, ConfigEntry, EditableSettings, Friction, ListEntry, Mode, RulePatterns,
-    Strictness, Verdict,
+    ACTIONS, AutoStartRule, ConfigEntry, EditableSettings, Friction, Hotkey, ListEntry, Mode,
+    RulePatterns, Strictness, Verdict,
 };
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -56,6 +56,7 @@ pub fn editable(text: &str) -> Result<EditableSettings, SettingsError> {
             .collect(),
         auto_start: file.auto_start.iter().map(rule_from_table).collect(),
         friction: file.friction.friction(),
+        parking_hotkey: file.parking_hotkey,
         revision: revision(text),
     })
 }
@@ -106,6 +107,11 @@ pub fn with_settings(text: &str, settings: &EditableSettings) -> Result<String, 
     }
     drop_if_empty(&mut document, "configs");
 
+    let written = document.get("parking_hotkey").and_then(Item::as_str);
+    let wanted = settings.parking_hotkey;
+    if written != Some(wanted.key()) && (written.is_some() || wanted != Hotkey::default()) {
+        document.insert("parking_hotkey", value(wanted.key()));
+    }
     set_friction(&mut document, settings.friction);
 
     document.remove("auto_start");
@@ -422,6 +428,7 @@ allow = ["docs.google.com"]
             }],
             auto_start: Vec::new(),
             friction: Friction::default(),
+            parking_hotkey: Hotkey::default(),
             revision: String::new(),
         };
         let written = with_settings("", &settings).unwrap();
@@ -436,7 +443,27 @@ allow = ["docs.google.com"]
         );
         assert!(!written.contains("[lists]"));
         assert!(!written.contains("[friction]"), "defaults aren't written");
+        assert!(
+            !written.contains("parking_hotkey"),
+            "the default isn't written"
+        );
         assert_eq!(editable(&written).unwrap().configs, settings.configs);
+    }
+
+    #[test]
+    fn the_parking_hotkey_round_trips() {
+        let text = "parking_hotkey = \"ctrl+alt+p\"  # Space is taken
+";
+        let mut settings = editable(text).unwrap();
+        assert_eq!(settings.parking_hotkey, Hotkey::CtrlAltP);
+        assert_eq!(with_settings(text, &settings).unwrap(), text, "unchanged");
+        settings.parking_hotkey = Hotkey::Off;
+        let written = with_settings(text, &settings).unwrap();
+        assert!(written.contains("parking_hotkey = \"off\""), "{written}");
+        assert_eq!(
+            parse_settings(&written).unwrap().parking_hotkey,
+            Hotkey::Off
+        );
     }
 
     #[test]

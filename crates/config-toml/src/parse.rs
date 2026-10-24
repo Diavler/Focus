@@ -88,6 +88,7 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
             start_at_login: file.start_at_login,
             auto_start,
             friction,
+            parking_hotkey: file.parking_hotkey,
         })
     } else {
         Err(SettingsError::Invalid { problems })
@@ -176,7 +177,7 @@ fn check_name(table: &'static str, name: &str, problems: &mut Vec<Problem>) {
 
 #[cfg(test)]
 mod tests {
-    use focus_core::{PatternError, RuleAction};
+    use focus_core::{Hotkey, PatternError, RuleAction};
 
     use super::*;
 
@@ -264,6 +265,27 @@ mod tests {
                 Verdict::Restrict(RuleAction::Block),
             ]
         );
+    }
+
+    #[test]
+    fn the_parking_hotkey_is_one_of_the_choices() {
+        assert_eq!(
+            parse_settings("").unwrap().parking_hotkey,
+            Hotkey::CtrlAltSpace
+        );
+        let off = parse_settings(
+            "parking_hotkey = \"off\"
+",
+        )
+        .unwrap();
+        assert_eq!(off.parking_hotkey, Hotkey::Off);
+        assert!(matches!(
+            parse_settings(
+                "parking_hotkey = \"ctrl+q\"
+"
+            ),
+            Err(SettingsError::Syntax { .. })
+        ));
     }
 
     #[test]

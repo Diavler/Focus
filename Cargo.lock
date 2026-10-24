@@ -780,6 +780,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "focus-hotkey"
+version = "0.1.0"
+dependencies = [
+ "focus-core",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "focus-install"
 version = "0.1.0"
 dependencies = [
@@ -810,6 +818,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "focus-core",
+ "focus-hotkey",
  "focus-install",
  "iced",
  "ipc-proto",

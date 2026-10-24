@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::auto_start::AutoStartRule;
 use crate::config::{BlockConfig, Mode, SharedList};
 use crate::friction::Friction;
+use crate::hotkey::Hotkey;
 use crate::pattern::UrlPattern;
 use crate::rule::{Rule, RuleAction, Verdict};
 
@@ -24,6 +25,9 @@ pub struct EditableSettings {
     /// The friction limits (unlocks, tab cap, drift prompt).
     #[serde(default)]
     pub friction: Friction,
+    /// The shortcut that opens the parking lot.
+    #[serde(default)]
+    pub parking_hotkey: Hotkey,
     /// Identifies the text these were read from, so saving can refuse to overwrite edits made to
     /// the file in the meantime.
     pub revision: String,
@@ -163,6 +167,7 @@ mod tests {
             }],
             auto_start: Vec::new(),
             friction: Friction::default(),
+            parking_hotkey: Hotkey::default(),
             revision: "1".into(),
         }
     }

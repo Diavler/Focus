@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 focus-core.workspace = true
 focus-install.workspace = true
+focus-hotkey.workspace = true
 ipc-proto.workspace = true
 ipc-transport.workspace = true
 # Shows calendar and task times in the computer's local time zone.

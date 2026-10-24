@@ -5,7 +5,7 @@
 
 use std::io;
 
-use focus_core::{BlockConfig, EditableSettings};
+use focus_core::{BlockConfig, EditableSettings, ParkedItem};
 use ipc_proto::{PlanView, Request, Response, StatusReport};
 use ipc_transport::{Client, ClientError, Endpoint};
 
@@ -65,6 +65,15 @@ pub async fn settings(endpoint: Endpoint) -> Result<EditableSettings, String> {
     let mut client = Client::connect(&endpoint).await.map_err(text)?;
     match client.request(&Request::Settings).await.map_err(text)? {
         Response::Settings(settings) => Ok(*settings),
+        other => Err(format!("unexpected answer: {other:?}")),
+    }
+}
+
+/// Everything parked.
+pub async fn parking_lot(endpoint: Endpoint) -> Result<Vec<ParkedItem>, String> {
+    let mut client = Client::connect(&endpoint).await.map_err(text)?;
+    match client.request(&Request::ParkingLot).await.map_err(text)? {
+        Response::ParkingLot { items } => Ok(items),
         other => Err(format!("unexpected answer: {other:?}")),
     }
 }

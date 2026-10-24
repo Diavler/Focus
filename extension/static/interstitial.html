@@ -29,7 +29,10 @@
       <section id="block" hidden>
         <h1>Blocked during your focus session</h1>
         <p>This site is on the block list for the session you're running.</p>
-        <div class="actions"><button class="primary" data-back>Go back</button></div>
+        <div class="actions">
+          <button class="primary" data-back>Go back</button>
+          <button data-later title="Save this page to Focus's parking lot (and Todoist) and close the tab">Later</button>
+        </div>
         <div id="unlock" hidden>
           <input id="unlock-reason" placeholder="Why do you need this page now?" hidden />
           <div class="actions"><button id="unlock-button">Unlock</button></div>
@@ -43,6 +46,7 @@
         <div class="actions">
           <button class="primary" id="drift-back">Go back</button>
           <button id="drift-continue">Keep going</button>
+          <button data-later title="Save this page to Focus's parking lot (and Todoist) and close the tab">Later</button>
         </div>
       </section>
       <section id="tabs" hidden>
@@ -60,6 +64,7 @@
         <div class="actions">
           <button class="primary" data-back>No, go back</button>
           <button data-continue>Yes, continue</button>
+          <button data-later title="Save this page to Focus's parking lot (and Todoist) and close the tab">Later</button>
         </div>
       </section>
       <section id="delay" hidden>
@@ -68,8 +73,10 @@
         <div class="actions">
           <button class="primary" data-back>Go back</button>
           <button disabled data-continue>Continue</button>
+          <button data-later title="Save this page to Focus's parking lot (and Todoist) and close the tab">Later</button>
         </div>
       </section>
+      <p id="later-note" class="note" hidden></p>
       <p id="refused" hidden>This page can't be opened during your session.</p>
       <p id="site"></p>
     </main>

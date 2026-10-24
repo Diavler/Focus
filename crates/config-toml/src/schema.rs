@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use focus_core::{Friction, Mode, RuleAction, Strictness, Verdict};
+use focus_core::{Friction, Hotkey, Mode, RuleAction, Strictness, Verdict};
 use serde::Deserialize;
 
 /// The whole settings file.
@@ -19,6 +19,8 @@ pub(crate) struct SettingsFile {
     pub(crate) auto_start: Vec<AutoStartTable>,
     #[serde(default)]
     pub(crate) friction: FrictionTable,
+    #[serde(default)]
+    pub(crate) parking_hotkey: Hotkey,
 }
 
 /// `[friction]`: unlocks, the tab cap and the drift prompt. Read as plain integers, so an

@@ -57,37 +57,47 @@ impl<H: HttpGet> TodoistTasks<H> {
         let body = self
             .http
             .get(FILTER_URL, &query, Some(token))
-            .map_err(|error| match error {
-                HttpError::Network(reason) => SourceError::Unavailable { reason },
-                HttpError::Status(code @ (401 | 403)) => SourceError::Rejected {
-                    reason: format!(
-                        "Todoist refused the token (HTTP {code}); copy it again from Todoist's \
-                         Settings → Integrations → Developer"
-                    ),
-                },
-                HttpError::Status(410) => SourceError::Rejected {
-                    reason: "Todoist retired the API this version uses; update Focus".into(),
-                },
-                HttpError::Status(code) => SourceError::Unavailable {
-                    reason: format!("Todoist answered HTTP {code}"),
-                },
-            })?;
+            .map_err(todoist_error)?;
         serde_json::from_str(&body).map_err(|error| SourceError::Rejected {
             reason: format!("couldn't read Todoist's answer: {error}"),
         })
     }
 }
 
+/// What a failed Todoist request means for the user.
+pub(crate) fn todoist_error(error: HttpError) -> SourceError {
+    match error {
+        HttpError::Network(reason) => SourceError::Unavailable { reason },
+        HttpError::Status(code @ (401 | 403)) => SourceError::Rejected {
+            reason: format!(
+                "Todoist refused the token (HTTP {code}); copy it again from Todoist's \
+                 Settings → Integrations → Developer"
+            ),
+        },
+        HttpError::Status(410) => SourceError::Rejected {
+            reason: "Todoist retired the API this version uses; update Focus".into(),
+        },
+        HttpError::Status(code) => SourceError::Unavailable {
+            reason: format!("Todoist answered HTTP {code}"),
+        },
+    }
+}
+
+/// The stored Todoist token, trimmed; [`SourceError::NotConfigured`] if there's none.
+pub(crate) fn todoist_token(secrets: &dyn Secrets) -> Result<String, SourceError> {
+    let token = secrets
+        .load(SecretKey::TodoistToken)
+        .map_err(|error| SourceError::Unavailable {
+            reason: error.to_string(),
+        })?
+        .ok_or(SourceError::NotConfigured)?;
+    Ok(token.trim().to_owned())
+}
+
 impl<H: HttpGet> TaskSource for TodoistTasks<H> {
     fn tasks(&self) -> Result<Vec<Task>, SourceError> {
-        let token = self
-            .secrets
-            .load(SecretKey::TodoistToken)
-            .map_err(|error| SourceError::Unavailable {
-                reason: error.to_string(),
-            })?
-            .ok_or(SourceError::NotConfigured)?;
-        let token = token.trim();
+        let token = todoist_token(self.secrets.as_ref())?;
+        let token = token.as_str();
         let mut tasks: Vec<Task> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut cursor: Option<String> = None;

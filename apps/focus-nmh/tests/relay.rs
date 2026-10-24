@@ -49,11 +49,15 @@ impl Daemon {
             processes: Arc::new(FakeEnforcer::default()),
             foreground: Arc::new(FakeForegroundApp::default()),
             notifier: Arc::new(FakeNotifier::default()),
+            notification_settings: Arc::new(
+                focus_core::testing::FakeNotificationSettings::default(),
+            ),
             browsers: Vec::new(),
             autostart: Arc::new(FakeAutostart::default()),
             ui: Arc::new(FakeUi::running()),
             calendar: Arc::new(FakeCalendar::default()),
             tasks: Arc::new(FakeTasks::default()),
+            inbox: Arc::new(focus_core::testing::FakeInbox::default()),
             secrets: Arc::new(MemorySecrets::default()),
             settings: Arc::new(TomlConfigSource::new(&settings)),
             windowed: Arc::new(focus_core::testing::FakeWindowedApps::with([
@@ -173,6 +177,13 @@ async fn relays_extension_requests_to_the_daemon() {
         .send(5, json!({"type": "delay_visit", "url": "https://x.com/"}))
         .await;
     assert_eq!(delay, json!({"type": "delay", "seconds": 0}));
+    let parked = browser
+        .send(
+            6,
+            json!({"type": "park", "text": "Serde docs", "url": "https://serde.rs/"}),
+        )
+        .await;
+    assert_eq!(parked, json!({"type": "done"}));
 
     browser.close().await;
     daemon.stop().await;
@@ -190,6 +201,18 @@ async fn refuses_requests_the_browser_may_not_send() {
     assert_eq!(refused["error"]["kind"], "bad_request");
     let refused = browser.send(2, json!({"type": "end_session"})).await;
     assert_eq!(refused["error"]["kind"], "bad_request");
+    for (id, request) in [
+        (20, json!({"type": "parking_lot"})),
+        (21, json!({"type": "unpark", "id": 0})),
+        (22, json!({"type": "clear_sent_parked"})),
+        (23, json!({"type": "open_notification_settings"})),
+    ] {
+        let refused = browser.send(id, request.clone()).await;
+        assert_eq!(
+            refused["error"]["kind"], "bad_request",
+            "a page can't read or change the parking lot: {request}"
+        );
+    }
     let refused = browser
         .send(
             3,

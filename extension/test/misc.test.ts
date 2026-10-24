@@ -5,7 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import { FEED_MATCHES, hideFeedCss } from "../src/feeds";
 import { BASE_DELAY, MAX_DELAY, delaySeconds } from "../src/friction";
-import { DEFAULT_FRICTION, frictionFromStatus, sessionFromStatus, unlockRefusal, type RunningSession } from "../src/protocol";
+import {
+  DEFAULT_FRICTION,
+  frictionFromStatus,
+  parkRefusal,
+  sessionFromStatus,
+  unlockRefusal,
+  type RunningSession,
+} from "../src/protocol";
 
 describe("delaySeconds", () => {
   it("grows with each visit up to the cap", () => {
@@ -71,6 +78,22 @@ describe("unlockRefusal", () => {
     expect(refused({ budget_spent: { next_at: null } })).toContain("budget is 0");
     expect(refused({ budget_spent: { next_at: 0 } })).toContain("comes back at");
     expect(unlockRefusal({ type: "error", error: { kind: "unreachable", message: "x" } })).toContain("running");
+  });
+});
+
+describe("parkRefusal", () => {
+  it("is null when parked, and explains each refusal", () => {
+    expect(parkRefusal({ type: "done" })).toBeNull();
+    expect(parkRefusal({ type: "error", error: { kind: "unreachable", message: "x" } })).toContain("running");
+    expect(parkRefusal({ type: "error", error: { kind: "park", error: { full: { max: 500 } } } })).toContain("full");
+    expect(parkRefusal({ type: "error", error: { kind: "park", error: "empty" } })).toContain("nothing");
+  });
+});
+
+describe("toolbar button", () => {
+  it("is declared, so Later works from any page", () => {
+    const manifest = JSON.parse(readFileSync("manifests/chromium.json", "utf8"));
+    expect(manifest.action.default_title).toContain("Later");
   });
 });
 

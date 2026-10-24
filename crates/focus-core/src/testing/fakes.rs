@@ -1,21 +1,24 @@
 //! In-memory fakes for every port. Interior mutability (`Mutex`) lets them take `&self` like the
 //! real adapters do.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::config::BlockConfig;
 use crate::config::Mode;
 use crate::editable::{ACTIONS, EditableSettings};
 use crate::enforcement::{same_app, select_apps};
+use crate::hotkey::Hotkey;
 use crate::login::Settings;
+use crate::parking::ParkedItem;
 use crate::pattern::UrlPattern;
 use crate::plan::{CalendarEvent, Task};
 use crate::ports::{
     Autostart, AutostartError, CalendarSource, Clock, ConfigSource, ConfigSourceError,
-    EnforceError, Enforcer, ForegroundApp, History, HistoryError, HistoryEvent, Notifier,
-    NotifyError, PersistedState, ProcessList, SecretKey, Secrets, SecretsError, SettingsEditor,
-    SourceError, StateStore, StateStoreError, TaskSource, UiWatch, UiWatchError, WindowedApps,
+    EnforceError, Enforcer, ForegroundApp, GlobalHotkey, History, HistoryError, HistoryEvent,
+    HotkeyError, HotkeyGuard, NotificationSettings, Notifier, NotifyError, PersistedState,
+    ProcessList, SecretKey, Secrets, SecretsError, SettingsEditor, Silencing, SourceError,
+    StateStore, StateStoreError, TaskInbox, TaskSource, UiWatch, UiWatchError, WindowedApps,
 };
 use crate::rule::Verdict;
 use crate::time::Timestamp;
@@ -177,6 +180,7 @@ impl ConfigSource for FakeSettingsFile {
             start_at_login: settings.start_at_login,
             auto_start: settings.auto_start,
             friction: settings.friction,
+            parking_hotkey: settings.parking_hotkey,
         })
     }
 }
@@ -431,28 +435,160 @@ impl Secrets for MemorySecrets {
     }
 }
 
-/// A notifier that remembers whether it is silenced.
-#[derive(Debug, Default)]
+/// A notifier that remembers whether it is silenced. By default it silences by itself; one made
+/// with [`FakeNotifier::asking`] answers like Windows, where the user has to.
+#[derive(Debug)]
 pub struct FakeNotifier {
     silenced: Mutex<bool>,
+    answer: Silencing,
+}
+
+impl Default for FakeNotifier {
+    fn default() -> Self {
+        Self {
+            silenced: Mutex::new(false),
+            answer: Silencing::Silenced,
+        }
+    }
 }
 
 impl FakeNotifier {
-    /// Whether notifications are currently silenced.
+    /// A notifier that asks the user to silence notifications, like Windows.
+    pub fn asking() -> Self {
+        Self {
+            silenced: Mutex::new(false),
+            answer: Silencing::AskUser,
+        }
+    }
+
+    /// Whether `silence` was called more recently than `restore`.
     pub fn is_silenced(&self) -> bool {
         *lock(&self.silenced)
     }
 }
 
 impl Notifier for FakeNotifier {
-    fn silence(&self) -> Result<(), NotifyError> {
+    fn silence(&self) -> Result<Silencing, NotifyError> {
         *lock(&self.silenced) = true;
-        Ok(())
+        Ok(self.answer)
     }
 
     fn restore(&self) -> Result<(), NotifyError> {
         *lock(&self.silenced) = false;
         Ok(())
+    }
+}
+
+/// Notification settings that count how often they were opened.
+#[derive(Debug, Default)]
+pub struct FakeNotificationSettings {
+    opened: AtomicU32,
+}
+
+impl FakeNotificationSettings {
+    /// How often the settings were opened.
+    pub fn opened(&self) -> u32 {
+        self.opened.load(Ordering::SeqCst)
+    }
+}
+
+impl NotificationSettings for FakeNotificationSettings {
+    fn open(&self) -> Result<(), NotifyError> {
+        self.opened.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// A task inbox that keeps what it was sent, once per request id, or fails with a set error.
+#[derive(Debug, Default)]
+pub struct FakeInbox {
+    added: Mutex<Vec<ParkedItem>>,
+    failure: Mutex<Option<SourceError>>,
+}
+
+impl FakeInbox {
+    /// What reached the inbox, in order.
+    pub fn added(&self) -> Vec<ParkedItem> {
+        lock(&self.added).clone()
+    }
+
+    /// Makes every later `add` fail with `failure` (or work again with `None`).
+    pub fn fail_with(&self, failure: Option<SourceError>) {
+        *lock(&self.failure) = failure;
+    }
+}
+
+impl TaskInbox for FakeInbox {
+    fn add(&self, item: &ParkedItem) -> Result<(), SourceError> {
+        if let Some(failure) = lock(&self.failure).clone() {
+            return Err(failure);
+        }
+        let mut added = lock(&self.added);
+        if !added
+            .iter()
+            .any(|seen| seen.request_id() == item.request_id())
+        {
+            added.push(item.clone());
+        }
+        Ok(())
+    }
+}
+
+/// The callback a shortcut calls when pressed.
+type Pressed = Box<dyn Fn() + Send + Sync>;
+
+/// A shortcut registry for one shortcut at a time, pressed by hand with [`FakeHotkey::press`].
+#[derive(Default)]
+pub struct FakeHotkey {
+    held: Arc<Mutex<Option<(Hotkey, Pressed)>>>,
+}
+
+impl FakeHotkey {
+    /// The shortcut registered now, if any.
+    pub fn registered(&self) -> Option<Hotkey> {
+        lock(&self.held).as_ref().map(|(hotkey, _)| *hotkey)
+    }
+
+    /// Presses the registered shortcut; false if none is registered.
+    pub fn press(&self) -> bool {
+        match lock(&self.held).as_ref() {
+            Some((_, pressed)) => {
+                pressed();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl std::fmt::Debug for FakeHotkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeHotkey")
+            .field("registered", &self.registered())
+            .finish()
+    }
+}
+
+/// Unregisters the fake's shortcut when dropped.
+struct FakeRegistration(Arc<Mutex<Option<(Hotkey, Pressed)>>>);
+
+impl Drop for FakeRegistration {
+    fn drop(&mut self) {
+        *lock(&self.0) = None;
+    }
+}
+
+impl GlobalHotkey for FakeHotkey {
+    fn listen(&self, hotkey: Hotkey, pressed: Pressed) -> Result<HotkeyGuard, HotkeyError> {
+        if hotkey == Hotkey::Off {
+            return Ok(HotkeyGuard::none());
+        }
+        let mut held = lock(&self.held);
+        if held.is_some() {
+            return Err(HotkeyError::Taken { hotkey });
+        }
+        *held = Some((hotkey, pressed));
+        Ok(HotkeyGuard::new(FakeRegistration(Arc::clone(&self.held))))
     }
 }
 

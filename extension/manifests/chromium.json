@@ -7,6 +7,7 @@
   "minimum_chrome_version": "120",
   "incognito": "spanning",
   "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Later: save this page to Focus's parking lot and close it" },
   "permissions": [
     "nativeMessaging",
     "declarativeNetRequestWithHostAccess",

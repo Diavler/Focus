@@ -12,6 +12,7 @@ mod configs;
 mod daemon;
 mod friction;
 mod help;
+mod parking;
 mod plan_pages;
 mod rules;
 mod sessions;
@@ -22,7 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use focus_core::ports::SecretKey;
-use focus_core::{BlockConfig, EditableSettings, Strictness};
+use focus_core::{BlockConfig, EditableSettings, ParkedItem, Strictness};
 use focus_install::{InstanceLock, Paths};
 use iced::widget::{Column, column, container, row, scrollable, space, text};
 use iced::{Alignment, Element, Length, Subscription, Task};
@@ -131,6 +132,16 @@ pub(crate) struct App {
     apps: Vec<String>,
     /// The reason typed to stop Focus during a Locked session.
     stop_reason: String,
+    /// Everything parked, from the daemon.
+    parked: Vec<ParkedItem>,
+    /// A parking-lot request is on its way.
+    parked_pending: bool,
+    /// A thought being typed into the parking lot.
+    park_input: String,
+    /// The window came up for the parking-lot shortcut, so it goes back down after parking.
+    capturing: bool,
+    /// Why the parking-lot shortcut couldn't be registered, if it couldn't.
+    hotkey_problem: Option<String>,
     error: Option<String>,
     polls: u32,
     /// A status request is on its way, so polls don't pile up if the daemon is slow.
@@ -153,6 +164,7 @@ enum Saving {
     Secret(SecretKey),
     Settings,
     Stop,
+    Park,
 }
 
 /// User actions, timer ticks and daemon answers.
@@ -189,6 +201,16 @@ pub(crate) enum Message {
     CancelStop,
     /// The system switched between light and dark mode (or said which at startup).
     ThemeMode(iced::theme::Mode),
+    ParkInput(String),
+    Park,
+    Unpark(u64),
+    ClearSentParked,
+    ParkedLoaded(Result<Vec<ParkedItem>, String>),
+    /// The parking-lot shortcut was pressed somewhere.
+    HotkeyPressed,
+    /// The shortcut was registered (`None`) or why it couldn't be.
+    HotkeyRegistered(Option<String>),
+    OpenNotificationSettings,
 }
 
 impl App {
@@ -217,6 +239,11 @@ impl App {
             rule_configs: Vec::new(),
             apps: Vec::new(),
             stop_reason: String::new(),
+            parked: Vec::new(),
+            parked_pending: false,
+            park_input: String::new(),
+            capturing: false,
+            hotkey_problem: None,
             error: None,
             polls: 0,
             status_pending: false,
@@ -245,9 +272,16 @@ impl App {
                 self.status_pending = false;
                 match *result {
                     Ok(status) => {
+                        let lot = &status.parking_lot;
+                        let unsent = self.parked.iter().filter(|i| i.sent_at.is_none()).count();
+                        let parked_changed =
+                            lot.total != self.parked.len() || lot.waiting != unsent;
                         self.status = Some(status);
                         self.unreachable = None;
                         self.failed_polls = 0;
+                        if parked_changed && !self.parked_pending {
+                            return self.fetch_parked();
+                        }
                     }
                     Err(problem) => {
                         self.unreachable = Some(problem.message);
@@ -360,6 +394,36 @@ impl App {
                 return self.act(Request::CancelStop);
             }
             Message::ThemeMode(mode) => self.theme = style::theme(mode),
+            Message::ParkInput(text) => self.park_input = text,
+            Message::Park => {
+                let text = self.park_input.clone();
+                return self.act_saving(Saving::Park, Request::Park { text, url: None });
+            }
+            Message::Unpark(id) => return self.act(Request::Unpark { id }),
+            Message::ClearSentParked => return self.act(Request::ClearSentParked),
+            Message::ParkedLoaded(result) => {
+                self.parked_pending = false;
+                if let Ok(items) = result {
+                    self.parked = items;
+                }
+            }
+            Message::HotkeyPressed => {
+                self.page = Page::Sessions;
+                self.capturing = true;
+                return Task::batch([
+                    iced::window::oldest().and_then(|id| {
+                        Task::batch([
+                            iced::window::minimize(id, false),
+                            iced::window::gain_focus(id),
+                        ])
+                    }),
+                    iced::widget::operation::focus(parking::INPUT),
+                ]);
+            }
+            Message::HotkeyRegistered(problem) => self.hotkey_problem = problem,
+            Message::OpenNotificationSettings => {
+                return self.act(Request::OpenNotificationSettings);
+            }
         }
         Task::none()
     }
@@ -400,6 +464,17 @@ impl App {
                 return iced::exit();
             }
             (Some(Saving::Secret(key)), Ok(())) => self.secret_input(key).clear(),
+            (Some(Saving::Park), Ok(())) => {
+                self.park_input.clear();
+                let mut tasks = vec![self.fetch_parked(), self.fetch_status()];
+                if std::mem::take(&mut self.capturing) {
+                    // Back to what the shortcut interrupted.
+                    tasks.push(
+                        iced::window::oldest().and_then(|id| iced::window::minimize(id, true)),
+                    );
+                }
+                return Task::batch(tasks);
+            }
             (Some(Saving::Settings), Ok(())) => {
                 return Task::batch([
                     self.fetch_settings(),
@@ -470,6 +545,7 @@ impl App {
             }
             settings::Msg::StartAtLogin(on) => draft.edited.start_at_login = on,
             settings::Msg::Friction(edit) => friction::apply(&mut draft.edited.friction, edit),
+            settings::Msg::ParkingHotkey(hotkey) => draft.edited.parking_hotkey = hotkey,
             settings::Msg::Save => {
                 let settings = draft.to_save();
                 draft.sent = Some(settings.clone());
@@ -560,6 +636,14 @@ impl App {
         })
     }
 
+    fn fetch_parked(&mut self) -> Task<Message> {
+        self.parked_pending = true;
+        Task::perform(
+            daemon::parking_lot(self.endpoint.clone()),
+            Message::ParkedLoaded,
+        )
+    }
+
     fn fetch_apps(&self) -> Task<Message> {
         Task::perform(daemon::apps(self.endpoint.clone()), Message::AppsLoaded)
     }
@@ -585,10 +669,15 @@ impl App {
 
     /// Polls the daemon once a second, and follows the system's light or dark mode.
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
+        let mut subscriptions = vec![
             iced::time::every(POLL).map(|_| Message::Poll),
             iced::system::theme_changes().map(Message::ThemeMode),
-        ])
+        ];
+        // Registered once the daemon has said which shortcut the settings ask for.
+        if let Some(status) = &self.status {
+            subscriptions.push(parking::hotkey_subscription(status.parking_hotkey));
+        }
+        Subscription::batch(subscriptions)
     }
 
     /// Focus's colours (kept, since building a theme derives a whole palette).

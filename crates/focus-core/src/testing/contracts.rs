@@ -8,11 +8,14 @@ use crate::auto_start::{AutoStartLog, AutoStartRule, PlanSource, PlannedStart};
 use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
 use crate::editable::{ConfigEntry, EditableSettings, ListEntry, RulePatterns};
+use crate::hotkey::Hotkey;
+use crate::parking::ParkingLot;
 use crate::plan::{CalendarEvent, Fetched, PlanCache, Task};
 use crate::ports::{
     Autostart, CalendarSource, Clock, ConfigSource, ConfigSourceError, Enforcer, ForegroundApp,
-    History, HistoryEvent, Notifier, PersistedState, ProcessList, SecretKey, Secrets,
-    SettingsEditor, StateStore, TaskSource, UiWatch, WindowedApps,
+    GlobalHotkey, History, HistoryEvent, HotkeyError, NotificationSettings, Notifier,
+    PersistedState, ProcessList, SecretKey, Secrets, SettingsEditor, StateStore, TaskInbox,
+    TaskSource, UiWatch, WindowedApps,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -159,10 +162,63 @@ pub fn ui_watch_contract(ui: &dyn UiWatch) {
 /// Silencing and restoring both succeed, including repeated calls in either order.
 pub fn notifier_contract(notifier: &dyn Notifier) {
     assert_eq!(notifier.restore(), Ok(()), "restore before silence failed");
-    assert_eq!(notifier.silence(), Ok(()));
-    assert_eq!(notifier.silence(), Ok(()), "silencing twice failed");
+    let first = notifier.silence();
+    assert!(first.is_ok(), "silencing failed: {first:?}");
+    assert_eq!(
+        notifier.silence(),
+        first,
+        "silencing twice answered differently"
+    );
     assert_eq!(notifier.restore(), Ok(()));
     assert_eq!(notifier.restore(), Ok(()), "restoring twice failed");
+}
+
+/// Opening the notification settings works, and works again.
+pub fn notification_settings_contract(settings: &dyn NotificationSettings) {
+    assert_eq!(settings.open(), Ok(()), "opening failed");
+    assert_eq!(settings.open(), Ok(()), "opening again failed");
+}
+
+/// Sending an item answers the same way twice (a repeat after a lost answer must be harmless).
+///
+/// Run it against recorded fixtures or a fake, not the live service.
+pub fn task_inbox_contract(inbox: &dyn TaskInbox) {
+    let mut lot = ParkingLot::default();
+    if let Err(error) = lot.park(
+        "focus contract item",
+        Some("https://example.org/"),
+        SANE_EPOCH,
+    ) {
+        panic!("parking the contract item failed: {error}");
+    }
+    let item = &lot.items()[0];
+    let first = inbox.add(item);
+    assert_eq!(inbox.add(item), first, "sending again answered differently");
+}
+
+/// Off registers nothing; a shortcut held can't be taken again until its guard is dropped.
+/// `free` should be a shortcut nothing else on the machine uses; if it's taken (or shortcuts
+/// aren't supported here), the rest is skipped.
+pub fn global_hotkey_contract(hotkey: &dyn GlobalHotkey, free: Hotkey) {
+    assert!(
+        hotkey.listen(Hotkey::Off, Box::new(|| {})).is_ok(),
+        "listening to Off failed"
+    );
+    let guard = match hotkey.listen(free, Box::new(|| {})) {
+        Ok(guard) => guard,
+        Err(HotkeyError::Taken { .. } | HotkeyError::Unsupported { .. }) => return,
+        Err(error) => panic!("registering {free} failed: {error}"),
+    };
+    assert_eq!(
+        hotkey.listen(free, Box::new(|| {})).map(|_| ()),
+        Err(HotkeyError::Taken { hotkey: free }),
+        "a held shortcut was registered twice"
+    );
+    drop(guard);
+    assert!(
+        hotkey.listen(free, Box::new(|| {})).is_ok(),
+        "the shortcut stayed taken after its guard was dropped"
+    );
 }
 
 /// Two reads of `from..to` agree, and the events overlap the window, are sorted by start, end no
@@ -521,6 +577,16 @@ fn running_state() -> PersistedState {
     }
     let mut delays = crate::DelayLadder::default();
     delays.visit(SANE_EPOCH, "https://news.ycombinator.com/");
+    let mut parking_lot = ParkingLot::default();
+    match parking_lot.park("read later", Some("https://docs.rs/serde"), SANE_EPOCH) {
+        Ok(id) => {
+            parking_lot.mark_sent(id, SANE_EPOCH);
+        }
+        Err(error) => panic!("parking the sample item failed: {error}"),
+    }
+    if let Err(error) = parking_lot.park("a stray thought", None, SANE_EPOCH) {
+        panic!("parking the sample thought failed: {error}");
+    }
     PersistedState {
         session,
         configs,
@@ -530,5 +596,6 @@ fn running_state() -> PersistedState {
         friction,
         unlocks,
         delays,
+        parking_lot,
     }
 }

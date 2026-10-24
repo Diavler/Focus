@@ -72,11 +72,15 @@ impl Home {
             processes: Arc::new(FakeEnforcer::default()),
             foreground: Arc::new(FakeForegroundApp::default()),
             notifier: Arc::new(FakeNotifier::default()),
+            notification_settings: Arc::new(
+                focus_core::testing::FakeNotificationSettings::default(),
+            ),
             browsers: Vec::new(),
             autostart: Arc::new(FakeAutostart::default()),
             ui: Arc::new(FakeUi::running()),
             calendar: self.calendar.clone(),
             tasks: Arc::new(FakeTasks::default()),
+            inbox: Arc::new(focus_core::testing::FakeInbox::default()),
             secrets: Arc::new(MemorySecrets::default()),
             settings: Arc::new(TomlConfigSource::new(&self.settings)),
             windowed: Arc::new(focus_core::testing::FakeWindowedApps::with([

@@ -7,10 +7,10 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use focus_core::Timestamp;
-use focus_core::ports::{CalendarSource, SecretKey, Secrets, SourceError, TaskSource};
+use focus_core::ports::{CalendarSource, SecretKey, Secrets, SourceError, TaskInbox, TaskSource};
 use focus_core::testing::{MemorySecrets, calendar_source_contract};
-use integrations::{IcalCalendar, TodoistTasks};
+use focus_core::{ParkingLot, Timestamp};
+use integrations::{IcalCalendar, TodoistInbox, TodoistTasks};
 
 /// Google's public US holidays calendar: same server and format as a private address.
 const GOOGLE_HOLIDAYS: &str = "https://calendar.google.com/calendar/ical/en.usa%23holiday%40group.v.calendar.google.com/public/basic.ics";
@@ -55,6 +55,26 @@ fn todoist_refuses_a_made_up_token() {
         .unwrap();
     let result = TodoistTasks::new(secrets).tasks();
     // 401/403 (not 404 or 410) shows the v1 endpoint exists and reads the token.
+    assert!(
+        matches!(&result, Err(SourceError::Rejected { reason }) if reason.contains("refused the token")),
+        "{result:?}"
+    );
+}
+
+#[test]
+#[ignore = "uses the network"]
+fn todoist_inbox_refuses_a_made_up_token() {
+    let secrets = Arc::new(MemorySecrets::default());
+    secrets
+        .store(
+            SecretKey::TodoistToken,
+            Some("0000000000000000000000000000000000000000"),
+        )
+        .unwrap();
+    let mut lot = ParkingLot::default();
+    lot.park("focus live test", None, now()).unwrap();
+    let result = TodoistInbox::new(secrets).add(&lot.items()[0]);
+    // 401/403 (not 404 or 410) shows the v1 endpoint exists and takes the token.
     assert!(
         matches!(&result, Err(SourceError::Rejected { reason }) if reason.contains("refused the token")),
         "{result:?}"
