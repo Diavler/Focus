@@ -75,6 +75,14 @@ pub enum Problem {
         /// The longest allowed value.
         max: u64,
     },
+    /// A friction limit out of range.
+    #[error("friction.{key}: use {accepts}")]
+    Friction {
+        /// The key, e.g. `tab_cap`.
+        key: &'static str,
+        /// The values it accepts.
+        accepts: String,
+    },
     /// A URL pattern that doesn't parse.
     #[error("{location}: \"{pattern}\": {error}")]
     BadPattern {

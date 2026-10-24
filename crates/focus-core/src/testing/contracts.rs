@@ -285,6 +285,15 @@ pub fn settings_editor_contract(editor: &dyn SettingsEditor, source: &dyn Config
         ),
         "a rule for a missing config was accepted"
     );
+    let mut invalid = original.clone();
+    invalid.friction.tab_cap = 1;
+    assert!(
+        matches!(
+            editor.save_editable(&invalid),
+            Err(ConfigSourceError::Invalid { .. })
+        ),
+        "an out-of-range tab cap was accepted"
+    );
     assert_eq!(
         editor.load_editable(),
         Ok(original.clone()),
@@ -317,6 +326,11 @@ pub fn settings_editor_contract(editor: &dyn SettingsEditor, source: &dyn Config
         task_duration: Duration::from_secs(25 * 60),
     };
     edited.auto_start.push(rule.clone());
+    edited.friction = crate::Friction {
+        unlocks_per_day: 1,
+        tab_cap: 7,
+        ..edited.friction
+    };
     assert_eq!(editor.save_editable(&edited), Ok(()), "a valid save failed");
     let loaded = source
         .load()
@@ -333,6 +347,7 @@ pub fn settings_editor_contract(editor: &dyn SettingsEditor, source: &dyn Config
     );
     assert_eq!(config.apps, ["contract-app"]);
     assert_eq!(loaded.auto_start.last(), Some(&rule));
+    assert_eq!(loaded.friction, edited.friction, "friction didn't save");
     let reread = editor
         .load_editable()
         .unwrap_or_else(|error| panic!("reading after a save: {error}"));
@@ -485,11 +500,35 @@ fn running_state() -> PersistedState {
             }],
         }),
     };
+    let mut friction = crate::FrictionSetting::default();
+    friction.sync(
+        crate::Friction {
+            unlocks_per_day: 1,
+            tab_cap: 0,
+            ..crate::Friction::default()
+        },
+        SANE_EPOCH,
+        Duration::from_secs(3600),
+    );
+    let mut unlocks = crate::UnlockLedger::default();
+    if let Err(error) = unlocks.unlock(
+        crate::OverridePolicy::SpendUnlock,
+        "the docs are there",
+        SANE_EPOCH,
+        friction.in_effect(),
+    ) {
+        panic!("a fresh ledger refused an unlock: {error}");
+    }
+    let mut delays = crate::DelayLadder::default();
+    delays.visit(SANE_EPOCH, "https://news.ycombinator.com/");
     PersistedState {
         session,
         configs,
         start_at_login,
         plan,
         auto_started,
+        friction,
+        unlocks,
+        delays,
     }
 }

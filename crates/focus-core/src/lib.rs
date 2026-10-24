@@ -3,8 +3,10 @@
 mod auto_start;
 mod config;
 mod cooling;
+mod delay;
 mod editable;
 mod enforcement;
+mod friction;
 mod kill_switch;
 mod login;
 mod matcher;
@@ -15,6 +17,7 @@ mod rule;
 mod session;
 mod strictness;
 mod time;
+mod unlock;
 mod url;
 
 #[cfg(any(test, feature = "testing"))]
@@ -25,11 +28,13 @@ pub use auto_start::{
 };
 pub use config::{BlockConfig, Mode, SharedList};
 pub use cooling::{ConfigState, PendingChange, SyncReport};
+pub use delay::{DELAY_BASE, DELAY_MAX, DelayLadder, delay_for};
 pub use editable::{ACTIONS, ConfigEntry, EditableSettings, ListEntry, RulePatterns};
 pub use enforcement::{
     BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, app_key, apps_to_close, same_app,
     select_apps,
 };
+pub use friction::{Friction, FrictionSetting, PendingFriction};
 pub use kill_switch::{KillSwitch, StopError, StopPolicy};
 pub use login::{LoginSetting, Settings};
 pub use matcher::evaluate;
@@ -42,3 +47,4 @@ pub use session::{
 };
 pub use strictness::{EndEarlyPolicy, OverridePolicy, Strictness};
 pub use time::Timestamp;
+pub use unlock::{UNLOCK_WINDOW, UnlockError, UnlockLedger};

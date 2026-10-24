@@ -37,18 +37,33 @@ export interface RunningSession {
 /** The daemon's session state. */
 export type SessionState = "idle" | { running: RunningSession } | { ended: unknown };
 
+/** The friction limits in effect (crates/focus-core/src/friction.rs). 0 turns a cap off. */
+export interface Friction {
+  unlocks_per_day: number;
+  unlock_minutes: number;
+  tab_cap: number;
+  drift_hops: number;
+}
+
+/** The defaults, used until the daemon has answered once. */
+export const DEFAULT_FRICTION: Friction = { unlocks_per_day: 3, unlock_minutes: 10, tab_cap: 10, drift_hops: 4 };
+
 /** Requests the extension may send (focus-nmh refuses the rest). */
 export type Request =
   | { type: "status" }
   | { type: "heartbeat"; browser: string; incognito_allowed: boolean }
-  | { type: "rules_for"; url: string; config: string | null };
+  | { type: "rules_for"; url: string; config: string | null }
+  | { type: "unlock"; url: string; reason: string }
+  | { type: "delay_visit"; url: string };
 
 /** The daemon's answers. */
 export type Response =
-  | { type: "status"; now: number; session: SessionState }
+  | { type: "status"; now: number; session: SessionState; friction?: Friction; unlocks_left?: number }
   | { type: "verdict"; verdict: Verdict; config: string | null }
+  | { type: "unlocked"; until: number }
+  | { type: "delay"; seconds: number }
   | { type: "done" }
-  | { type: "error"; error: { kind: string; message?: string } };
+  | { type: "error"; error: { kind: string; message?: string; error?: unknown } };
 
 /** The envelope sent to focus-nmh. */
 export interface Outgoing {
@@ -78,6 +93,31 @@ export function sessionFromStatus(response: Response): RunningSession | null | u
   if (response.type === "status") return runningSession(response.session);
   if (isStopped(response)) return null;
   return undefined;
+}
+
+/** The friction limits and unlocks left in a status answer; undefined for any other answer. */
+export function frictionFromStatus(response: Response): { friction: Friction; unlocksLeft: number } | undefined {
+  if (response.type !== "status") return undefined;
+  const friction = response.friction ?? DEFAULT_FRICTION;
+  return { friction, unlocksLeft: response.unlocks_left ?? friction.unlocks_per_day };
+}
+
+/** Why an unlock was refused, in words for the block page. */
+export function unlockRefusal(response: Response): string {
+  if (response.type !== "error") return "Focus couldn't unlock this page.";
+  if (response.error.kind === "unreachable") return "Unlocking needs the Focus app running.";
+  const reason = response.error.error;
+  if (reason === "forbidden") return "Locked sessions can't be unlocked.";
+  if (reason === "reason_required") return "Type a reason first.";
+  if (reason === "not_blocked") return "This page isn't blocked any more; try reloading.";
+  if (reason === "no_session") return "No session is running.";
+  if (typeof reason === "object" && reason !== null && "budget_spent" in reason) {
+    const nextAt = (reason as { budget_spent: { next_at: number | null } }).budget_spent.next_at;
+    return nextAt === null
+      ? "No unlocks left: your budget is 0."
+      : `No unlocks left. The next one comes back at ${new Date(nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
+  }
+  return response.error.message ?? "Focus couldn't unlock this page.";
 }
 
 /** Whether the answer says Focus was stopped with its kill switch (no session, no daemon). */

@@ -11,8 +11,8 @@ use focus_core::ports::{
 };
 use focus_core::{
     AutoStartRule, BrowserPolicy, BrowserWatch, EditableSettings, Heartbeat, KillSwitch,
-    KnownBrowser, PlannedStart, SessionError, SessionSpec, SessionState, StopPolicy, Strictness,
-    Timestamp, Verdict, apps_to_close, planned_starts, scheduled_configs,
+    KnownBrowser, PlannedStart, RuleAction, SessionError, SessionSpec, SessionState, StopPolicy,
+    Strictness, Timestamp, UnlockError, Verdict, apps_to_close, planned_starts, scheduled_configs,
 };
 use ipc_proto::{
     BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
@@ -193,6 +193,12 @@ impl Service {
                 Ok(Response::Done)
             }
             Request::RulesFor { url, config } => self.rules_for(&url, config.as_deref()),
+            Request::Unlock { url, reason } => self
+                .unlock(&url, &reason, now)
+                .map(|until| Response::Unlocked { until }),
+            Request::DelayVisit { url } => self.delay_visit(&url).map(|wait| Response::Delay {
+                seconds: wait.as_secs(),
+            }),
             Request::SetSecret { key, value } => self
                 .set_secret(key, value.as_deref())
                 .map(|()| Response::Done),
@@ -250,13 +256,19 @@ impl Service {
             .start_at_login
             .off_after()
             .is_some_and(|off_after| off_after <= now);
-        if !expired && !due && !login_due {
+        let friction_due = self
+            .state
+            .friction
+            .pending()
+            .is_some_and(|pending| pending.apply_after <= now);
+        if !expired && !due && !login_due && !friction_due {
             return;
         }
         let result = self.update(|state| {
             state.session.tick(now);
             state.configs.apply_due(now);
             state.start_at_login.apply_due(now);
+            state.friction.apply_due(now);
             Ok(())
         });
         if let Err(error) = result {
@@ -299,6 +311,7 @@ impl Service {
             state
                 .start_at_login
                 .sync(desired.start_at_login, now, cooling_off);
+            state.friction.sync(desired.friction, now, cooling_off);
             Ok(report)
         });
         match result {
@@ -528,6 +541,50 @@ impl Service {
         })
     }
 
+    /// Opens a blocked page for a while, under the running session's override policy (spending
+    /// from the budget in a Deep session). Returns when the unlock ends.
+    fn unlock(
+        &mut self,
+        url: &str,
+        reason: &str,
+        now: Timestamp,
+    ) -> Result<Timestamp, DaemonError> {
+        let running = self.state.session.running().ok_or(DaemonError::Unlock {
+            error: UnlockError::NoSession,
+        })?;
+        if running.spec().config.verdict(url) != Verdict::Restrict(RuleAction::Block) {
+            return Err(DaemonError::Unlock {
+                error: UnlockError::NotBlocked,
+            });
+        }
+        let policy = running.override_policy();
+        let friction = self.state.friction.in_effect();
+        let until = self.update(|state| {
+            state
+                .unlocks
+                .unlock(policy, reason, now, friction)
+                .map_err(|error| DaemonError::Unlock { error })
+        })?;
+        tracing::info!(
+            "unlocked a blocked page for {} min",
+            friction.unlock_minutes
+        );
+        Ok(until)
+    }
+
+    /// Counts a visit to a page behind a Delay rule and returns its wait. Pages that aren't
+    /// delayed (or no session) wait nothing and aren't counted or saved.
+    fn delay_visit(&mut self, url: &str) -> Result<Duration, DaemonError> {
+        let Some(running) = self.state.session.running() else {
+            return Ok(Duration::ZERO);
+        };
+        if running.spec().config.verdict(url) != Verdict::Restrict(RuleAction::Delay) {
+            return Ok(Duration::ZERO);
+        }
+        let started_at = running.started_at();
+        self.update(|state| Ok(state.delays.visit(started_at, url)))
+    }
+
     /// During a session, closes the config's blocked apps and any browser whose extension isn't
     /// checking in (after a grace period). Outside a session, does nothing.
     pub fn enforce(&mut self) {
@@ -597,6 +654,16 @@ impl Service {
             plan: self.plan_status(),
             stop_allowed_at: self.kill_switch.allowed_at(self.stop_policy()),
             stop_reason_required: self.stop_policy().reason_required,
+            friction: self.state.friction.in_effect(),
+            friction_loosen_after: self
+                .state
+                .friction
+                .pending()
+                .map(|pending| pending.apply_after),
+            unlocks_left: self
+                .state
+                .unlocks
+                .left(self.now(), self.state.friction.in_effect()),
         }
     }
 
@@ -1855,5 +1922,143 @@ mod tests {
             Some(true),
             "rewritten on the next start"
         );
+    }
+
+    fn unlock(service: &mut Service, url: &str, reason: &str) -> Response {
+        service.handle(Request::Unlock {
+            url: url.into(),
+            reason: reason.into(),
+        })
+    }
+
+    fn unlock_error(response: Response) -> UnlockError {
+        match error(response) {
+            DaemonError::Unlock { error } => error,
+            other => panic!("expected an unlock error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deep_unlocks_spend_the_budget_and_survive_a_restart() {
+        let harness = Harness::new();
+        harness.write_settings(&format!("[friction]\nunlocks_per_day = 1\n{SETTINGS}"));
+        let mut service = harness.open();
+        assert_eq!(
+            unlock_error(unlock(&mut service, "https://x.com/", "docs")),
+            UnlockError::NoSession
+        );
+        assert_eq!(
+            start(&mut service, "writing", Strictness::Deep),
+            Response::Done
+        );
+        assert_eq!(
+            unlock_error(unlock(&mut service, "https://docs.google.com/", "why")),
+            UnlockError::NotBlocked,
+            "allowed pages have nothing to unlock"
+        );
+        assert_eq!(
+            unlock_error(unlock(&mut service, "https://x.com/", " ")),
+            UnlockError::ReasonRequired
+        );
+        let now = harness.clock.now();
+        assert_eq!(
+            unlock(&mut service, "https://x.com/", "the thread has the fix"),
+            Response::Unlocked {
+                until: now.saturating_add(10 * MINUTE)
+            }
+        );
+        assert_eq!(status(&mut service).unlocks_left, 0);
+
+        let mut restarted = harness.open();
+        assert!(
+            matches!(
+                unlock_error(unlock(&mut restarted, "https://x.com/", "again")),
+                UnlockError::BudgetSpent { next_at: Some(_) }
+            ),
+            "a restart doesn't refill the budget"
+        );
+    }
+
+    #[test]
+    fn light_unlocks_are_free_and_locked_ones_refused() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "writing", Strictness::Light);
+        for _ in 0..5 {
+            assert!(matches!(
+                unlock(&mut service, "https://x.com/", ""),
+                Response::Unlocked { .. }
+            ));
+        }
+        assert_eq!(status(&mut service).unlocks_left, 3, "nothing spent");
+        service.handle(Request::EndSession);
+
+        start(&mut service, "writing", Strictness::Locked);
+        assert_eq!(
+            unlock_error(unlock(&mut service, "https://x.com/", "please")),
+            UnlockError::Forbidden
+        );
+    }
+
+    #[test]
+    fn delays_grow_per_site_through_a_restart_and_reset_with_the_session() {
+        let harness = Harness::new();
+        harness.write_settings(&format!(
+            "[configs.reading]\ndelay = [\"x.com\"]\n{SETTINGS}"
+        ));
+        let mut service = harness.open();
+        let visit = |service: &mut Service, url: &str| match service
+            .handle(Request::DelayVisit { url: url.into() })
+        {
+            Response::Delay { seconds } => seconds,
+            other => panic!("expected a delay, got {other:?}"),
+        };
+        assert_eq!(
+            visit(&mut service, "https://x.com/"),
+            0,
+            "no session, no wait"
+        );
+        start(&mut service, "reading", Strictness::Light);
+        assert_eq!(
+            visit(&mut service, "https://docs.rs/"),
+            0,
+            "pages without a Delay rule aren't counted"
+        );
+        assert_eq!(visit(&mut service, "https://x.com/"), 10);
+        assert_eq!(visit(&mut service, "https://x.com/a"), 20);
+        let mut restarted = harness.open();
+        assert_eq!(visit(&mut restarted, "https://www.x.com/"), 30);
+        restarted.handle(Request::EndSession);
+        harness.clock.advance(MINUTE);
+        start(&mut restarted, "reading", Strictness::Light);
+        assert_eq!(visit(&mut restarted, "https://x.com/"), 10, "a new session");
+    }
+
+    #[test]
+    fn friction_tightens_now_and_loosens_after_cooling_off() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        harness.write_settings(&format!(
+            "[friction]\nunlocks_per_day = 1\ntab_cap = 0\n{SETTINGS}"
+        ));
+        service.reload_settings();
+        let report = status(&mut service);
+        assert_eq!(
+            report.friction.unlocks_per_day, 1,
+            "fewer unlocks apply now"
+        );
+        assert_eq!(report.friction.tab_cap, 10, "turning the cap off waits");
+        let loosen_after = report
+            .friction_loosen_after
+            .expect("a loosening is pending");
+        assert_eq!(
+            loosen_after,
+            harness.clock.now().saturating_add(24 * 60 * MINUTE)
+        );
+
+        harness.clock.advance(24 * 60 * MINUTE);
+        let report = status(&mut service);
+        assert_eq!(report.friction.tab_cap, 0);
+        assert_eq!(report.friction_loosen_after, None);
     }
 }

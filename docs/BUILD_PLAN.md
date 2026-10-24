@@ -81,8 +81,13 @@ Every control gets hover help, and validation messages are in plain language.
 - The kill switch works with its waits and confirmation (manual test notes for Windows).
 
 ### 8. Bypass friction and rabbit-hole tools
-Unlock budget for Deep, growing Delay, drift prompt (hops away from the starting sites), Later button (sends link to Todoist inbox), tab cap, parking-lot hotkey (`RegisterHotKey`; the XDG GlobalShortcuts portal comes in step 9). Windows Do Not Disturb: a small button in the UI that opens the notification settings, instead of opening them by itself at session start. Keep it per platform, since KDE can silence notifications itself.
-**Done when:** each behaviour has unit tests in the core and a manual test note for the platform parts.
+Split in two PRs (decided 2026-10-24).
+
+**8a. Browser friction:** unlock budget for Deep, growing Delay counted by the daemon, drift prompt (hops away from the starting sites), tab cap; limits editable in Settings → General (ADR 0011).
+
+**8b. Capture and notifications:** Later button and parking-lot hotkey (`RegisterHotKey`; the XDG GlobalShortcuts portal comes in step 9) saving to a local parking lot that syncs to the Todoist inbox when connected and online. Windows Do Not Disturb: a small button in the UI that opens the notification settings, instead of opening them by itself at session start. Keep it per platform, since KDE can silence notifications itself.
+
+**Done when:** each behaviour has unit tests (the core, or the extension's pure modules for browser-only behaviour) and a manual test note for the platform parts.
 
 ### 9. Linux (KDE Plasma) parity
 Bring KDE Plasma on Wayland up to the Windows feature set:

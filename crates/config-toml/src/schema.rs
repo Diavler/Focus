@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use focus_core::{Mode, RuleAction, Strictness, Verdict};
+use focus_core::{Friction, Mode, RuleAction, Strictness, Verdict};
 use serde::Deserialize;
 
 /// The whole settings file.
@@ -17,6 +17,40 @@ pub(crate) struct SettingsFile {
     pub(crate) configs: BTreeMap<String, ConfigTable>,
     #[serde(default)]
     pub(crate) auto_start: Vec<AutoStartTable>,
+    #[serde(default)]
+    pub(crate) friction: FrictionTable,
+}
+
+/// `[friction]`: unlocks, the tab cap and the drift prompt. Read as plain integers, so an
+/// out-of-range value gets a clear problem instead of a type error.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FrictionTable {
+    pub(crate) unlocks_per_day: Option<i64>,
+    pub(crate) unlock_minutes: Option<i64>,
+    pub(crate) tab_cap: Option<i64>,
+    pub(crate) drift_hops: Option<i64>,
+}
+
+impl FrictionTable {
+    /// The limits as written, defaults for keys left out. Values that don't fit become the
+    /// type's maximum, which [`Friction::problems`] then reports.
+    pub(crate) fn friction(&self) -> Friction {
+        let defaults = Friction::default();
+        let small = |written: Option<i64>, default: u8| {
+            written.map_or(default, |value| u8::try_from(value).unwrap_or(u8::MAX))
+        };
+        Friction {
+            unlocks_per_day: small(self.unlocks_per_day, defaults.unlocks_per_day),
+            unlock_minutes: self
+                .unlock_minutes
+                .map_or(defaults.unlock_minutes, |value| {
+                    u16::try_from(value).unwrap_or(u16::MAX)
+                }),
+            tab_cap: small(self.tab_cap, defaults.tab_cap),
+            drift_hops: small(self.drift_hops, defaults.drift_hops),
+        }
+    }
 }
 
 /// `[[auto_start]]`: starts a configuration from calendar events or tasks.

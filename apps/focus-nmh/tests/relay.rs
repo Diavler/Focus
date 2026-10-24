@@ -156,6 +156,23 @@ async fn relays_extension_requests_to_the_daemon() {
 
     let status = browser.send(3, json!({"type": "status"})).await;
     assert_eq!(status["browsers"][0]["browser"], "chrome");
+    assert_eq!(status["friction"]["tab_cap"], 10);
+
+    // Relayed (not refused), with the shapes the extension parses.
+    let unlock = browser
+        .send(
+            4,
+            json!({"type": "unlock", "url": "https://x.com/", "reason": "docs"}),
+        )
+        .await;
+    assert_eq!(
+        unlock,
+        json!({"type": "error", "error": {"kind": "unlock", "error": "no_session"}})
+    );
+    let delay = browser
+        .send(5, json!({"type": "delay_visit", "url": "https://x.com/"}))
+        .await;
+    assert_eq!(delay, json!({"type": "delay", "seconds": 0}));
 
     browser.close().await;
     daemon.stop().await;

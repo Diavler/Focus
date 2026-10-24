@@ -10,6 +10,7 @@
 mod agenda;
 mod configs;
 mod daemon;
+mod friction;
 mod help;
 mod plan_pages;
 mod rules;
@@ -468,6 +469,7 @@ impl App {
                 );
             }
             settings::Msg::StartAtLogin(on) => draft.edited.start_at_login = on,
+            settings::Msg::Friction(edit) => friction::apply(&mut draft.edited.friction, edit),
             settings::Msg::Save => {
                 let settings = draft.to_save();
                 draft.sent = Some(settings.clone());

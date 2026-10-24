@@ -8,6 +8,15 @@
 # Start Focus when you log in. Turning this off also waits 24 hours, like loosening a config.
 start_at_login = true
 
+# Friction (Settings > General in the window). Stricter values apply at once; looser ones wait
+# 24 hours. These are the defaults:
+#
+# [friction]
+# unlocks_per_day = 3    # blocked pages Deep sessions may open "just this once" per 24 hours
+# unlock_minutes = 10    # how long an unlock lasts
+# tab_cap = 10           # most tabs during a session; 0 turns it off
+# drift_hops = 4         # hops away from your starting sites before the drift prompt; 0 = off
+
 [lists.social]
 block = ["x.com", "instagram.com", "tiktok.com"]
 

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use chrono::{Local, TimeZone};
 use focus_core::{
-    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, RunningSession,
-    Strictness, Timestamp,
+    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, OverridePolicy,
+    RunningSession, Strictness, Timestamp,
 };
 use iced::widget::{
     Column, button, column, pick_list, radio, row, slider, space, text, text_input,
@@ -74,6 +74,7 @@ impl App {
                 .align_y(Alignment::Center),
                 bold(format_duration(running.time_left(status.now))).size(64),
                 caption(format!("Ends at {}.", clock(running.ends_at(), &Local))),
+                caption(unlock_line(running, status)),
                 self.end_controls(running, status),
             ]
             .spacing(12),
@@ -422,8 +423,29 @@ pub(crate) fn pending_summary(status: &StatusReport) -> Option<String> {
                 format_duration(wait)
             )
         })
+        .chain(status.friction_loosen_after.map(|at| {
+            format!(
+                "Looser friction limits apply in {} (cooling off).",
+                format_duration(at.saturating_duration_since(status.now))
+            )
+        }))
         .collect();
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// What unlocking a blocked page costs in the running session.
+fn unlock_line(running: &RunningSession, status: &StatusReport) -> String {
+    let minutes = status.friction.unlock_minutes;
+    match running.override_policy() {
+        OverridePolicy::Free => {
+            format!("Blocked pages can be unlocked for {minutes} min from the browser.")
+        }
+        OverridePolicy::SpendUnlock => format!(
+            "Unlocks left: {} of {} in 24 hours ({minutes} min each, with a reason).",
+            status.unlocks_left, status.friction.unlocks_per_day
+        ),
+        OverridePolicy::Forbidden => "Blocked pages can't be unlocked.".to_owned(),
+    }
 }
 
 /// How the last session went.
@@ -491,6 +513,9 @@ mod tests {
             plan: ipc_proto::PlanStatus::default(),
             stop_allowed_at: None,
             stop_reason_required: false,
+            friction: focus_core::Friction::default(),
+            friction_loosen_after: None,
+            unlocks_left: 3,
         }
     }
 

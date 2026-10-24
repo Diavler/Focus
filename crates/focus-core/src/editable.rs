@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auto_start::AutoStartRule;
 use crate::config::{BlockConfig, Mode, SharedList};
+use crate::friction::Friction;
 use crate::pattern::UrlPattern;
 use crate::rule::{Rule, RuleAction, Verdict};
 
@@ -20,6 +21,9 @@ pub struct EditableSettings {
     pub configs: Vec<ConfigEntry>,
     /// Automatic-start rules, in order.
     pub auto_start: Vec<AutoStartRule>,
+    /// The friction limits (unlocks, tab cap, drift prompt).
+    #[serde(default)]
+    pub friction: Friction,
     /// Identifies the text these were read from, so saving can refuse to overwrite edits made to
     /// the file in the meantime.
     pub revision: String,
@@ -158,6 +162,7 @@ mod tests {
                 apps: vec!["discord".into()],
             }],
             auto_start: Vec::new(),
+            friction: Friction::default(),
             revision: "1".into(),
         }
     }

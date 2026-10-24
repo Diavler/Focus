@@ -2,8 +2,8 @@
 
 use focus_core::ports::SecretKey;
 use focus_core::{
-    BlockConfig, CalendarEvent, EditableSettings, EndEarlyResponse, PlannedStart, SessionError,
-    SessionState, StopError, Strictness, Task, Timestamp, Verdict,
+    BlockConfig, CalendarEvent, EditableSettings, EndEarlyResponse, Friction, PlannedStart,
+    SessionError, SessionState, StopError, Strictness, Task, Timestamp, UnlockError, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -47,6 +47,21 @@ pub enum Request {
         url: String,
         /// Check against this configuration instead of the running session's.
         config: Option<String>,
+    },
+    /// Opens a blocked page for a while: free in a Light session, one unlock from the budget
+    /// (with a reason) in a Deep one, refused in a Locked one. Answered with
+    /// [`Response::Unlocked`].
+    Unlock {
+        /// The blocked page.
+        url: String,
+        /// Why; required in a Deep session.
+        reason: String,
+    },
+    /// Counts a visit to a page behind a Delay rule. Answered with [`Response::Delay`], the wait,
+    /// which grows with each visit to the same site during the session.
+    DelayVisit {
+        /// The page.
+        url: String,
     },
     /// Stores or (with `None` or a blank value) removes a credential in the OS keychain, then
     /// syncs the plan. Answered with [`Response::Done`]. Not relayed from the browser.
@@ -118,6 +133,16 @@ pub enum Response {
         /// App names, sorted.
         apps: Vec<String>,
     },
+    /// Answer to [`Request::Unlock`].
+    Unlocked {
+        /// When the unlock ends.
+        until: Timestamp,
+    },
+    /// Answer to [`Request::DelayVisit`].
+    Delay {
+        /// How long to wait before continuing.
+        seconds: u64,
+    },
     /// Answer to [`Request::RequestStop`].
     Stop {
         /// When the stop may be confirmed.
@@ -168,6 +193,15 @@ pub struct StatusReport {
     /// Whether stopping now needs a typed reason (a Locked session is running).
     #[serde(default)]
     pub stop_reason_required: bool,
+    /// The friction limits in effect (unlocks, tab cap, drift prompt).
+    #[serde(default)]
+    pub friction: Friction,
+    /// When a loosening of the friction limits takes effect, if one is cooling off.
+    #[serde(default)]
+    pub friction_loosen_after: Option<Timestamp>,
+    /// Unlocks left for Deep sessions out of the last 24 hours' budget.
+    #[serde(default)]
+    pub unlocks_left: u8,
 }
 
 /// How the plan sources are doing, and what they'll start.
@@ -299,6 +333,12 @@ pub enum DaemonError {
     Stop {
         /// Why.
         error: StopError,
+    },
+    /// An unlock was refused.
+    #[error("{error}")]
+    Unlock {
+        /// Why.
+        error: UnlockError,
     },
     /// The daemon isn't running and no session is saved as running: Focus was stopped (reported
     /// by `focus-nmh`, so the extension can lift its blocks).
