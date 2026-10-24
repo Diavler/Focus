@@ -73,7 +73,17 @@ mod tests {
             "second is refused"
         );
         drop(first);
-        assert!(!is_held(&path).unwrap(), "free again after release");
+        // On Linux a lock belongs to the open file, and a child process being started by another
+        // test inherits our open files until it runs its program. Until then the lock stays held,
+        // so wait briefly for the release rather than expect it at once.
+        let released = (0..20).any(|_| {
+            let free = !is_held(&path).unwrap();
+            if !free {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            free
+        });
+        assert!(released, "free again after release");
         assert!(InstanceLock::acquire_patiently(&path).unwrap().is_some());
     }
 }
