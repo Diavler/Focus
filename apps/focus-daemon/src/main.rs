@@ -3,16 +3,17 @@
 //!
 //! `focus-daemon --dry-run` logs which apps it would close (and the Do Not Disturb prompt it would
 //! show) instead of acting, for trying enforcement safely on a real machine.
+//! `focus-daemon --at-login` is how the login entry starts it: it also opens the UI, minimised.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
 use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
-use focus_daemon::{Ports, Service, SystemClock, serve};
+use focus_daemon::{Ports, Service, SystemClock, UiWatch, serve};
 use focus_install::{InstanceLock, Paths};
 use ipc_transport::{BindError, Endpoint, bind};
 use state_json::JsonStateStore;
@@ -59,7 +60,8 @@ async fn main() -> anyhow::Result<()> {
     if dry_run {
         tracing::info!("dry run: apps won't be closed, only logged");
     }
-    let enforcement = platform::enforcement(dry_run);
+    let at_login = std::env::args().skip(1).any(|arg| arg == "--at-login");
+    let enforcement = platform::enforcement(dry_run, install);
     let ports = Ports {
         clock: Arc::new(SystemClock),
         configs: Arc::new(TomlConfigSource::new(&paths.settings)),
@@ -70,8 +72,16 @@ async fn main() -> anyhow::Result<()> {
         foreground: enforcement.foreground,
         notifier: enforcement.notifier,
         browsers: enforcement.browsers,
+        autostart: enforcement.autostart,
+        ui: Arc::new(InstalledUi {
+            install: install.to_path_buf(),
+            lock: paths.ui_lock.clone(),
+        }),
     };
-    let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
+    let mut service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
+    if at_login {
+        service.ensure_ui();
+    }
     tracing::info!("data: {}", paths.data.display());
 
     serve(listener, service, async {
@@ -105,12 +115,31 @@ fn write_starter_settings(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The UI next to this daemon. It holds `data/ui.lock` while running.
+struct InstalledUi {
+    install: PathBuf,
+    lock: PathBuf,
+}
+
+impl UiWatch for InstalledUi {
+    fn is_running(&self) -> bool {
+        // If the lock can't be checked, assume it's running rather than start UIs in a loop.
+        focus_install::is_held(&self.lock).unwrap_or(true)
+    }
+
+    fn launch(&self) -> std::io::Result<()> {
+        focus_install::spawn_sibling(&self.install, "focus-ui", &["--minimized"])
+    }
+}
+
 /// The platform's enforcement adapters. The only `#[cfg]` in the daemon (CLAUDE.md).
 mod platform {
     use std::sync::Arc;
 
     use focus_core::KnownBrowser;
-    use focus_core::ports::{Enforcer, ForegroundApp, Notifier, ProcessList};
+    use std::path::Path;
+
+    use focus_core::ports::{Autostart, Enforcer, ForegroundApp, Notifier, ProcessList};
 
     /// One adapter per enforcement port, plus the browsers to watch.
     pub struct Enforcement {
@@ -124,12 +153,16 @@ mod platform {
         pub notifier: Arc<dyn Notifier>,
         /// The browsers to watch.
         pub browsers: Vec<KnownBrowser>,
+        /// Registers Focus to start at login.
+        pub autostart: Arc<dyn Autostart>,
     }
 
     /// Windows: the real adapters, acting or (`dry_run`) only logging.
     #[cfg(windows)]
-    pub fn enforcement(dry_run: bool) -> Enforcement {
-        use enforce_windows::{Mode, WindowsEnforcer, WindowsForeground, WindowsNotifier};
+    pub fn enforcement(dry_run: bool, install: &Path) -> Enforcement {
+        use enforce_windows::{
+            Mode, WindowsAutostart, WindowsEnforcer, WindowsForeground, WindowsNotifier,
+        };
         let mode = if dry_run { Mode::DryRun } else { Mode::Live };
         // One enforcer serves both ports; `Arc` lets it be shared.
         let enforcer = Arc::new(WindowsEnforcer::new(mode));
@@ -139,19 +172,21 @@ mod platform {
             foreground: Arc::new(WindowsForeground),
             notifier: Arc::new(WindowsNotifier::new(mode)),
             browsers: enforce_windows::known_browsers(),
+            autostart: Arc::new(WindowsAutostart::new(mode, install)),
         }
     }
 
     /// Elsewhere: placeholders until the KDE Plasma adapters (build step 9).
     #[cfg(not(windows))]
-    pub fn enforcement(_dry_run: bool) -> Enforcement {
+    pub fn enforcement(_dry_run: bool, _install: &Path) -> Enforcement {
         let pending = Arc::new(enforce_linux_kde::PendingEnforcer::default());
         Enforcement {
             enforcer: pending.clone(),
             processes: pending.clone(),
             foreground: pending.clone(),
-            notifier: pending,
+            notifier: pending.clone(),
             browsers: enforce_linux_kde::known_browsers(),
+            autostart: pending,
         }
     }
 }

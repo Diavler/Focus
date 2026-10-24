@@ -7,4 +7,4 @@ mod service;
 
 pub use clock::SystemClock;
 pub use server::serve;
-pub use service::{Ports, Service, StartupError};
+pub use service::{Ports, Service, StartupError, UiWatch};

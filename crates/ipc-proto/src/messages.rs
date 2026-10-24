@@ -97,6 +97,12 @@ pub struct StatusReport {
     /// The app owning the window in front, if known.
     #[serde(default)]
     pub foreground_app: Option<String>,
+    /// Whether Focus starts at login.
+    #[serde(default)]
+    pub start_at_login: bool,
+    /// When a requested switch-off of start-at-login takes effect, if one is cooling off.
+    #[serde(default)]
+    pub start_at_login_off_after: Option<Timestamp>,
 }
 
 /// A config edit waiting out its cooling-off delay.

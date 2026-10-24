@@ -123,6 +123,7 @@ async fn tick_forever(shared: Shared) {
                 service.tick();
                 if enforce {
                     service.enforce();
+                    service.watch_ui();
                 }
             }
         })

@@ -581,6 +581,8 @@ mod tests {
             settings_problem: None,
             browsers: Vec::new(),
             foreground_app: None,
+            start_at_login: true,
+            start_at_login_off_after: None,
         };
         assert_eq!(pending_summary(&status), None);
         status.pending_changes = vec![

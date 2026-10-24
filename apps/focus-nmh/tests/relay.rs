@@ -10,9 +10,9 @@ use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_core::testing::{
-    FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
+    FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
 };
-use focus_daemon::{Ports, Service, serve};
+use focus_daemon::{Ports, Service, UiWatch, serve};
 use focus_nmh::framing::{Frame, read_message};
 use ipc_transport::{Endpoint, bind};
 use serde_json::{Value, json};
@@ -49,6 +49,8 @@ impl Daemon {
             foreground: Arc::new(FakeForegroundApp::default()),
             notifier: Arc::new(FakeNotifier::default()),
             browsers: Vec::new(),
+            autostart: Arc::new(FakeAutostart::default()),
+            ui: Arc::new(NoUi),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let listener = bind(endpoint).await.unwrap();
@@ -113,6 +115,19 @@ impl Browser {
     async fn close(self) {
         drop(self.pipe);
         self.host.await.unwrap().unwrap();
+    }
+}
+
+/// No UI: these tests don't run sessions long enough to need one.
+struct NoUi;
+
+impl UiWatch for NoUi {
+    fn is_running(&self) -> bool {
+        true
+    }
+
+    fn launch(&self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
