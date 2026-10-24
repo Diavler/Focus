@@ -23,9 +23,14 @@ function element<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T;
 }
 
+/** Back to the page before, or closes the tab if there's none. Closing goes through the tabs
+ * API, since browsers (Firefox) may refuse `window.close()` for a tab the page didn't open. */
 function goBack(): void {
-  if (history.length > stepsBack) history.go(-stepsBack);
-  else window.close();
+  if (history.length > stepsBack) {
+    history.go(-stepsBack);
+    return;
+  }
+  void browser.tabs.getCurrent().then((tab) => (tab?.id === undefined ? undefined : browser.tabs.remove(tab.id)));
 }
 
 async function continueToSite(): Promise<void> {

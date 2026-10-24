@@ -374,6 +374,7 @@ fn browser_name(heartbeat: &str) -> String {
         "brave" => "Brave".to_owned(),
         "opera" => "Opera".to_owned(),
         "chromium" => "Chromium".to_owned(),
+        "firefox" => "Firefox".to_owned(),
         other => other.to_owned(),
     }
 }

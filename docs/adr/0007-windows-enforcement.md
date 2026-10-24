@@ -24,7 +24,7 @@ Step 5 makes sessions bite outside the browser on Windows. The build plan now do
 - **Browser catalogue:** each browser's executable and the heartbeat names that vouch for it.
   - Chromium also runs as `chrome.exe`, so `chrome` accepts both names.
   - The extension reports any brand starting with "Opera" (including Opera GX) as `opera`.
-  - Vivaldi reports itself as plain Chromium, which would let any Chromium heartbeat vouch for it, so it accepts none for now. Like Firefox (no extension yet), it's closed during every session.
+  - Vivaldi reports itself as plain Chromium, which would let any Chromium heartbeat vouch for it, so it accepts none for now. It's closed during every session (Firefox was too until its extension arrived, ADR 0013).
 - **Foreground app:** `GetForegroundWindow`, then the owning process's image name. Reported in `Status` as `foreground_app`, ready for drift detection later.
 - **Do Not Disturb:** ~~at session start, open `ms-settings:notifications` once~~. Superseded by ADR 0012: `Notifier::silence` answers `AskUser` on Windows, and the window shows a "Turn on Do Not Disturb" button that opens `ms-settings:notifications` (via `%SystemRoot%\explorer.exe`, by full path) only when pressed. Ending the session can't turn Do Not Disturb off again for the user.
 - **`Mode::DryRun`** logs every action instead, including the move from asking to terminating. `focus-daemon --dry-run` uses it.

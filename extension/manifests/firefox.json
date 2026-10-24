@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Focus",
+  "version": "0.1.0",
+  "description": "Blocks distractions during Focus sessions. Needs the Focus app running.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "focus@focus-app.local",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  },
+  "incognito": "spanning",
+  "background": { "scripts": ["background.js"] },
+  "action": { "default_title": "Later: save this page to Focus's parking lot and close it" },
+  "permissions": [
+    "nativeMessaging",
+    "declarativeNetRequestWithHostAccess",
+    "webNavigation",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.reddit.com/*", "*://*.youtube.com/*"],
+      "js": ["feeds.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["interstitial.html", "interstitial.js"], "matches": ["<all_urls>"] }
+  ]
+}

@@ -29,5 +29,5 @@ The design needs URL-level rules: a single Reddit post is fine, the Reddit feed 
 - At most 1000 regex rules per session (Chrome's limit); more are dropped.
 - Only top-level pages are affected. Embedded frames (e.g. a YouTube embed) aren't.
 - Feed selectors depend on each site's markup and will need updates when the sites change; they're checked by hand.
-- Firefox needs its own manifest (`browser_specific_settings`, `allowed_extensions` in the host manifest) and a `platform/firefox.ts`. The rest of the code is shared.
+- Firefox needs its own manifest (`browser_specific_settings`, `allowed_extensions` in the host manifest) and a `platform/firefox.ts`. The rest of the code is shared. (Done in ADR 0013.)
 - Manual tests needed (real browser): host registration; the interstitial for a blocked site; a single Reddit post loading while the feed is hidden; heartbeats appearing in the daemon's status; Continue not unblocking a stricter path on the same site; feeds staying hidden with the daemon stopped; "Go back" after an in-page block.

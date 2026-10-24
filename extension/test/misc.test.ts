@@ -55,6 +55,34 @@ describe("chromium manifest", () => {
   });
 });
 
+describe("firefox manifest", () => {
+  const firefox = JSON.parse(readFileSync("manifests/firefox.json", "utf8"));
+  const chromium = JSON.parse(readFileSync("manifests/chromium.json", "utf8"));
+
+  it("has the add-on ID focus-nmh trusts", () => {
+    const register = readFileSync("../apps/focus-nmh/src/register.rs", "utf8");
+    expect(register).toContain(`FIREFOX_EXTENSION_ID: &str = "${firefox.browser_specific_settings.gecko.id}"`);
+  });
+
+  it("asks for what the Chromium manifest asks for, with Firefox's background and no Chrome keys", () => {
+    for (const key of ["permissions", "host_permissions", "content_scripts", "web_accessible_resources", "action", "incognito"]) {
+      expect(firefox[key], key).toEqual(chromium[key]);
+    }
+    expect(firefox.background).toEqual({ scripts: ["background.js"] });
+    expect(firefox.key).toBeUndefined();
+    expect(firefox.minimum_chrome_version).toBeUndefined();
+  });
+});
+
+describe("platform modules", () => {
+  it("export the same names, so either can stand in for ./platform", async () => {
+    const chromium = await import("../src/platform/chromium");
+    const firefox = await import("../src/platform/firefox");
+    expect(Object.keys(firefox).sort()).toEqual(Object.keys(chromium).sort());
+    expect(firefox.browserName()).toBe("firefox");
+  });
+});
+
 describe("frictionFromStatus", () => {
   it("reads the limits and unlocks left, with defaults for an older daemon", () => {
     const friction = { ...DEFAULT_FRICTION, tab_cap: 0 };

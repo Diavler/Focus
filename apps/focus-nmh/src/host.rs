@@ -102,6 +102,15 @@ async fn answer(bytes: &[u8], daemon: &mut Option<Client>, endpoint: &Endpoint) 
     forward(&request, daemon, endpoint).await
 }
 
+/// Whether the browser started the host: Chromium passes the extension's origin
+/// (`chrome-extension://<id>/`), Firefox the host manifest's path and then the add-on's ID.
+pub fn started_by_browser(args: &[String]) -> bool {
+    let first = args.first().map(String::as_str);
+    let second = args.get(1).map(String::as_str);
+    first.is_some_and(|origin| origin.starts_with("chrome-extension://"))
+        || second == Some(crate::register::FIREFOX_EXTENSION_ID)
+}
+
 /// The requests the extension needs; everything else stays with the UI.
 fn allowed_from_browser(request: &Request) -> bool {
     matches!(
@@ -172,4 +181,31 @@ fn unreachable(error: &ClientError) -> Response {
 
 fn error_response(error: DaemonError) -> Response {
     Response::Error { error }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|&arg| arg.to_owned()).collect()
+    }
+
+    #[test]
+    fn knows_when_a_browser_started_it() {
+        assert!(started_by_browser(&args(&[
+            "chrome-extension://hjeodjhhiiaojdakfafaebijlmdckebo/",
+            "--parent-window=0",
+        ])));
+        assert!(started_by_browser(&args(&[
+            r"C:\Focus\native-messaging\dev.focus.nmh.firefox.json",
+            crate::register::FIREFOX_EXTENSION_ID,
+        ])));
+        assert!(!started_by_browser(&args(&["--register"])));
+        assert!(!started_by_browser(&args(&[
+            "manifest.json",
+            "someone-else@example.com"
+        ])));
+        assert!(!started_by_browser(&[]));
+    }
 }

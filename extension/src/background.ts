@@ -44,7 +44,7 @@ import {
   type RunningSession,
   type Verdict,
 } from "./protocol";
-import { NEW_TAB_URL, browserName } from "./platform/chromium";
+import { NEW_TAB_URL, browserName } from "./platform";
 import { siteOf } from "./sites";
 import { continueTarget, overCap } from "./tabcap";
 
@@ -132,16 +132,21 @@ async function syncRules(session: RunningSession | null): Promise<boolean> {
   return true;
 }
 
-/** Drops rules whose regex Chrome can't compile, so one bad pattern doesn't sink the rest. */
+/**
+ * Drops rules whose regex the browser can't compile, so one bad pattern doesn't sink the rest.
+ * A browser without `isRegexSupported` gets every rule.
+ */
 async function supportedOnly(rules: DnrRule[]): Promise<DnrRule[]> {
+  const dnr = browser.declarativeNetRequest as Partial<typeof browser.declarativeNetRequest>;
+  if (typeof dnr.isRegexSupported !== "function") return rules;
   const kept: DnrRule[] = [];
   for (const rule of rules) {
-    const { isSupported, reason } = await browser.declarativeNetRequest.isRegexSupported({
+    const { isSupported, reason } = await dnr.isRegexSupported({
       regex: rule.condition.regexFilter,
       isCaseSensitive: false,
     });
     if (isSupported) kept.push(rule);
-    else console.warn(`focus: skipping a rule Chrome can't use (${reason}): ${rule.condition.regexFilter}`);
+    else console.warn(`focus: skipping a rule the browser can't use (${reason}): ${rule.condition.regexFilter}`);
   }
   return kept;
 }
@@ -345,14 +350,40 @@ async function browserStartedAt(): Promise<number> {
   return now;
 }
 
-/** Sends a tab opened over the cap to the tab-cap page, which asks to close one first. */
-async function capTab(tab: { id?: number; pendingUrl?: string; url?: string }): Promise<void> {
-  if (tab.id === undefined || !(await knownSession())) return;
+/**
+ * Sends a tab opened over the cap to the tab-cap page, which asks to close one first. Chromium
+ * says up front which page the tab is opening (`pendingUrl`); Firefox doesn't, so there the tab is
+ * held until its first page load (see `capOnLoad`).
+ */
+async function capTab(tab: { id?: number; pendingUrl?: string }): Promise<void> {
+  const tabId = tab.id;
+  if (tabId === undefined || !(await knownSession())) return;
   const { friction } = await knownFriction();
   const open = (await browser.tabs.query({})).length;
   if (!overCap(open, friction.tab_cap, await browserStartedAt(), Date.now())) return;
-  const intended = tab.pendingUrl || tab.url || "";
-  await browser.tabs.update(tab.id, { url: `${base}interstitial.html?a=tabs#${intended}` });
+  if (tab.pendingUrl) {
+    await sendToTabCap(tabId, tab.pendingUrl);
+    return;
+  }
+  await serially(async () => browser.storage.session.set({ capped: [...(await cappedTabs()), tabId] }));
+}
+
+/** Tabs opened over the cap whose page isn't known yet. */
+async function cappedTabs(): Promise<number[]> {
+  const { capped } = (await browser.storage.session.get("capped")) as { capped?: number[] };
+  return capped ?? [];
+}
+
+/** A held tab's first page load goes to the tab-cap page instead. */
+async function capOnLoad(tabId: number, url: string): Promise<void> {
+  const capped = await cappedTabs();
+  if (!capped.includes(tabId)) return;
+  await browser.storage.session.set({ capped: capped.filter((id) => id !== tabId) });
+  await sendToTabCap(tabId, url);
+}
+
+async function sendToTabCap(tabId: number, intended: string): Promise<void> {
+  await browser.tabs.update(tabId, { url: `${base}interstitial.html?a=tabs#${intended}` });
 }
 
 /** The other open tabs, for the tab-cap page. */
@@ -450,7 +481,15 @@ browser.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabI
 });
 
 browser.tabs.onRemoved.addListener((tabId) => {
-  void serially(() => changeDrift((state) => forgetTab(state, tabId)));
+  void serially(async () => {
+    await changeDrift((state) => forgetTab(state, tabId));
+    const capped = await cappedTabs();
+    if (capped.includes(tabId)) await browser.storage.session.set({ capped: capped.filter((id) => id !== tabId) });
+  });
+});
+
+browser.webNavigation.onBeforeNavigate.addListener(({ tabId, frameId, url }) => {
+  if (frameId === 0 && siteOf(url) !== null) void serially(() => capOnLoad(tabId, url));
 });
 
 browser.tabs.onCreated.addListener((tab) => void capTab(tab));

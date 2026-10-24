@@ -1,6 +1,6 @@
 # Focus browser extension
 
-Manifest V3, TypeScript, Chromium first. It talks to the Focus daemon through the `focus-nmh` native messaging host (ADR 0005); design notes are in ADR 0006.
+Manifest V3, TypeScript, for Chromium browsers and Firefox (ADR 0013). It talks to the Focus daemon through the `focus-nmh` native messaging host (ADR 0005); design notes are in ADR 0006.
 
 ## What it does
 
@@ -15,15 +15,15 @@ Manifest V3, TypeScript, Chromium first. It talks to the Focus daemon through th
 - `src/dnr.ts`: config → DNR rules (mirrors the core's matcher).
 - `src/friction.ts`, `src/feeds.ts`: Delay timing and feed selectors.
 - `src/background.ts`, `src/interstitial.ts`, `src/content/feeds.ts`: entry points (wiring only).
-- `src/platform/`: browser-specific code. Only `chromium.ts` for now.
-- `manifests/<browser>.json`: one manifest per browser. The `key` fixes the Chromium extension ID at `hjeodjhhiiaojdakfafaebijlmdckebo`.
+- `src/platform/`: browser-specific code, `chromium.ts` and `firefox.ts`; the build points `./platform` at one of them.
+- `manifests/<browser>.json`: one manifest per browser. The `key` fixes the Chromium extension ID at `hjeodjhhiiaojdakfafaebijlmdckebo`; Firefox's ID is `focus@focus-app.local`.
 
 ## Develop
 
 ```sh
 npm ci
 npm test        # typecheck + unit tests
-npm run build   # bundles into dist/chromium/
+npm run build   # bundles into dist/chromium/ and dist/firefox/
 ```
 
 ## Try it in Chrome or Edge
@@ -34,3 +34,11 @@ npm run build   # bundles into dist/chromium/
 4. Start a session in `cargo run -p focus-ui`, then visit a blocked site.
 
 To undo the registration: `target/debug/focus-nmh --unregister`.
+
+## Try it in Firefox (128 or later)
+
+1. Register the host as above; `--register` covers Firefox too (a second manifest, and `HKCU\Software\Mozilla\NativeMessagingHosts` on Windows or `~/.mozilla/native-messaging-hosts` on Linux).
+2. Start the daemon.
+3. Open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `extension/dist/firefox/manifest.json`. A temporary add-on is gone after Firefox restarts; a lasting install needs Mozilla's signing (release step).
+4. In `about:addons` → Focus, allow **Run in Private Windows**, or Focus closes Firefox during sessions.
+5. Start a session and visit a blocked site.

@@ -1,8 +1,9 @@
 //! Native messaging host: bridges the browser extension (stdin/stdout JSON) to `focus-daemon` IPC.
 //!
-//! - `focus-nmh chrome-extension://<id>/`: started by the browser; relays messages until it closes.
-//! - `focus-nmh --register [--extension-id <id>] [--dry-run]`: tells Chromium browsers about the host
-//!   (the ID defaults to the Focus extension's).
+//! - `focus-nmh chrome-extension://<id>/` (Chromium) or `focus-nmh <manifest> <add-on id>`
+//!   (Firefox): started by the browser; relays messages until it closes.
+//! - `focus-nmh --register [--extension-id <id>] [--dry-run]`: tells Chromium browsers and Firefox
+//!   about the host (the Chromium ID defaults to the Focus extension's).
 //! - `focus-nmh --unregister [--dry-run]`: undoes `--register`.
 //!
 //! In host mode stdout carries the protocol, so diagnostics only ever go to stderr.
@@ -42,7 +43,7 @@ async fn main() -> ExitCode {
         exists: &|path: &Path| path.exists(),
     };
     match args.first().map(String::as_str) {
-        Some(origin) if origin.starts_with("chrome-extension://") => relay(&install).await,
+        Some(_) if focus_nmh::host::started_by_browser(&args) => relay(&install).await,
         Some("--register") => {
             let id = match args.iter().position(|arg| arg == "--extension-id") {
                 None => register::DEFAULT_EXTENSION_ID,
