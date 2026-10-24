@@ -57,8 +57,21 @@ interface UnlockInfo {
 
 /** Offers an unlock on the block page: free in Light, from the budget with a reason in Deep. */
 async function offerUnlock(): Promise<void> {
-  const info = (await browser.runtime.sendMessage({ kind: "unlock-info" })) as UnlockInfo | null;
-  if (info === null) return;
+  // An extension updated on disk but not reloaded runs an older worker, which doesn't answer.
+  const info = (await browser.runtime
+    .sendMessage({ kind: "unlock-info" })
+    .catch(() => undefined)) as UnlockInfo | null | undefined;
+  if (info === undefined) {
+    element("locked-note").textContent =
+      "To unlock pages, reload the Focus extension on your browser's extensions page.";
+    show("locked-note");
+    return;
+  }
+  if (info === null) {
+    element("locked-note").textContent = "Unlocking needs the Focus app running.";
+    show("locked-note");
+    return;
+  }
   if (info.strictness === "locked") {
     show("locked-note");
     return;
