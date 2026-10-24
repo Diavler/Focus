@@ -161,6 +161,7 @@ mod tests {
                 foreground_app: Some("code".into()),
                 start_at_login: true,
                 start_at_login_off_after: Some(Timestamp::from_millis(77)),
+                start_at_login_problem: None,
             })),
             Response::Configs {
                 configs: vec![BlockConfig::new("writing", Mode::Allowlist)],

@@ -11,6 +11,8 @@ cargo run -p focus-daemon   # first run writes starter settings to target/debug/
 cargo run -p focus-ui       # in another terminal
 ```
 
+On Windows both are windowed programs, so the daemon prints nothing to the terminal; its log is `target/debug/data/daemon.log`.
+
 ## Docs
 
 - [Design](docs/DESIGN.md): what and why

@@ -10,9 +10,10 @@ use crate::login::Settings;
 use crate::ports::{
     Autostart, AutostartError, Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer,
     ForegroundApp, History, HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState,
-    ProcessList, StateStore, StateStoreError,
+    ProcessList, StateStore, StateStoreError, UiWatch, UiWatchError,
 };
 use crate::time::Timestamp;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Locks a fake's mutex; a panicking test can't leave a fake's plain data half-updated.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -232,6 +233,44 @@ impl RecordingHistory {
 impl History for RecordingHistory {
     fn record(&self, event: &HistoryEvent) -> Result<(), HistoryError> {
         lock(&self.events).push(event.clone());
+        Ok(())
+    }
+}
+
+/// A UI that "runs" once launched, until killed.
+#[derive(Debug, Default)]
+pub struct FakeUi {
+    running: AtomicBool,
+    launches: AtomicU32,
+}
+
+impl FakeUi {
+    /// A UI that is already running.
+    pub fn running() -> Self {
+        let ui = Self::default();
+        ui.running.store(true, Ordering::SeqCst);
+        ui
+    }
+
+    /// Stops the pretend UI, as if the user killed it.
+    pub fn kill(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// How many times it was launched.
+    pub fn launches(&self) -> u32 {
+        self.launches.load(Ordering::SeqCst)
+    }
+}
+
+impl UiWatch for FakeUi {
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    fn launch(&self) -> Result<(), UiWatchError> {
+        self.launches.fetch_add(1, Ordering::SeqCst);
+        self.running.store(true, Ordering::SeqCst);
         Ok(())
     }
 }

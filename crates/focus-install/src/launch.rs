@@ -29,8 +29,13 @@ pub fn spawn_sibling(install: &Path, name: &str, args: &[&str]) -> io::Result<()
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    // The child is deliberately not waited for: it's a long-lived sibling, not a helper.
-    command.spawn().map(|_detached| ())
+    let mut child = command.spawn()?;
+    // A sibling outlives the call, so a thread waits for it; on Unix that reaps it when it exits,
+    // instead of leaving a zombie for the life of this process.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(test)]

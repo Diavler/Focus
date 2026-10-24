@@ -4,7 +4,9 @@
 mod clock;
 mod server;
 mod service;
+mod ui;
 
 pub use clock::SystemClock;
 pub use server::serve;
-pub use service::{Ports, Service, StartupError, UiWatch};
+pub use service::{Ports, Service, StartupError};
+pub use ui::InstalledUi;

@@ -11,10 +11,10 @@ use std::time::Duration;
 use config_toml::TomlConfigSource;
 use focus_core::ports::{Clock, NoopHistory};
 use focus_core::testing::{
-    FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier,
+    FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, FakeUi,
 };
 use focus_core::{ConfigState, EndReason, SessionError, Strictness};
-use focus_daemon::{Ports, Service, UiWatch, serve};
+use focus_daemon::{Ports, Service, serve};
 use ipc_proto::{DaemonError, PROTOCOL_VERSION, Request, Response, decode, encode};
 use ipc_transport::{BindError, Client, ClientError, Connection, Endpoint, bind};
 use state_json::JsonStateStore;
@@ -71,7 +71,7 @@ impl Home {
             notifier: Arc::new(FakeNotifier::default()),
             browsers: Vec::new(),
             autostart: Arc::new(FakeAutostart::default()),
-            ui: Arc::new(NoUi),
+            ui: Arc::new(FakeUi::running()),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let (stop, stopped) = oneshot::channel::<()>();
@@ -92,19 +92,6 @@ impl RunningDaemon {
     async fn stop(self) {
         let _ = self.stop.send(());
         self.task.await.unwrap();
-    }
-}
-
-/// No UI: these tests don't run sessions long enough to need one.
-struct NoUi;
-
-impl UiWatch for NoUi {
-    fn is_running(&self) -> bool {
-        true
-    }
-
-    fn launch(&self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 

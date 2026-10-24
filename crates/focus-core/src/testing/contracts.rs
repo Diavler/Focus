@@ -8,7 +8,7 @@ use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
 use crate::ports::{
     Autostart, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier,
-    PersistedState, ProcessList, StateStore,
+    PersistedState, ProcessList, StateStore, UiWatch,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -121,18 +121,35 @@ pub fn foreground_app_contract(foreground: &dyn ForegroundApp) {
     }
 }
 
-/// Switching start-at-login on and off succeeds, including repeated calls.
+/// Switching start-at-login off always succeeds. Switching it on either succeeds or, on a platform
+/// without support, fails with a reason; either way, repeating a call gives the same result.
 ///
 /// This changes the real registration, so run it on a dry-run adapter or one pointed at a
 /// test-only entry.
 pub fn autostart_contract(autostart: &dyn Autostart) {
-    for enabled in [true, true, false, false] {
-        assert_eq!(
-            autostart.set_enabled(enabled),
-            Ok(()),
-            "set_enabled({enabled}) failed"
-        );
-    }
+    let first_on = autostart.set_enabled(true);
+    assert_eq!(
+        autostart.set_enabled(true),
+        first_on,
+        "switching on again differed"
+    );
+    assert_eq!(autostart.set_enabled(false), Ok(()), "switching off failed");
+    assert_eq!(
+        autostart.set_enabled(false),
+        Ok(()),
+        "switching off twice failed"
+    );
+}
+
+/// Asking whether the UI runs has no visible effect: asking twice gives the same answer.
+///
+/// It doesn't call `launch`, which would start a real UI.
+pub fn ui_watch_contract(ui: &dyn UiWatch) {
+    assert_eq!(
+        ui.is_running(),
+        ui.is_running(),
+        "two quick checks disagree"
+    );
 }
 
 /// Silencing and restoring both succeed, including repeated calls in either order.

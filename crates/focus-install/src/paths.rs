@@ -16,6 +16,8 @@ pub struct Paths {
     pub daemon_lock: PathBuf,
     /// Locked by the running UI, so only one runs and the daemon can tell whether it's up.
     pub ui_lock: PathBuf,
+    /// Left by a second UI launch to ask the running UI to show its window.
+    pub ui_show: PathBuf,
 }
 
 impl Paths {
@@ -27,6 +29,7 @@ impl Paths {
             state: data.join("state.json"),
             daemon_lock: data.join("daemon.lock"),
             ui_lock: data.join("ui.lock"),
+            ui_show: data.join("ui.show"),
             data,
         }
     }
@@ -46,5 +49,6 @@ mod tests {
         assert_eq!(paths.state, data.join("state.json"));
         assert_eq!(paths.daemon_lock, data.join("daemon.lock"));
         assert_eq!(paths.ui_lock, data.join("ui.lock"));
+        assert_eq!(paths.ui_show, data.join("ui.show"));
     }
 }

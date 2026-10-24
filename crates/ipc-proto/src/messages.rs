@@ -103,6 +103,9 @@ pub struct StatusReport {
     /// When a requested switch-off of start-at-login takes effect, if one is cooling off.
     #[serde(default)]
     pub start_at_login_off_after: Option<Timestamp>,
+    /// Why start-at-login couldn't be registered, if it couldn't.
+    #[serde(default)]
+    pub start_at_login_problem: Option<String>,
 }
 
 /// A config edit waiting out its cooling-off delay.

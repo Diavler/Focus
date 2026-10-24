@@ -1,3 +1,6 @@
+// No console window on Windows: the UI is a windowed program.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! Iced desktop UI. Talks only to `focus-daemon` over IPC, so closing the window never ends a session.
 
 mod daemon;
@@ -6,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use focus_core::{
-    BlockConfig, EndEarlyPolicy, EndReason, EndedSession, RunningSession, Strictness,
+    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, RunningSession, Strictness,
 };
 use focus_install::{InstanceLock, Paths};
 use iced::widget::{
@@ -22,10 +25,11 @@ fn main() -> iced::Result {
     // One UI per install. The daemon checks this lock to see whether a UI is up, and starts one
     // during a session if not (ADR 0008).
     let _ = std::fs::create_dir_all(&paths.data);
-    let _ui_lock = match InstanceLock::acquire(&paths.ui_lock) {
+    let _ui_lock = match InstanceLock::acquire_patiently(&paths.ui_lock) {
         Ok(Some(lock)) => Some(lock),
         Ok(None) => {
-            eprintln!("Focus is already open.");
+            // Already open (often minimised): ask that window to come forward, then leave.
+            let _ = std::fs::write(&paths.ui_show, b"");
             return Ok(());
         }
         Err(error) => {
@@ -37,6 +41,7 @@ fn main() -> iced::Result {
     let minimized = args.iter().any(|arg| arg == "--minimized");
     // Started by a dry-run daemon: restart it as a dry run too.
     let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let _ = std::fs::remove_file(&paths.ui_show);
     iced::application(
         move || App::new(install.clone(), minimized, dry_run),
         App::update,
@@ -61,10 +66,6 @@ const CONFIGS_EVERY_POLLS: u32 = 10;
 /// After this many failed status polls in a row, the UI starts the daemon (ADR 0008).
 const RESTART_DAEMON_AFTER: u32 = 3;
 
-/// A heartbeat older than this means the browser's extension isn't checking in. Matches the
-/// daemon's policy (`BrowserPolicy::default`).
-const HEARTBEAT_STALE: Duration = Duration::from_secs(45);
-
 /// Everything the window shows.
 struct App {
     /// The folder holding the executables, for starting the daemon.
@@ -72,6 +73,8 @@ struct App {
     endpoint: Endpoint,
     /// Failed status polls in a row.
     failed_polls: u32,
+    /// Created by a second launch to ask this window to come forward.
+    show_request: PathBuf,
     /// Restart the daemon with `--dry-run`.
     dry_run: bool,
     /// The last status the daemon sent; `None` until it first answers.
@@ -112,7 +115,7 @@ struct ProbeKey {
 #[derive(Debug, Clone)]
 enum Message {
     Poll,
-    StatusLoaded(Result<StatusReport, String>),
+    StatusLoaded(Result<StatusReport, daemon::StatusError>),
     ConfigsLoaded(Result<Vec<BlockConfig>, String>),
     ConfigPicked(String),
     StrictnessPicked(Strictness),
@@ -134,6 +137,7 @@ impl App {
     fn new(install: PathBuf, minimized: bool, dry_run: bool) -> (Self, Task<Message>) {
         let mut app = Self {
             endpoint: Endpoint::for_install(&install),
+            show_request: Paths::portable(&install).ui_show,
             install,
             failed_polls: 0,
             dry_run,
@@ -166,6 +170,14 @@ impl App {
             Message::Poll => {
                 self.polls = self.polls.wrapping_add(1);
                 let mut tasks = Vec::new();
+                if std::fs::remove_file(&self.show_request).is_ok() {
+                    tasks.push(iced::window::oldest().and_then(|id| {
+                        Task::batch([
+                            iced::window::minimize(id, false),
+                            iced::window::gain_focus(id),
+                        ])
+                    }));
+                }
                 if !self.status_pending {
                     tasks.push(self.fetch_status());
                 }
@@ -185,8 +197,12 @@ impl App {
                         self.failed_polls = 0;
                     }
                     Err(problem) => {
-                        self.unreachable = Some(problem);
-                        self.restart_daemon_if_gone();
+                        self.unreachable = Some(problem.message);
+                        if problem.not_running {
+                            self.restart_daemon_if_gone();
+                        } else {
+                            self.failed_polls = 0;
+                        }
                     }
                 }
                 return self.check_probe();
@@ -251,8 +267,8 @@ impl App {
         Task::none()
     }
 
-    /// Starts the daemon after [`RESTART_DAEMON_AFTER`] failed polls in a row. A daemon that's
-    /// already running (just slow) exits by itself, so this is always safe.
+    /// Starts the daemon after [`RESTART_DAEMON_AFTER`] polls in a row found nothing listening. A
+    /// daemon that is running after all exits by itself, so this is always safe.
     fn restart_daemon_if_gone(&mut self) {
         self.failed_polls += 1;
         if self.failed_polls < RESTART_DAEMON_AFTER {
@@ -574,7 +590,9 @@ fn browser_lines(status: &StatusReport) -> Vec<Line> {
         .iter()
         .map(|browser| {
             let name = browser_name(&browser.browser);
-            let stale = status.now.saturating_duration_since(browser.last_seen) > HEARTBEAT_STALE;
+            // The same limit the daemon enforces.
+            let stale = status.now.saturating_duration_since(browser.last_seen)
+                > BrowserPolicy::default().heartbeat_timeout;
             let (text, warning) = if stale {
                 (format!("{name}: the extension stopped checking in."), true)
             } else if !browser.incognito_allowed {
@@ -607,6 +625,9 @@ fn browser_name(heartbeat: &str) -> String {
 
 /// Whether Focus starts at login, and when a requested switch-off takes effect.
 fn login_line(status: &StatusReport) -> String {
+    if let Some(problem) = &status.start_at_login_problem {
+        return format!("Start at login isn't set up: {problem}");
+    }
     match (status.start_at_login, status.start_at_login_off_after) {
         (true, Some(off_after)) => format!(
             "Starts at login; turning that off takes effect in {} (cooling off).",
@@ -718,6 +739,7 @@ mod tests {
             foreground_app: None,
             start_at_login: true,
             start_at_login_off_after: None,
+            start_at_login_problem: None,
         }
     }
 
@@ -759,20 +781,13 @@ mod tests {
         assert!(login_line(&status).contains("in 1:30"));
         status.start_at_login = false;
         assert!(login_line(&status).starts_with("Doesn't start at login"));
+        status.start_at_login_problem = Some("not available on Linux".into());
+        assert!(login_line(&status).contains("isn't set up: not available on Linux"));
     }
 
     #[test]
     fn summarises_pending_changes() {
-        let mut status = StatusReport {
-            now: Timestamp::from_millis(0),
-            session: SessionState::Idle,
-            pending_changes: Vec::new(),
-            settings_problem: None,
-            browsers: Vec::new(),
-            foreground_app: None,
-            start_at_login: true,
-            start_at_login_off_after: None,
-        };
+        let mut status = status_at(0);
         assert_eq!(pending_summary(&status), None);
         status.pending_changes = vec![
             PendingSummary {

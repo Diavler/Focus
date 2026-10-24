@@ -6,9 +6,8 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-/// How often, and how long apart, [`InstanceLock::acquire`] tries before deciding the lock is
-/// really held. Another process's [`is_held`] check holds it for a moment, which mustn't make a
-/// starting process think it's a duplicate.
+/// How often, and how long apart, [`InstanceLock::acquire_patiently`] tries before deciding the
+/// lock is really held.
 const ATTEMPTS: u32 = 5;
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -20,9 +19,14 @@ pub struct InstanceLock {
 }
 
 impl InstanceLock {
-    /// Takes the lock at `path`, or returns `None` if another process holds it. Retries briefly,
-    /// so a momentary [`is_held`] check from another process isn't mistaken for an owner.
+    /// Takes the lock at `path`, or returns `None` if another process holds it.
     pub fn acquire(path: &Path) -> io::Result<Option<Self>> {
+        Self::try_acquire(path)
+    }
+
+    /// Like [`acquire`](Self::acquire), but retries for half a second, for a lock that other
+    /// processes check with [`is_held`]: their momentary hold mustn't look like an owner.
+    pub fn acquire_patiently(path: &Path) -> io::Result<Option<Self>> {
         for attempt in 1..=ATTEMPTS {
             if let Some(lock) = Self::try_acquire(path)? {
                 return Ok(Some(lock));
@@ -70,6 +74,6 @@ mod tests {
         );
         drop(first);
         assert!(!is_held(&path).unwrap(), "free again after release");
-        assert!(InstanceLock::acquire(&path).unwrap().is_some());
+        assert!(InstanceLock::acquire_patiently(&path).unwrap().is_some());
     }
 }

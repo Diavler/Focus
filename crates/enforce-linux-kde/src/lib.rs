@@ -60,9 +60,12 @@ impl Notifier for PendingEnforcer {
 }
 
 impl Autostart for PendingEnforcer {
+    /// Switching on says it isn't supported yet, so the UI doesn't claim Focus starts at login.
     fn set_enabled(&self, enabled: bool) -> Result<(), AutostartError> {
         if enabled {
-            self.warn_once();
+            return Err(AutostartError::Failed {
+                reason: "not available on Linux until build step 9".into(),
+            });
         }
         Ok(())
     }

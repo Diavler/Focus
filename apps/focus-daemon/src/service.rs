@@ -1,13 +1,12 @@
 //! The daemon's state and how each request changes it. No sockets here, so it's tested directly.
 
 use std::collections::BTreeMap;
-use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
 use focus_core::ports::{
     Autostart, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier,
-    PersistedState, ProcessList, StateStore, StateStoreError,
+    PersistedState, ProcessList, StateStore, StateStoreError, UiWatch,
 };
 use focus_core::{
     BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, SessionError, SessionSpec, SessionState,
@@ -15,15 +14,6 @@ use focus_core::{
 };
 use ipc_proto::{BrowserStatus, DaemonError, PendingSummary, Request, Response, StatusReport};
 use thiserror::Error;
-
-/// Keeps the UI running: it's the daemon's watchdog (it restarts a killed daemon), so during a
-/// session the daemon brings it back if it's gone (ADR 0008).
-pub trait UiWatch: Send + Sync {
-    /// Whether a UI is running for this install.
-    fn is_running(&self) -> bool;
-    /// Starts the UI, minimised.
-    fn launch(&self) -> io::Result<()>;
-}
 
 /// The adapters the daemon runs on, chosen by the composition root (or a test).
 #[derive(Clone)]
@@ -74,6 +64,11 @@ pub struct Service {
     browser_policy: BrowserPolicy,
     /// When the UI was last launched, so a UI that won't start isn't relaunched every check.
     ui_launched_at: Option<Timestamp>,
+    /// The start-at-login value last registered successfully; `None` until the first success,
+    /// so each start registers once (fixing a moved install folder).
+    autostart_applied: Option<bool>,
+    /// Why registering start-at-login failed, shown in `Status`.
+    autostart_problem: Option<String>,
 }
 
 /// The shortest time between two UI launches.
@@ -101,10 +96,11 @@ impl Service {
             watch: BrowserWatch::default(),
             browser_policy: BrowserPolicy::default(),
             ui_launched_at: None,
+            autostart_applied: None,
+            autostart_problem: None,
         };
         service.reload_settings();
-        // Register (or remove) on every start, so a moved install folder fixes itself.
-        service.apply_autostart();
+        service.ensure_autostart();
         Ok(service)
     }
 
@@ -355,6 +351,7 @@ impl Service {
             foreground_app: self.ports.foreground.foreground_app().ok().flatten(),
             start_at_login: self.state.start_at_login.enabled(),
             start_at_login_off_after: self.state.start_at_login.off_after(),
+            start_at_login_problem: self.autostart_problem.clone(),
         }
     }
 
@@ -377,7 +374,7 @@ impl Service {
             self.record_history(&previous.session);
             self.silence_while_running(&previous.session);
             if previous.start_at_login.enabled() != self.state.start_at_login.enabled() {
-                self.apply_autostart();
+                self.ensure_autostart();
             }
         }
         Ok(value)
@@ -412,11 +409,25 @@ impl Service {
         }
     }
 
-    /// Makes the OS's start-at-login registration match the setting in effect.
-    fn apply_autostart(&self) {
+    /// Makes the OS's start-at-login registration match the setting in effect, unless it already
+    /// does. A failure is kept for `Status` and retried on the next call (every few seconds).
+    pub fn ensure_autostart(&mut self) {
         let enabled = self.state.start_at_login.enabled();
-        if let Err(error) = self.ports.autostart.set_enabled(enabled) {
-            tracing::warn!("{error}");
+        if self.autostart_applied == Some(enabled) {
+            return;
+        }
+        match self.ports.autostart.set_enabled(enabled) {
+            Ok(()) => {
+                self.autostart_applied = Some(enabled);
+                self.autostart_problem = None;
+            }
+            Err(error) => {
+                let problem = error.to_string();
+                if self.autostart_problem.as_ref() != Some(&problem) {
+                    tracing::warn!("{problem}");
+                }
+                self.autostart_problem = Some(problem);
+            }
         }
     }
 
@@ -431,16 +442,17 @@ impl Service {
     /// Starts the UI if it isn't running (at most once per [`UI_RELAUNCH_GAP`]).
     pub fn ensure_ui(&mut self) {
         let now = self.now();
+        // A launch "in the future" (the clock went back) counts as long ago, not as recent.
         let recently = self
             .ui_launched_at
-            .is_some_and(|at| now.saturating_duration_since(at) < UI_RELAUNCH_GAP);
+            .is_some_and(|at| now >= at && now.saturating_duration_since(at) < UI_RELAUNCH_GAP);
         if recently || self.ports.ui.is_running() {
             return;
         }
         self.ui_launched_at = Some(now);
         match self.ports.ui.launch() {
             Ok(()) => tracing::info!("started the UI"),
-            Err(error) => tracing::warn!("couldn't start the UI: {error}"),
+            Err(error) => tracing::warn!("{error}"),
         }
     }
 
@@ -477,8 +489,8 @@ mod tests {
     use config_toml::TomlConfigSource;
     use focus_core::ports::NoopHistory;
     use focus_core::testing::{
-        FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
-        RecordingHistory, state_store_contract,
+        FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, FakeUi,
+        MemoryStateStore, RecordingHistory, state_store_contract,
     };
     use focus_core::{EndEarlyResponse, EndReason, RuleAction};
     use tempfile::TempDir;
@@ -509,35 +521,6 @@ mod tests {
         foreground: Arc<FakeForegroundApp>,
         autostart: Arc<FakeAutostart>,
         ui: Arc<FakeUi>,
-    }
-
-    /// A UI that "runs" once launched, until the test kills it.
-    #[derive(Default)]
-    struct FakeUi {
-        running: AtomicBool,
-        launches: std::sync::atomic::AtomicU32,
-    }
-
-    impl FakeUi {
-        fn kill(&self) {
-            self.running.store(false, Ordering::SeqCst);
-        }
-
-        fn launches(&self) -> u32 {
-            self.launches.load(Ordering::SeqCst)
-        }
-    }
-
-    impl UiWatch for FakeUi {
-        fn is_running(&self) -> bool {
-            self.running.load(Ordering::SeqCst)
-        }
-
-        fn launch(&self) -> io::Result<()> {
-            self.launches.fetch_add(1, Ordering::SeqCst);
-            self.running.store(true, Ordering::SeqCst);
-            Ok(())
-        }
     }
 
     impl Harness {
@@ -1104,5 +1087,63 @@ mod tests {
         harness.clock.advance(UI_RELAUNCH_GAP);
         service.watch_ui();
         assert_eq!(harness.ui.launches(), 2, "brought back after being killed");
+    }
+
+    #[test]
+    fn a_clock_going_back_does_not_block_relaunching_the_ui() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Light);
+        service.watch_ui();
+        harness.ui.kill();
+        harness.clock.set(Timestamp::from_millis(
+            harness.clock.now().as_millis() - 60 * 60 * 1000,
+        ));
+        service.watch_ui();
+        assert_eq!(harness.ui.launches(), 2);
+    }
+
+    /// An autostart that can't register. Injects a failure on purpose, so it's exempt from the
+    /// contract suite (see CLAUDE.md).
+    struct UnsupportedAutostart;
+
+    impl Autostart for UnsupportedAutostart {
+        fn set_enabled(&self, _enabled: bool) -> Result<(), focus_core::ports::AutostartError> {
+            Err(focus_core::ports::AutostartError::Failed {
+                reason: "not here".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn reports_and_retries_a_failed_registration() {
+        let harness = Harness::new();
+        let ports = Ports {
+            autostart: Arc::new(UnsupportedAutostart),
+            ..harness.ports()
+        };
+        let mut service = Service::open(ports, Duration::from_secs(60)).unwrap();
+        let problem = status(&mut service).start_at_login_problem.unwrap();
+        assert!(problem.contains("not here"), "{problem}");
+    }
+
+    #[test]
+    fn registers_once_per_start() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(harness.autostart.enabled(), Some(true));
+        harness.autostart.set_enabled(false).unwrap();
+        service.ensure_autostart();
+        assert_eq!(
+            harness.autostart.enabled(),
+            Some(false),
+            "not rewritten while unchanged"
+        );
+        let _restarted = harness.open();
+        assert_eq!(
+            harness.autostart.enabled(),
+            Some(true),
+            "rewritten on the next start"
+        );
     }
 }

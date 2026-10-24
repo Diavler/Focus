@@ -1,19 +1,25 @@
+// No console window on Windows (see the module docs).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! Per-user daemon that owns sessions and enforcement; the composition root that wires adapters
 //! into `focus-core`.
+//!
+//! On Windows it's a windowed program, so starting it (at login, or from the UI) never opens a
+//! console window that could be closed to stop it. It logs to `data/daemon.log` instead.
 //!
 //! `focus-daemon --dry-run` logs which apps it would close (and the Do Not Disturb prompt it would
 //! show) instead of acting, for trying enforcement safely on a real machine.
 //! `focus-daemon --at-login` is how the login entry starts it: it also opens the UI, minimised.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
 use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
-use focus_daemon::{Ports, Service, SystemClock, UiWatch, serve};
+use focus_daemon::{InstalledUi, Ports, Service, SystemClock, serve};
 use focus_install::{InstanceLock, Paths};
 use ipc_transport::{BindError, Endpoint, bind};
 use state_json::JsonStateStore;
@@ -23,8 +29,6 @@ const STARTER_SETTINGS: &str = include_str!("../starter-settings.toml");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().init();
-
     let exe = std::env::current_exe().context("couldn't find the daemon's own path")?;
     let install = exe
         .parent()
@@ -37,6 +41,8 @@ async fn main() -> anyhow::Result<()> {
             paths.data.display()
         )
     })?;
+
+    init_logging(&paths.data, &paths.daemon_lock);
 
     // Take the install's lock before anything else, so a second daemon exits without binding,
     // reading or writing anything. The lock is held until the process exits.
@@ -95,6 +101,29 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Most a log file grows before the next start moves it to `daemon.log.old`.
+const LOG_LIMIT: u64 = 1024 * 1024;
+
+/// Sends logs to `data/daemon.log` (appending). If it's grown past [`LOG_LIMIT`] and no other
+/// daemon is running, it's moved to `daemon.log.old` first. Without a log file, logs are dropped.
+fn init_logging(data: &Path, daemon_lock: &Path) {
+    let log = data.join("daemon.log");
+    let too_big = std::fs::metadata(&log).is_ok_and(|meta| meta.len() > LOG_LIMIT);
+    if too_big && !focus_install::is_held(daemon_lock).unwrap_or(true) {
+        let _ = std::fs::rename(&log, data.join("daemon.log.old"));
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log);
+    if let Ok(file) = file {
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .init();
+    }
+}
+
 /// Creates the settings file with starter content if it doesn't exist; never overwrites one.
 ///
 /// The content goes to a temp file first and is renamed into place, so an interrupted first run
@@ -114,30 +143,6 @@ fn write_starter_settings(path: &Path) -> anyhow::Result<()> {
     std::fs::rename(&temp, path).with_context(|| format!("creating {}", path.display()))?;
     tracing::info!("created starter settings at {}", path.display());
     Ok(())
-}
-
-/// The UI next to this daemon. It holds `data/ui.lock` while running.
-struct InstalledUi {
-    install: PathBuf,
-    lock: PathBuf,
-    /// Passed on, so a daemon the UI restarts is a dry run too.
-    dry_run: bool,
-}
-
-impl UiWatch for InstalledUi {
-    fn is_running(&self) -> bool {
-        // If the lock can't be checked, assume it's running rather than start UIs in a loop.
-        focus_install::is_held(&self.lock).unwrap_or(true)
-    }
-
-    fn launch(&self) -> std::io::Result<()> {
-        let args: &[&str] = if self.dry_run {
-            &["--minimized", "--dry-run"]
-        } else {
-            &["--minimized"]
-        };
-        focus_install::spawn_sibling(&self.install, "focus-ui", args)
-    }
 }
 
 /// The platform's enforcement adapters. The only `#[cfg]` in the daemon (CLAUDE.md).

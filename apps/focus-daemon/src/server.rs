@@ -124,6 +124,7 @@ async fn tick_forever(shared: Shared) {
                 if enforce {
                     service.enforce();
                     service.watch_ui();
+                    service.ensure_autostart();
                 }
             }
         })
