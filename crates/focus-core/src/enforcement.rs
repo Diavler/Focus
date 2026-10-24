@@ -9,9 +9,10 @@ use crate::time::Timestamp;
 /// A browser the platform knows how to find.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownBrowser {
-    /// The name its Focus extension reports in heartbeats, or `None` if there is no Focus
-    /// extension for it yet (it is then always closed during a session).
-    pub heartbeat_name: Option<String>,
+    /// The names its Focus extension may report in heartbeats (one app can be several browsers,
+    /// e.g. Chrome and Chromium are both `chrome.exe` on Windows). Empty if there is no Focus
+    /// extension for it yet; it is then always closed during a session.
+    pub heartbeat_names: Vec<String>,
     /// Its app (process) name, as `ProcessList` and `Enforcer` understand it.
     pub app: String,
 }
@@ -78,12 +79,13 @@ impl BrowserWatch {
                 continue;
             }
             let first_seen = *self.first_seen.entry(app_key(&browser.app)).or_insert(now);
-            let trusted = browser.heartbeat_name.as_ref().is_some_and(|name| {
-                heartbeats.iter().any(|beat| {
-                    beat.browser.eq_ignore_ascii_case(name)
-                        && beat.incognito_allowed
-                        && now.saturating_duration_since(beat.last_seen) <= policy.heartbeat_timeout
-                })
+            let trusted = heartbeats.iter().any(|beat| {
+                browser
+                    .heartbeat_names
+                    .iter()
+                    .any(|name| beat.browser.eq_ignore_ascii_case(name))
+                    && beat.incognito_allowed
+                    && now.saturating_duration_since(beat.last_seen) <= policy.heartbeat_timeout
             });
             let in_grace = now.saturating_duration_since(first_seen) < policy.grace;
             if !trusted && !in_grace {
@@ -125,11 +127,11 @@ mod tests {
     fn browsers() -> Vec<KnownBrowser> {
         vec![
             KnownBrowser {
-                heartbeat_name: Some("chrome".into()),
+                heartbeat_names: vec!["chrome".into(), "chromium".into()],
                 app: "chrome".into(),
             },
             KnownBrowser {
-                heartbeat_name: None,
+                heartbeat_names: Vec::new(),
                 app: "firefox".into(),
             },
         ]
