@@ -46,10 +46,13 @@ Connects wait at most 3 s and requests at most 5 s, so a stuck daemon shows up a
 
 - The build plan's done-when holds: an in-process integration test starts a session over IPC, restarts the daemon and finds the session still running.
 - Closing or killing the UI never ends a session.
-- **Windows pipe hardening** (added after step 4). Pipe names are machine-wide, so another local user could create `\\.\pipe\focus-daemon-<you>` before your daemon starts. Two defences, in `ipc-transport/src/windows_security.rs` (the one place outside the `enforce-*` crates and the daemon's wiring allowed `#[cfg(windows)]`):
+- **Windows pipe hardening** (added after step 4). Pipe names are machine-wide, so another local user could create `\\.\pipe\focus-daemon-<you>` before your daemon starts. Two defences, in `ipc-transport/src/windows_security.rs` and the endpoint code that calls it (the only place outside the `enforce-*` crates and the daemon's wiring allowed `#[cfg(windows)]`):
   - The daemon creates the pipe with a protected DACL that grants only SYSTEM and the current user's SID, so other users can neither connect to it nor create instances of it.
   - Every client checks who serves the pipe: the server's process ID (`GetNamedPipeServerProcessId`, via `interprocess`), then that process's user SID. Another user's pipe is refused with `PermissionDenied`, and `bind` reports `TakenByAnotherUser` instead of mistaking it for our own daemon.
-  - It uses `windows-sys` and `widestring`, the versions `interprocess` already depends on. The Linux socket gets the equivalent in step 9.
+  - The pipe is named `focus-daemon-<user SID>`, so accounts with the same user name don't collide. SIDs aren't secret, so another local user can still deliberately take the name first: that's denial of service, not impersonation, and it's reported clearly. A random name kept in `data/` would prevent it; not worth it for a single-user machine.
+  - If the server's owner can't be read (for example, the daemon was started as administrator), the client refuses with a message saying so. Focus never needs admin.
+  - It uses `windows-sys` and `widestring`, at the versions `interprocess` already depends on. The Linux socket gets the equivalent in step 9.
+  - Manual check (needs a second Windows account): start `focus-daemon` from a copy of the build as the other user first. Your own daemon should exit with "held by another user's process", and your UI should report the same.
 - The workspace gains `ipc-transport`, which `docs/DESIGN.md`'s folder layout doesn't list.
 - Dependencies added: `interprocess` (local sockets), `tokio`, `tracing` and `tracing-subscriber` (developer diagnostics), and `anyhow` (binaries only). `deny.toml` now allows `0BSD`, which `interprocess`'s helper crates use. No platform-directories crate is needed because of the portable layout.
 - Upgrading means replacing the executables and keeping `data/`. Installers in step 10 must preserve it.

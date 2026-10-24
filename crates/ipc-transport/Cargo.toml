@@ -18,10 +18,9 @@ thiserror.workspace = true
 tokio.workspace = true
 
 # Windows: pipe access limited to the current user, and checking who serves a pipe (ADR 0004).
-# Same versions interprocess already uses.
 [target.'cfg(windows)'.dependencies]
-widestring = "1.2.1"
-windows-sys = { version = "0.61.2", features = [
+widestring.workspace = true
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
