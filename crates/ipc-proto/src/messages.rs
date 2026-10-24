@@ -1,7 +1,9 @@
 //! The requests clients send and the responses the daemon returns.
 
+use focus_core::ports::SecretKey;
 use focus_core::{
-    BlockConfig, EndEarlyResponse, SessionError, SessionState, Strictness, Timestamp, Verdict,
+    AutoStartRule, BlockConfig, CalendarEvent, EndEarlyResponse, PlannedStart, SessionError,
+    SessionState, Strictness, Task, Timestamp, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -46,6 +48,23 @@ pub enum Request {
         /// Check against this configuration instead of the running session's.
         config: Option<String>,
     },
+    /// Stores or (with `None` or a blank value) removes a credential in the OS keychain, then
+    /// syncs the plan. Answered with [`Response::Done`]. Not relayed from the browser.
+    SetSecret {
+        /// Which credential.
+        key: SecretKey,
+        /// The new value.
+        value: Option<String>,
+    },
+    /// The cached calendar events and tasks, the automatic-start rules and what they'll start.
+    /// Answered with [`Response::Plan`]. Not relayed from the browser.
+    Plan,
+    /// Replaces the automatic-start rules in the settings file (keeping the rest of it). Answered
+    /// with [`Response::Done`]. Not relayed from the browser.
+    SetAutoStart {
+        /// The new rules, in order.
+        rules: Vec<AutoStartRule>,
+    },
 }
 
 /// The daemon's answer to one [`Request`].
@@ -72,6 +91,8 @@ pub enum Response {
         /// The configuration that decided, or `None` if no session is running (everything is allowed).
         config: Option<String>,
     },
+    /// Answer to [`Request::Plan`]. Boxed because it's much larger than the other answers.
+    Plan(Box<PlanView>),
     /// The request succeeded and has nothing else to report.
     Done,
     /// The request failed; nothing changed.
@@ -106,6 +127,65 @@ pub struct StatusReport {
     /// Why start-at-login couldn't be registered, if it couldn't.
     #[serde(default)]
     pub start_at_login_problem: Option<String>,
+    /// The calendar and task sources, and the sessions they'll start.
+    #[serde(default)]
+    pub plan: PlanStatus,
+}
+
+/// How the plan sources are doing, and what they'll start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStatus {
+    /// The calendar.
+    pub calendar: SourceStatus,
+    /// The task list.
+    pub tasks: SourceStatus,
+}
+
+/// The plan itself, for the window's agenda. Kept out of [`StatusReport`], which the browser
+/// extension also reads, so event and task titles stay with the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanView {
+    /// The daemon's current time.
+    pub now: Timestamp,
+    /// Cached calendar events (about 12 h back to 7 days ahead), sorted by start.
+    pub events: Vec<CalendarEvent>,
+    /// Cached open tasks (overdue or due within 7 days).
+    pub tasks: Vec<Task>,
+    /// The automatic-start rules in effect, in order.
+    pub rules: Vec<AutoStartRule>,
+    /// Planned sessions that haven't started and still have time left, soonest first.
+    pub upcoming: Vec<PlannedStart>,
+}
+
+/// How one plan source is doing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceStatus {
+    /// The result of the last sync.
+    pub state: SourceState,
+    /// When the cached data was fetched, if there is any.
+    pub fetched_at: Option<Timestamp>,
+    /// How many events or tasks are cached.
+    pub items: usize,
+}
+
+/// The result of the last sync of one source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SourceState {
+    /// Not synced since the daemon started.
+    #[default]
+    Unknown,
+    /// No address or token stored.
+    NotConfigured,
+    /// The last sync worked.
+    Ok,
+    /// The last sync failed; cached data (if any) is still used.
+    Failing {
+        /// What went wrong.
+        problem: String,
+        /// Whether it looked like being offline (rather than a refused token or bad data).
+        offline: bool,
+    },
 }
 
 /// A config edit waiting out its cooling-off delay.
@@ -175,6 +255,18 @@ pub enum DaemonError {
     /// The daemon is stopping and no longer takes requests.
     #[error("the daemon is shutting down")]
     ShuttingDown,
+    /// The settings file couldn't be changed (it would be invalid, or can't be written).
+    #[error("couldn't change the settings: {message}")]
+    Settings {
+        /// What went wrong.
+        message: String,
+    },
+    /// The OS keychain refused to store a credential.
+    #[error("couldn't store the credential: {message}")]
+    Credentials {
+        /// What went wrong.
+        message: String,
+    },
     /// The change couldn't be saved, so it wasn't made.
     #[error("couldn't save state: {message}")]
     Storage {

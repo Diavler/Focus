@@ -88,13 +88,18 @@ pub fn decode<T: DeserializeOwned>(line: &str) -> Result<T, DecodeError> {
 mod tests {
     use std::time::Duration;
 
+    use focus_core::ports::SecretKey;
     use focus_core::{
-        BlockConfig, EndEarlyResponse, Mode, RuleAction, SessionError, SessionSpec, SessionState,
-        Strictness, Timestamp, Verdict,
+        AutoStartRule, BlockConfig, CalendarEvent, EndEarlyResponse, Mode, PlanSource,
+        PlannedStart, RuleAction, SessionError, SessionSpec, SessionState, Strictness, Task,
+        Timestamp, Verdict,
     };
 
     use super::*;
-    use crate::{BrowserStatus, DaemonError, PendingSummary, Request, Response, StatusReport};
+    use crate::{
+        BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
+        SourceState, SourceStatus, StatusReport,
+    };
 
     fn round_trip<T>(message: T)
     where
@@ -129,6 +134,16 @@ mod tests {
                 url: "https://reddit.com/".into(),
                 config: Some("coding".into()),
             },
+            Request::SetSecret {
+                key: SecretKey::TodoistToken,
+                value: Some("token".into()),
+            },
+            Request::SetSecret {
+                key: SecretKey::CalendarUrl,
+                value: None,
+            },
+            Request::Plan,
+            Request::SetAutoStart { rules: Vec::new() },
         ] {
             round_trip(request);
         }
@@ -162,6 +177,51 @@ mod tests {
                 start_at_login: true,
                 start_at_login_off_after: Some(Timestamp::from_millis(77)),
                 start_at_login_problem: None,
+                plan: PlanStatus {
+                    calendar: SourceStatus {
+                        state: SourceState::Failing {
+                            problem: "offline".into(),
+                            offline: true,
+                        },
+                        fetched_at: Some(Timestamp::from_millis(3)),
+                        items: 4,
+                    },
+                    tasks: SourceStatus::default(),
+                },
+            })),
+            Response::Plan(Box::new(PlanView {
+                now: Timestamp::from_millis(10),
+                events: vec![CalendarEvent {
+                    id: "a@1".into(),
+                    title: "Deep work".into(),
+                    start: Timestamp::from_millis(20),
+                    end: Timestamp::from_millis(40),
+                    all_day: false,
+                }],
+                tasks: vec![Task {
+                    id: "1".into(),
+                    title: "Write".into(),
+                    labels: vec!["deep".into()],
+                    due_date: Some("2026-10-24".into()),
+                    due_at: None,
+                    duration: Some(Duration::from_secs(60)),
+                }],
+                rules: vec![AutoStartRule {
+                    config: "coding".into(),
+                    strictness: Strictness::Deep,
+                    calendar_keywords: vec!["#focus".into()],
+                    task_labels: Vec::new(),
+                    task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
+                }],
+                upcoming: vec![PlannedStart {
+                    key: "calendar:a@1".into(),
+                    source: PlanSource::Calendar,
+                    title: "Deep work".into(),
+                    config: "coding".into(),
+                    strictness: Strictness::Deep,
+                    starts_at: Timestamp::from_millis(20),
+                    ends_at: Timestamp::from_millis(40),
+                }],
             })),
             Response::Configs {
                 configs: vec![BlockConfig::new("writing", Mode::Allowlist)],

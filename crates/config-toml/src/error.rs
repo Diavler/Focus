@@ -45,6 +45,36 @@ pub enum Problem {
         /// The configuration.
         config: String,
     },
+    /// An automatic start names a configuration that isn't defined.
+    #[error("auto_start #{number}: there is no configuration named \"{config}\"")]
+    AutoStartUnknownConfig {
+        /// Which `[[auto_start]]` table, counting from 1.
+        number: usize,
+        /// The missing configuration.
+        config: String,
+    },
+    /// An automatic start with nothing to start it.
+    #[error("auto_start #{number}: add `calendar_keywords` or `task_labels`, or it never starts")]
+    AutoStartNoTrigger {
+        /// Which `[[auto_start]]` table, counting from 1.
+        number: usize,
+    },
+    /// A blank keyword or label, which would match everything or nothing.
+    #[error("auto_start #{number}.{key}: entries can't be blank")]
+    AutoStartBlankEntry {
+        /// Which `[[auto_start]]` table, counting from 1.
+        number: usize,
+        /// `calendar_keywords` or `task_labels`.
+        key: &'static str,
+    },
+    /// A task session length that's zero or longer than a session can last.
+    #[error("auto_start #{number}.task_minutes: use 1 to {max}")]
+    AutoStartBadMinutes {
+        /// Which `[[auto_start]]` table, counting from 1.
+        number: usize,
+        /// The longest allowed value.
+        max: u64,
+    },
     /// A URL pattern that doesn't parse.
     #[error("{location}: \"{pattern}\": {error}")]
     BadPattern {

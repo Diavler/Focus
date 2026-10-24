@@ -21,14 +21,28 @@ use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_daemon::{InstalledUi, Ports, Service, SystemClock, serve};
 use focus_install::{InstanceLock, Paths};
+use integrations::{IcalCalendar, TodoistTasks};
 use ipc_transport::{BindError, Endpoint, bind};
+use secrets_keyring::KeyringSecrets;
 use state_json::JsonStateStore;
 
 /// Written to the settings path on first run, so there is something to start a session with.
 const STARTER_SETTINGS: &str = include_str!("../starter-settings.toml");
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// How long shutdown waits for blocking work still running (such as a plan fetch stuck on the
+/// network) before the process exits anyway.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn main() -> anyhow::Result<()> {
+    // Built by hand instead of `#[tokio::main]`, so shutdown doesn't wait out a slow HTTP fetch
+    // on the blocking pool (it's abandoned after `SHUTDOWN_GRACE`; nothing saves after `serve`).
+    let runtime = tokio::runtime::Runtime::new().context("couldn't start the async runtime")?;
+    let result = runtime.block_on(run());
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("couldn't find the daemon's own path")?;
     let install = exe
         .parent()
@@ -68,9 +82,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let at_login = std::env::args().skip(1).any(|arg| arg == "--at-login");
     let enforcement = platform::enforcement(dry_run, install);
+    // The settings file is both read (`ConfigSource`) and edited for the window
+    // (`SettingsEditor`) through one adapter.
+    let settings = Arc::new(TomlConfigSource::new(&paths.settings));
+    // One keychain adapter, shared (`Arc`) by the two sources that read from it and the service
+    // that writes to it.
+    let secrets = Arc::new(KeyringSecrets::new());
     let ports = Ports {
         clock: Arc::new(SystemClock),
-        configs: Arc::new(TomlConfigSource::new(&paths.settings)),
+        configs: settings.clone(),
         store: Arc::new(JsonStateStore::new(&paths.state)),
         history: Arc::new(NoopHistory),
         enforcer: enforcement.enforcer,
@@ -84,6 +104,10 @@ async fn main() -> anyhow::Result<()> {
             lock: paths.ui_lock.clone(),
             dry_run,
         }),
+        calendar: Arc::new(IcalCalendar::new(secrets.clone())),
+        tasks: Arc::new(TodoistTasks::new(secrets.clone())),
+        secrets,
+        settings: settings.clone(),
     };
     let mut service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
     if at_login {

@@ -26,6 +26,12 @@ impl Timestamp {
         Self(self.0.saturating_add(millis))
     }
 
+    /// This instant moved back by `duration`, clamped at the epoch.
+    pub fn saturating_sub(self, duration: Duration) -> Self {
+        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        Self(self.0.saturating_sub(millis))
+    }
+
     /// Time elapsed from `earlier` to `self`, or zero if `earlier` is later.
     pub fn saturating_duration_since(self, earlier: Self) -> Duration {
         Duration::from_millis(self.0.saturating_sub(earlier.0))
@@ -51,6 +57,12 @@ mod tests {
     fn saturates_instead_of_overflowing() {
         let end = Timestamp::from_millis(u64::MAX - 1).saturating_add(Duration::MAX);
         assert_eq!(end.as_millis(), u64::MAX);
+        assert_eq!(
+            Timestamp::from_millis(5)
+                .saturating_sub(Duration::from_secs(1))
+                .as_millis(),
+            0
+        );
         assert_eq!(
             Timestamp::from_millis(0).saturating_duration_since(end),
             Duration::ZERO

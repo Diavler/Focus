@@ -1,0 +1,21 @@
+[package]
+name = "secrets-keyring"
+description = "OS keychain adapter for the Secrets port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+focus-core.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+keyring-core.workspace = true
+windows-native-keyring-store.workspace = true
+
+[dev-dependencies]
+focus-core = { workspace = true, features = ["testing"] }

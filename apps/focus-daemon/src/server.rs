@@ -20,6 +20,9 @@ const RELOAD_EVERY_TICKS: u32 = 5;
 /// Blocked apps and unwatched browsers are checked every this many ticks.
 const ENFORCE_EVERY_TICKS: u32 = 5;
 
+/// How often the sync task asks whether a plan fetch is due.
+const SYNC_CHECK: Duration = Duration::from_secs(2);
+
 /// Pause after a failed `accept`, so a persistent error doesn't spin the CPU.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
@@ -36,6 +39,7 @@ pub async fn serve(listener: Listener, service: Service, shutdown: impl Future<O
     let shared: Shared = Arc::new(Mutex::new(Some(service)));
     let mut tasks = JoinSet::new();
     tasks.spawn(tick_forever(Arc::clone(&shared)));
+    tasks.spawn(sync_forever(Arc::clone(&shared)));
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -121,6 +125,7 @@ async fn tick_forever(shared: Shared) {
                     service.reload_settings();
                 }
                 service.tick();
+                service.auto_start();
                 if enforce {
                     service.enforce();
                     service.watch_ui();
@@ -133,6 +138,37 @@ async fn tick_forever(shared: Shared) {
             tracing::error!("a tick panicked: {error}");
         }
         ticks = ticks.wrapping_add(1);
+    }
+}
+
+/// Fetches the calendar and tasks whenever the service says a fetch is due. The fetch itself runs
+/// on the blocking pool *without* the service's lock, since the network can take seconds and
+/// requests and ticks must keep being answered meanwhile.
+async fn sync_forever(shared: Shared) {
+    let mut interval = tokio::time::interval(SYNC_CHECK);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let due = Arc::clone(&shared);
+        let fetch = tokio::task::spawn_blocking(move || {
+            lock(&due).as_mut().and_then(Service::plan_fetch_due)
+        })
+        .await;
+        let Ok(Some(fetch)) = fetch else { continue };
+        let Ok(fetched) = tokio::task::spawn_blocking(move || fetch.run()).await else {
+            tracing::error!("a plan fetch panicked");
+            continue;
+        };
+        let store = Arc::clone(&shared);
+        let stored = tokio::task::spawn_blocking(move || {
+            if let Some(service) = lock(&store).as_mut() {
+                service.store_plan(&fetched);
+            }
+        })
+        .await;
+        if let Err(error) = stored {
+            tracing::error!("storing the plan panicked: {error}");
+        }
     }
 }
 

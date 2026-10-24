@@ -9,3 +9,17 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+focus-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+icalendar.workspace = true
+rrule.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+
+[dev-dependencies]
+focus-core = { workspace = true, features = ["testing"] }

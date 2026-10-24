@@ -4,15 +4,19 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use crate::auto_start::AutoStartRule;
 use crate::config::BlockConfig;
 use crate::enforcement::{same_app, select_apps};
 use crate::login::Settings;
+use crate::plan::{CalendarEvent, Task};
 use crate::ports::{
-    Autostart, AutostartError, Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer,
-    ForegroundApp, History, HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState,
-    ProcessList, StateStore, StateStoreError, UiWatch, UiWatchError,
+    Autostart, AutostartError, CalendarSource, Clock, ConfigSource, ConfigSourceError,
+    EnforceError, Enforcer, ForegroundApp, History, HistoryError, HistoryEvent, Notifier,
+    NotifyError, PersistedState, ProcessList, SecretKey, Secrets, SecretsError, SettingsEditor,
+    SourceError, StateStore, StateStoreError, TaskSource, UiWatch, UiWatchError,
 };
 use crate::time::Timestamp;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Locks a fake's mutex; a panicking test can't leave a fake's plain data half-updated.
@@ -58,32 +62,53 @@ impl Clock for FakeClock {
     }
 }
 
-/// A config source that returns a fixed result.
+/// A config source that returns a fixed result, and edits it when asked.
 #[derive(Debug)]
 pub struct FakeConfigSource {
-    result: Result<Settings, ConfigSourceError>,
+    result: Mutex<Result<Settings, ConfigSourceError>>,
 }
 
 impl FakeConfigSource {
     /// A source that loads `configs`, with the other settings at their defaults.
     pub fn new(configs: Vec<BlockConfig>) -> Self {
         Self {
-            result: Ok(Settings {
+            result: Mutex::new(Ok(Settings {
                 configs,
                 ..Settings::default()
-            }),
+            })),
         }
     }
 
     /// A source that always fails with `error`.
     pub fn failing(error: ConfigSourceError) -> Self {
-        Self { result: Err(error) }
+        Self {
+            result: Mutex::new(Err(error)),
+        }
     }
 }
 
 impl ConfigSource for FakeConfigSource {
     fn load(&self) -> Result<Settings, ConfigSourceError> {
-        self.result.clone()
+        lock(&self.result).clone()
+    }
+}
+
+impl SettingsEditor for FakeConfigSource {
+    fn set_auto_start(&self, rules: &[AutoStartRule]) -> Result<(), ConfigSourceError> {
+        let mut result = lock(&self.result);
+        let settings = result.as_mut().map_err(|error| error.clone())?;
+        if let Some(rule) = rules.iter().find(|rule| {
+            !settings
+                .configs
+                .iter()
+                .any(|config| config.name == rule.config)
+        }) {
+            return Err(ConfigSourceError::Invalid {
+                reason: format!("there is no configuration named \"{}\"", rule.config),
+            });
+        }
+        settings.auto_start = rules.to_vec();
+        Ok(())
     }
 }
 
@@ -189,6 +214,103 @@ impl FakeForegroundApp {
 impl ForegroundApp for FakeForegroundApp {
     fn foreground_app(&self) -> Result<Option<String>, EnforceError> {
         Ok(lock(&self.app).clone())
+    }
+}
+
+/// A calendar holding whatever events (or error) it was last given.
+#[derive(Debug)]
+pub struct FakeCalendar {
+    result: Mutex<Result<Vec<CalendarEvent>, SourceError>>,
+}
+
+impl FakeCalendar {
+    /// A calendar with these events.
+    pub fn new(events: Vec<CalendarEvent>) -> Self {
+        Self {
+            result: Mutex::new(Ok(events)),
+        }
+    }
+
+    /// Replaces the events, or makes every read fail.
+    pub fn set(&self, result: Result<Vec<CalendarEvent>, SourceError>) {
+        *lock(&self.result) = result;
+    }
+}
+
+impl Default for FakeCalendar {
+    /// A calendar that isn't set up.
+    fn default() -> Self {
+        Self {
+            result: Mutex::new(Err(SourceError::NotConfigured)),
+        }
+    }
+}
+
+impl CalendarSource for FakeCalendar {
+    fn events(&self, from: Timestamp, to: Timestamp) -> Result<Vec<CalendarEvent>, SourceError> {
+        let mut events: Vec<CalendarEvent> = lock(&self.result)
+            .clone()?
+            .into_iter()
+            .filter(|event| event.overlaps(from, to))
+            .collect();
+        events.sort_by_key(|event| event.start);
+        Ok(events)
+    }
+}
+
+/// A task list holding whatever tasks (or error) it was last given.
+#[derive(Debug)]
+pub struct FakeTasks {
+    result: Mutex<Result<Vec<Task>, SourceError>>,
+}
+
+impl FakeTasks {
+    /// A task list with these tasks.
+    pub fn new(tasks: Vec<Task>) -> Self {
+        Self {
+            result: Mutex::new(Ok(tasks)),
+        }
+    }
+
+    /// Replaces the tasks, or makes every read fail.
+    pub fn set(&self, result: Result<Vec<Task>, SourceError>) {
+        *lock(&self.result) = result;
+    }
+}
+
+impl Default for FakeTasks {
+    /// A task list that isn't set up.
+    fn default() -> Self {
+        Self {
+            result: Mutex::new(Err(SourceError::NotConfigured)),
+        }
+    }
+}
+
+impl TaskSource for FakeTasks {
+    fn tasks(&self) -> Result<Vec<Task>, SourceError> {
+        lock(&self.result).clone()
+    }
+}
+
+/// A keychain in memory.
+#[derive(Debug, Default)]
+pub struct MemorySecrets {
+    values: Mutex<HashMap<SecretKey, String>>,
+}
+
+impl Secrets for MemorySecrets {
+    fn load(&self, key: SecretKey) -> Result<Option<String>, SecretsError> {
+        Ok(lock(&self.values).get(&key).cloned())
+    }
+
+    fn store(&self, key: SecretKey, value: Option<&str>) -> Result<(), SecretsError> {
+        let mut values = lock(&self.values);
+        match value {
+            Some(value) => values.insert(key, value.to_owned()),
+            None => values.remove(&key),
+        };
+        Ok(())
     }
 }
 

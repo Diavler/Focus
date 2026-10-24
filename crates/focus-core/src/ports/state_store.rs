@@ -3,8 +3,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::auto_start::AutoStartLog;
 use crate::cooling::ConfigState;
 use crate::login::LoginSetting;
+use crate::plan::PlanCache;
 use crate::session::SessionState;
 
 /// Everything the daemon persists between runs.
@@ -18,6 +20,12 @@ pub struct PersistedState {
     /// Whether Focus starts at login, and a switch-off still cooling off.
     #[serde(default)]
     pub start_at_login: LoginSetting,
+    /// The last calendar and task fetches, for automatic starts while offline.
+    #[serde(default)]
+    pub plan: PlanCache,
+    /// Planned sessions that have already started.
+    #[serde(default)]
+    pub auto_started: AutoStartLog,
 }
 
 /// Saves and loads [`PersistedState`].

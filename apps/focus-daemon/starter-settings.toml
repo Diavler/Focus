@@ -24,3 +24,16 @@ apps = ["discord", "steam"]
 [configs.writing]
 mode = "allowlist"
 allow = ["docs.google.com", "dictionary.com"]
+
+# Start sessions from your plan. Set up the calendar's secret iCal address and your Todoist token
+# in the Focus window (they're kept in the system keychain, not here), then add rules under
+# "Automatic starts" in the window, which writes them here. By hand, they look like this:
+# An event whose title contains a keyword runs the config until the event ends; a task due at a
+# time with one of the labels runs it for the task's duration (or task_minutes).
+#
+# [[auto_start]]
+# config = "coding"
+# strictness = "deep"              # light (default), deep or locked
+# calendar_keywords = ["#focus"]
+# task_labels = ["deep"]
+# task_minutes = 50

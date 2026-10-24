@@ -1,0 +1,69 @@
+{
+  "results": [
+    {
+      "user_id": "2671355",
+      "id": "6X7rM8997g3RQmvh",
+      "project_id": "6Jf8VQXxpwv56VQ7",
+      "section_id": null,
+      "parent_id": null,
+      "added_by_uid": "2671355",
+      "assigned_by_uid": null,
+      "responsible_uid": null,
+      "labels": ["deep", "work"],
+      "deadline": null,
+      "duration": { "amount": 90, "unit": "minute" },
+      "checked": false,
+      "is_deleted": false,
+      "added_at": "2026-10-20T08:12:44.123456Z",
+      "completed_at": null,
+      "updated_at": "2026-10-22T19:03:10.654321Z",
+      "due": {
+        "date": "2026-10-23T15:00:00Z",
+        "timezone": "Europe/Berlin",
+        "string": "Oct 23 5pm",
+        "lang": "en",
+        "is_recurring": false
+      },
+      "priority": 4,
+      "child_order": 1,
+      "content": "Write the auth PR",
+      "description": "",
+      "note_count": 0,
+      "day_order": 1,
+      "is_collapsed": false
+    },
+    {
+      "user_id": "2671355",
+      "id": "6X7rfFVPjhvv84XG",
+      "project_id": "6Jf8VQXxpwv56VQ7",
+      "section_id": null,
+      "parent_id": null,
+      "added_by_uid": "2671355",
+      "assigned_by_uid": null,
+      "responsible_uid": null,
+      "labels": ["deep"],
+      "deadline": null,
+      "duration": null,
+      "checked": false,
+      "is_deleted": false,
+      "added_at": "2026-10-21T10:00:00.000000Z",
+      "completed_at": null,
+      "updated_at": "2026-10-21T10:00:00.000000Z",
+      "due": {
+        "date": "2026-10-24T09:30:00",
+        "timezone": null,
+        "string": "every day 9:30",
+        "lang": "en",
+        "is_recurring": true
+      },
+      "priority": 1,
+      "child_order": 2,
+      "content": "Read a chapter",
+      "description": "Morning reading",
+      "note_count": 0,
+      "day_order": -1,
+      "is_collapsed": false
+    }
+  ],
+  "next_cursor": "c2"
+}

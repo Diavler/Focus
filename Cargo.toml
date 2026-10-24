@@ -27,10 +27,13 @@ win-user = { path = "crates/win-user" }
 focus-install = { path = "crates/focus-install" }
 enforce-windows = { path = "crates/enforce-windows" }
 enforce-linux-kde = { path = "crates/enforce-linux-kde" }
+integrations = { path = "crates/integrations" }
+secrets-keyring = { path = "crates/secrets-keyring" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
 toml = "1.1.8"
+toml_edit = "0.25.17"
 tempfile = "3.27.0"
 anyhow = "1.0.104"
 interprocess = { version = "2.4.7", features = ["tokio"] }
@@ -40,6 +43,14 @@ tracing-subscriber = "0.3.23"
 # Windows-only crates, at the versions interprocess already uses.
 widestring = "1.2.1"
 windows-sys = "0.61.2"
+# Integrations (step 7). `ureq` is synchronous like the ports, and uses rustls with ring.
+ureq = { version = "3.5.0", default-features = false, features = ["rustls", "platform-verifier", "json", "gzip"] }
+icalendar = { version = "0.17.15", default-features = false, features = ["parser"] }
+rrule = "0.14.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.4"
+keyring-core = "1.0.1"
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # Iced defaults minus `linux-theme-detection`, which pulls in zbus 5 (unmaintained zvariant;
 # see deny.toml). Our own D-Bus code will use zbus 6.

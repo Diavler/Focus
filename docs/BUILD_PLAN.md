@@ -42,8 +42,22 @@ Pick a config, strictness and duration; start a session; show status and time le
 `integrations`: `CalendarSource` from the private iCal URL and `TaskSource` from Todoist (personal token in `keyring`). Cache the last fetch in the state file. Start sessions from a calendar keyword or Todoist label mapped to a config.
 **Done when:** a tagged calendar event starts the mapped config automatically, offline start uses cached data, and both adapters pass contract tests against recorded fixtures.
 
+### 7b. Settings in the window
+Everything in `settings.toml` editable from the UI, through the daemon's `SettingsEditor` (the file stays the source of truth and stays hand-editable, ADR 0009):
+- Block configurations: mode, site rules (allow, ask, delay, hide feed, block) with a URL-pattern helper, included shared lists, apps to close (picked from running apps).
+- Shared lists.
+- Start at login (switching off still cools off).
+Hover help on every control, and plain-language validation messages.
+
+**Kill switch:** stops the daemon and the UI (not the browser's native messaging host), ending any running session and block. It needs friction: a wait, then an "Are you sure?" confirmation. Decide while planning:
+- whether it works during a Locked session, and with what wait;
+- whether Focus still starts at the next login;
+- how to stop the UI and daemon restarting each other (ADR 0008).
+
+**Done when:** a new user can set up configurations, rules and connections without opening `settings.toml`, and the kill switch works with its wait and confirmation (manual test notes for Windows).
+
 ### 8. Bypass friction and rabbit-hole tools
-Unlock budget for Deep, growing Delay, drift prompt (hops away from the starting sites), Later button (sends link to Todoist inbox), tab cap, parking-lot hotkey (`RegisterHotKey`; the XDG GlobalShortcuts portal comes in step 9).
+Unlock budget for Deep, growing Delay, drift prompt (hops away from the starting sites), Later button (sends link to Todoist inbox), tab cap, parking-lot hotkey (`RegisterHotKey`; the XDG GlobalShortcuts portal comes in step 9). Windows Do Not Disturb: a small button in the UI that opens the notification settings, instead of opening them by itself at session start. Keep it per platform, since KDE can silence notifications itself.
 **Done when:** each behaviour has unit tests in the core and a manual test note for the platform parts.
 
 ### 9. Linux (KDE Plasma) parity

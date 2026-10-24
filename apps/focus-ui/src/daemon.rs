@@ -6,7 +6,7 @@
 use std::io;
 
 use focus_core::{BlockConfig, Verdict};
-use ipc_proto::{Request, StatusReport};
+use ipc_proto::{PlanView, Request, Response, StatusReport};
 use ipc_transport::{Client, ClientError, Endpoint};
 
 /// Why the status couldn't be read.
@@ -43,6 +43,15 @@ fn is_not_running(error: &ClientError) -> bool {
 pub async fn configs(endpoint: Endpoint) -> Result<Vec<BlockConfig>, String> {
     let mut client = Client::connect(&endpoint).await.map_err(text)?;
     client.list_configs().await.map_err(text)
+}
+
+/// The calendar, tasks and automatic-start rules.
+pub async fn plan(endpoint: Endpoint) -> Result<PlanView, String> {
+    let mut client = Client::connect(&endpoint).await.map_err(text)?;
+    match client.request(&Request::Plan).await.map_err(text)? {
+        Response::Plan(plan) => Ok(*plan),
+        other => Err(format!("unexpected answer: {other:?}")),
+    }
 }
 
 /// Sends a request whose answer only matters if it's an error.
