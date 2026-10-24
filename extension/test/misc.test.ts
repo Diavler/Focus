@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { hideFeedCss } from "../src/feeds";
+import { FEED_MATCHES, hideFeedCss } from "../src/feeds";
 import { BASE_DELAY, MAX_DELAY, delaySeconds } from "../src/friction";
 
 describe("delaySeconds", () => {
@@ -40,5 +40,9 @@ describe("chromium manifest", () => {
       expect.arrayContaining(["nativeMessaging", "declarativeNetRequestWithHostAccess", "webNavigation"]),
     );
     expect(manifest.web_accessible_resources[0].resources).toContain("interstitial.html");
+  });
+
+  it("runs the feed script exactly where the background expects it", () => {
+    expect(manifest.content_scripts[0].matches).toEqual(FEED_MATCHES);
   });
 });

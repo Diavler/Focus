@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { GRANT_PRIORITY, type DnrRule, parsePattern, patternRegex, priority, toDnrRules } from "../src/dnr";
+import { type DnrRule, decide as decideLocally, parsePattern, patternRegex, priority, toDnrRules } from "../src/dnr";
 import type { BlockConfig, Rule, Verdict } from "../src/protocol";
 
 const BASE = "chrome-extension://hjeodjhhiiaojdakfafaebijlmdckebo/";
@@ -97,10 +97,22 @@ describe("rule shapes", () => {
     expect(rules[5]?.action).toEqual({ type: "allow" });
   });
 
-  it("keeps every rule below grants and above the allowlist catch-all", () => {
-    for (const rule of rules) {
-      expect(rule.priority).toBeGreaterThan(1);
-      expect(rule.priority).toBeLessThan(GRANT_PRIORITY);
+  it("keeps every rule above the allowlist catch-all", () => {
+    for (const rule of rules) expect(rule.priority).toBeGreaterThan(1);
+  });
+
+  it("decides locally exactly as the DNR rules do", () => {
+    const writing = config([["docs.google.com", "allow"]], "allowlist");
+    for (const [cfg, url] of [
+      [CODING, "https://www.reddit.com/"],
+      [CODING, "https://www.reddit.com/r/rust/comments/a/b"],
+      [CODING, "https://x.com/home"],
+      [CODING, "https://example.org/"],
+      [writing, "https://docs.google.com/d"],
+      [writing, "https://news.ycombinator.com"],
+    ] as const) {
+      const expected = decide(cfg, url);
+      expect(decideLocally(cfg, url).verdict, url).toEqual(expected === "no match" ? "allow" : expected);
     }
   });
 });

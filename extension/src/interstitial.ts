@@ -2,7 +2,10 @@
 
 import browser from "webextension-polyfill";
 
-const action = new URLSearchParams(location.search).get("a") ?? "block";
+const params = new URLSearchParams(location.search);
+const action = params.get("a") ?? "block";
+/** After an in-page navigation the blocked URL is the previous history entry, so skip it too. */
+const stepsBack = params.get("spa") === "1" ? 2 : 1;
 const target = location.hash.slice(1);
 
 function show(id: string): HTMLElement {
@@ -13,7 +16,7 @@ function show(id: string): HTMLElement {
 }
 
 function goBack(): void {
-  if (history.length > 1) history.back();
+  if (history.length > stepsBack) history.go(-stepsBack);
   else window.close();
 }
 

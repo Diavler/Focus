@@ -6,15 +6,12 @@
 // Hide-feed become DNR `allow` (the page loads; the content script hides feeds), Ask, Delay and
 // Block redirect to the interstitial. Pattern parsing mirrors crates/focus-core/src/pattern.rs.
 
-import type { BlockConfig, RuleAction, Verdict } from "./protocol";
+import { actionOf, type BlockConfig, type RuleAction, type Verdict } from "./protocol";
 
 /** Chrome's limit on regex rules per extension. */
 export const MAX_REGEX_RULES = 1000;
 
-/** Above every config rule, for temporary "continue" grants. */
-export const GRANT_PRIORITY = 2_000_000_000;
-
-/** A DNR rule as passed to updateDynamicRules. */
+/** A DNR rule as passed to updateDynamicRules or updateSessionRules. */
 export interface DnrRule {
   id: number;
   priority: number;
@@ -23,7 +20,18 @@ export interface DnrRule {
     regexFilter: string;
     isUrlFilterCaseSensitive: false;
     resourceTypes: ["main_frame"];
+    /** Only for session rules, e.g. a grant limited to one tab. */
+    tabIds?: number[];
   };
+}
+
+/** What the rules decide for one URL, and which rule decided it. */
+export interface Decision {
+  verdict: Verdict;
+  /** The deciding rule's regex, or null when no rule matched and the mode decided. */
+  regexFilter: string | null;
+  /** The deciding rule's DNR priority (1 for the allowlist catch-all, 0 for nothing). */
+  priority: number;
 }
 
 /** A pattern split like the core's UrlPattern: lower-cased host and normalised path glob. */
@@ -73,7 +81,7 @@ const STRICTNESS: Record<RuleAction | "allow", number> = {
 export function priority(parts: PatternParts, verdict: Verdict): number {
   const labels = parts.host.split(".").length;
   const literal = parts.path === null ? 0 : new TextEncoder().encode(parts.path.replaceAll("*", "")).length;
-  const rank = STRICTNESS[verdict === "allow" ? "allow" : verdict.restrict];
+  const rank = STRICTNESS[actionOf(verdict) ?? "allow"];
   return 2 + labels * 1_000_000 + Math.min(literal, 99_999) * 10 + rank;
 }
 
@@ -107,9 +115,36 @@ export function patternRegex(parts: PatternParts): string {
   return `${prefix}${body}/?${end}`;
 }
 
-/** Where Ask, Delay and Block send the page: `<base>interstitial.html?a=<action>#<url>`. */
-export function interstitialUrl(base: string, action: RuleAction, url: string): string {
-  return `${base}interstitial.html?a=${action}#${url}`;
+/**
+ * Where Ask, Delay and Block send the page: `<base>interstitial.html?a=<action>#<url>`. `spa`
+ * marks a redirect after an in-page navigation, where the blocked URL is already in the tab's
+ * history, so "Go back" must skip it too.
+ */
+export function interstitialUrl(base: string, action: RuleAction, url: string, spa = false): string {
+  return `${base}interstitial.html?a=${action}${spa ? "&spa=1" : ""}#${url}`;
+}
+
+/**
+ * What the DNR rules for `config` do with `url`, worked out without the browser: the matching
+ * rule with the highest priority wins, as in Chrome. Used when the daemon can't be asked, and to
+ * scope grants to the rule that decided.
+ */
+export function decide(config: BlockConfig, url: string): Decision {
+  let best: Decision | null = null;
+  for (const rule of config.rules) {
+    const parts = parsePattern(rule.pattern);
+    if (!parts) continue;
+    const regexFilter = patternRegex(parts);
+    const rulePriority = priority(parts, rule.verdict);
+    if ((!best || rulePriority > best.priority) && new RegExp(regexFilter, "i").test(url)) {
+      best = { verdict: rule.verdict, regexFilter, priority: rulePriority };
+    }
+  }
+  if (best) return best;
+  if (config.mode === "allowlist" && /^https?:\/\//i.test(url)) {
+    return { verdict: { restrict: "block" }, regexFilter: null, priority: 1 };
+  }
+  return { verdict: "allow", regexFilter: null, priority: 0 };
 }
 
 /** The DNR rules for a session running `config`; `base` is the extension's root URL. */
@@ -132,7 +167,7 @@ function dnrRule(id: number, priority: number, regexFilter: string, verdict: Ver
     isUrlFilterCaseSensitive: false as const,
     resourceTypes: ["main_frame"] as ["main_frame"],
   };
-  const action = verdict === "allow" ? null : verdict.restrict;
+  const action = actionOf(verdict);
   if (action === null || action === "hide_feed") {
     return { id, priority, action: { type: "allow" }, condition };
   }

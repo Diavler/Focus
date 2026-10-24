@@ -1,6 +1,9 @@
 // What "hide feed" hides on each site: feeds and recommendations, never the page you came for.
 // Sites change their markup, so these selectors are best effort and checked by hand.
 
+/** The pages the feed content script runs on; must match the manifests' content_scripts. */
+export const FEED_MATCHES = ["*://*.reddit.com/*", "*://*.youtube.com/*"];
+
 const SITES: { domain: string; selectors: string[] }[] = [
   {
     domain: "reddit.com",
