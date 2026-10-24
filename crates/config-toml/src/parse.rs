@@ -1,11 +1,14 @@
 //! Turns settings text into validated configurations with shared lists included.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
-use focus_core::{BlockConfig, Mode, Rule, Settings, SharedList, UrlPattern, Verdict};
+use focus_core::{
+    AutoStartRule, BlockConfig, Mode, Rule, SessionState, Settings, SharedList, UrlPattern, Verdict,
+};
 
 use crate::error::{Problem, SettingsError};
-use crate::schema::{RuleGroup, SettingsFile};
+use crate::schema::{AutoStartTable, RuleGroup, SettingsFile};
 
 /// Parses and validates settings text. Returns the settings (configurations sorted by name), or
 /// every problem found.
@@ -64,10 +67,18 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
         })
         .collect();
 
+    let auto_start = file
+        .auto_start
+        .iter()
+        .enumerate()
+        .map(|(index, table)| build_auto_start(index + 1, table, &configs, &mut problems))
+        .collect();
+
     if problems.is_empty() {
         Ok(Settings {
             configs,
             start_at_login: file.start_at_login,
+            auto_start,
         })
     } else {
         Err(SettingsError::Invalid { problems })
@@ -90,6 +101,62 @@ fn build_rules(table: &str, groups: [RuleGroup<'_>; 5], problems: &mut Vec<Probl
         }
     }
     rules
+}
+
+/// One automatic-start rule, recording a problem for anything that doesn't make sense.
+fn build_auto_start(
+    number: usize,
+    table: &AutoStartTable,
+    configs: &[BlockConfig],
+    problems: &mut Vec<Problem>,
+) -> AutoStartRule {
+    if !configs.iter().any(|config| config.name == table.config) {
+        problems.push(Problem::AutoStartUnknownConfig {
+            number,
+            config: table.config.clone(),
+        });
+    }
+    if table.calendar_keywords.is_empty() && table.task_labels.is_empty() {
+        problems.push(Problem::AutoStartNoTrigger { number });
+    }
+    for (key, entries) in [
+        ("calendar_keywords", &table.calendar_keywords),
+        ("task_labels", &table.task_labels),
+    ] {
+        let blank = entries
+            .iter()
+            .any(|entry| entry.trim().trim_start_matches('@').is_empty());
+        if blank {
+            problems.push(Problem::AutoStartBlankEntry { number, key });
+        }
+    }
+    let max_minutes = SessionState::MAX_DURATION.as_secs() / 60;
+    let task_duration = match table.task_minutes {
+        None => AutoStartRule::DEFAULT_TASK_DURATION,
+        Some(minutes) if (1..=max_minutes).contains(&minutes) => Duration::from_secs(minutes * 60),
+        Some(_) => {
+            problems.push(Problem::AutoStartBadMinutes {
+                number,
+                max: max_minutes,
+            });
+            AutoStartRule::DEFAULT_TASK_DURATION
+        }
+    };
+    AutoStartRule {
+        config: table.config.clone(),
+        strictness: table.strictness,
+        calendar_keywords: table
+            .calendar_keywords
+            .iter()
+            .map(|keyword| keyword.trim().to_owned())
+            .collect(),
+        task_labels: table
+            .task_labels
+            .iter()
+            .map(|label| label.trim().trim_start_matches('@').to_owned())
+            .collect(),
+        task_duration,
+    }
 }
 
 fn check_name(table: &'static str, name: &str, problems: &mut Vec<Problem>) {
@@ -253,6 +320,90 @@ mod tests {
             error.to_string(),
             "the settings have problems:\n\
              - configs.writing: an allowlist needs at least one `allow` entry, or every site is blocked"
+        );
+    }
+
+    #[test]
+    fn parses_automatic_starts_in_file_order() {
+        let settings = parse_settings(&format!(
+            r#"{DESIGN_EXAMPLE}
+            [[auto_start]]
+            config = "coding"
+            strictness = "deep"
+            calendar_keywords = [" #focus "]
+            task_labels = ["@deep"]
+            task_minutes = 25
+
+            [[auto_start]]
+            config = "writing"
+            calendar_keywords = ["Writing"]
+            "#
+        ))
+        .unwrap();
+        let [coding, writing] = settings.auto_start.as_slice() else {
+            panic!("expected two rules, got {:?}", settings.auto_start);
+        };
+        assert_eq!(
+            coding,
+            &AutoStartRule {
+                config: "coding".into(),
+                strictness: focus_core::Strictness::Deep,
+                calendar_keywords: vec!["#focus".into()],
+                task_labels: vec!["deep".into()],
+                task_duration: Duration::from_secs(25 * 60),
+            }
+        );
+        assert_eq!(
+            writing.strictness,
+            focus_core::Strictness::Light,
+            "defaults to light"
+        );
+        assert_eq!(writing.task_duration, AutoStartRule::DEFAULT_TASK_DURATION);
+    }
+
+    #[test]
+    fn reports_automatic_start_problems() {
+        let found = problems(&format!(
+            r#"{DESIGN_EXAMPLE}
+            [[auto_start]]
+            config = "gaming"
+            calendar_keywords = ["play"]
+
+            [[auto_start]]
+            config = "coding"
+
+            [[auto_start]]
+            config = "coding"
+            calendar_keywords = ["  "]
+            task_labels = ["@"]
+            task_minutes = 0
+            "#
+        ));
+        assert_eq!(
+            found,
+            [
+                Problem::AutoStartUnknownConfig {
+                    number: 1,
+                    config: "gaming".into()
+                },
+                Problem::AutoStartNoTrigger { number: 2 },
+                Problem::AutoStartBlankEntry {
+                    number: 3,
+                    key: "calendar_keywords"
+                },
+                Problem::AutoStartBlankEntry {
+                    number: 3,
+                    key: "task_labels"
+                },
+                Problem::AutoStartBadMinutes {
+                    number: 3,
+                    max: 720
+                },
+            ]
+        );
+        assert_eq!(
+            found[1].to_string(),
+            "auto_start #2: add `calendar_keywords` or `task_labels`, or it never starts"
         );
     }
 

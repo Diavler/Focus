@@ -45,7 +45,8 @@ struct EnvelopeIn {
 /// What reading one file found.
 enum Read {
     Missing,
-    Found(PersistedState),
+    // Boxed: the state is much larger than the other variants.
+    Found(Box<PersistedState>),
     Corrupt(String),
 }
 
@@ -88,15 +89,17 @@ impl JsonStateStore {
                 ),
             });
         }
-        Ok(serde_json::from_value(envelope.state)
-            .map_or_else(|error| Read::Corrupt(error.to_string()), Read::Found))
+        Ok(serde_json::from_value(envelope.state).map_or_else(
+            |error| Read::Corrupt(error.to_string()),
+            |state| Read::Found(Box::new(state)),
+        ))
     }
 
     /// Reads `path`; a corrupt file is moved aside and reported as `Err(Corrupt)`.
     fn read_or_quarantine(path: &Path) -> Result<Option<PersistedState>, StateStoreError> {
         match Self::read(path)? {
             Read::Missing => Ok(None),
-            Read::Found(state) => Ok(Some(state)),
+            Read::Found(state) => Ok(Some(*state)),
             Read::Corrupt(reason) => {
                 let moved_to = quarantine(path)?;
                 Err(StateStoreError::Corrupt {

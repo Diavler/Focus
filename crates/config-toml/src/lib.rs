@@ -10,6 +10,13 @@
 //! feed_only = ["reddit.com"]    # also: allow, ask, delay, block
 //! allow = ["reddit.com/r/rust/comments/*"]
 //! apps = ["discord"]
+//!
+//! [[auto_start]]                 # start sessions from the calendar or Todoist
+//! config = "coding"
+//! strictness = "deep"           # default "light"
+//! calendar_keywords = ["#focus"]
+//! task_labels = ["deep"]
+//! task_minutes = 50             # for tasks without a duration
 //! ```
 
 mod error;

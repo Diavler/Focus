@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use focus_core::{Mode, RuleAction, Verdict};
+use focus_core::{Mode, RuleAction, Strictness, Verdict};
 use serde::Deserialize;
 
 /// The whole settings file.
@@ -15,6 +15,22 @@ pub(crate) struct SettingsFile {
     pub(crate) lists: BTreeMap<String, ListTable>,
     #[serde(default)]
     pub(crate) configs: BTreeMap<String, ConfigTable>,
+    #[serde(default)]
+    pub(crate) auto_start: Vec<AutoStartTable>,
+}
+
+/// `[[auto_start]]`: starts a configuration from calendar events or tasks.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AutoStartTable {
+    pub(crate) config: String,
+    #[serde(default = "default_strictness")]
+    pub(crate) strictness: Strictness,
+    #[serde(default)]
+    pub(crate) calendar_keywords: Vec<String>,
+    #[serde(default)]
+    pub(crate) task_labels: Vec<String>,
+    pub(crate) task_minutes: Option<u64>,
 }
 
 /// `[lists.<name>]`: rules shared by several configurations.
@@ -108,6 +124,10 @@ fn groups<'a>(
 /// Start at login unless the settings say otherwise: it's what brings Focus back after a reboot.
 fn start_at_login_default() -> bool {
     true
+}
+
+fn default_strictness() -> Strictness {
+    Strictness::Light
 }
 
 fn default_mode() -> Mode {

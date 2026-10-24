@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::auto_start::AutoStartRule;
 use crate::config::BlockConfig;
 use crate::time::Timestamp;
 
@@ -15,14 +16,17 @@ pub struct Settings {
     pub configs: Vec<BlockConfig>,
     /// Whether Focus should start when the user logs in.
     pub start_at_login: bool,
+    /// Rules that start sessions from calendar events and tasks, in file order.
+    pub auto_start: Vec<AutoStartRule>,
 }
 
 impl Default for Settings {
-    /// No configurations, starting at login (the protective choice).
+    /// No configurations or automatic starts, starting at login (the protective choice).
     fn default() -> Self {
         Self {
             configs: Vec::new(),
             start_at_login: true,
+            auto_start: Vec::new(),
         }
     }
 }

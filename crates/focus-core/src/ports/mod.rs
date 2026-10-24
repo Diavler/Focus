@@ -11,7 +11,9 @@ mod enforcer;
 mod foreground;
 mod history;
 mod notifier;
+mod plan_source;
 mod process_list;
+mod secrets;
 mod state_store;
 mod ui_watch;
 
@@ -22,6 +24,8 @@ pub use enforcer::{EnforceError, Enforcer};
 pub use foreground::ForegroundApp;
 pub use history::{History, HistoryError, HistoryEvent, NoopHistory};
 pub use notifier::{Notifier, NotifyError};
+pub use plan_source::{CalendarSource, SourceError, TaskSource};
 pub use process_list::ProcessList;
+pub use secrets::{SecretKey, Secrets, SecretsError};
 pub use state_store::{PersistedState, StateStore, StateStoreError};
 pub use ui_watch::{UiWatch, UiWatchError};

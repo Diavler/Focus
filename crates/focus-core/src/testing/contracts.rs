@@ -4,11 +4,13 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use crate::auto_start::{AutoStartLog, PlanSource, PlannedStart};
 use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
+use crate::plan::{CalendarEvent, Fetched, PlanCache, Task};
 use crate::ports::{
-    Autostart, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier,
-    PersistedState, ProcessList, StateStore, UiWatch,
+    Autostart, CalendarSource, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent,
+    Notifier, PersistedState, ProcessList, SecretKey, Secrets, StateStore, TaskSource, UiWatch,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -161,6 +163,93 @@ pub fn notifier_contract(notifier: &dyn Notifier) {
     assert_eq!(notifier.restore(), Ok(()), "restoring twice failed");
 }
 
+/// Two reads of `from..to` agree, and the events overlap the window, are sorted by start, end no
+/// earlier than they start and have unique, non-empty IDs.
+///
+/// Run it against recorded fixtures, not the live service.
+pub fn calendar_source_contract(source: &dyn CalendarSource, from: Timestamp, to: Timestamp) {
+    let first = source.events(from, to);
+    assert_eq!(first, source.events(from, to), "two reads disagree");
+    let Ok(events) = first else { return };
+    let mut ids = HashSet::new();
+    for event in &events {
+        assert!(!event.id.trim().is_empty(), "an event has an empty ID");
+        assert!(ids.insert(&event.id), "duplicate event ID {:?}", event.id);
+        assert!(event.end >= event.start, "{event:?} ends before it starts");
+        assert!(event.overlaps(from, to), "{event:?} is outside the window");
+    }
+    assert!(
+        events.windows(2).all(|pair| pair[0].start <= pair[1].start),
+        "events aren't sorted by start"
+    );
+}
+
+/// Two reads agree, and tasks have unique, non-empty IDs and labels without a leading `@`.
+///
+/// Run it against recorded fixtures, not the live service.
+pub fn task_source_contract(source: &dyn TaskSource) {
+    let first = source.tasks();
+    assert_eq!(first, source.tasks(), "two reads disagree");
+    let Ok(tasks) = first else { return };
+    let mut ids = HashSet::new();
+    for task in &tasks {
+        assert!(!task.id.trim().is_empty(), "a task has an empty ID");
+        assert!(ids.insert(&task.id), "duplicate task ID {:?}", task.id);
+        for label in &task.labels {
+            assert!(
+                !label.is_empty() && !label.starts_with('@'),
+                "bad label {label:?} on task {:?}",
+                task.id
+            );
+        }
+    }
+}
+
+/// A stored value reads back, removing it leaves nothing, and removing twice is fine. Each key's
+/// original value is put back afterwards. On a platform without a keychain, storing may fail with
+/// a reason, as long as nothing is then found.
+///
+/// This writes real credentials, so point a keychain adapter at a test-only service name.
+pub fn secrets_contract(secrets: &dyn Secrets) {
+    for key in SecretKey::ALL {
+        let original = match secrets.load(key) {
+            Ok(original) => original,
+            Err(error) => panic!("reading {key:?} failed: {error}"),
+        };
+        let value = format!("contract value for {}", key.name());
+        if let Err(error) = secrets.store(key, Some(&value)) {
+            assert_eq!(
+                secrets.load(key),
+                Ok(None),
+                "a failed store ({error}) left a value"
+            );
+            assert_eq!(secrets.store(key, None), Ok(()), "removing {key:?} failed");
+            continue;
+        }
+        assert_eq!(
+            secrets.load(key),
+            Ok(Some(value)),
+            "{key:?} didn't read back"
+        );
+        assert_eq!(secrets.store(key, None), Ok(()), "removing {key:?} failed");
+        assert_eq!(
+            secrets.load(key),
+            Ok(None),
+            "{key:?} is still there after removal"
+        );
+        assert_eq!(
+            secrets.store(key, None),
+            Ok(()),
+            "removing {key:?} twice failed"
+        );
+        assert_eq!(
+            secrets.store(key, original.as_deref()),
+            Ok(()),
+            "restoring {key:?} failed"
+        );
+    }
+}
+
 /// Every kind of event can be recorded.
 pub fn history_contract(history: &dyn History) {
     let at = SANE_EPOCH;
@@ -222,9 +311,43 @@ fn running_state() -> PersistedState {
         1,
         "contract fixture failed to queue a change"
     );
+    let planned = PlannedStart {
+        key: "calendar:standup".into(),
+        source: PlanSource::Calendar,
+        title: "Standup".into(),
+        config: "coding".into(),
+        strictness: Strictness::Light,
+        starts_at: SANE_EPOCH,
+        ends_at: SANE_EPOCH.saturating_add(Duration::from_secs(15 * 60)),
+    };
+    let mut auto_started = AutoStartLog::default();
+    auto_started.mark(&planned);
+    let plan = PlanCache {
+        calendar: Some(Fetched {
+            at: SANE_EPOCH,
+            items: vec![CalendarEvent {
+                id: "standup".into(),
+                title: planned.title.clone(),
+                start: planned.starts_at,
+                end: planned.ends_at,
+            }],
+        }),
+        tasks: Some(Fetched {
+            at: SANE_EPOCH,
+            items: vec![Task {
+                id: "1".into(),
+                title: "Write the report".into(),
+                labels: vec!["deep".into()],
+                due_at: Some(SANE_EPOCH),
+                duration: Some(Duration::from_secs(25 * 60)),
+            }],
+        }),
+    };
     PersistedState {
         session,
         configs,
         start_at_login,
+        plan,
+        auto_started,
     }
 }
