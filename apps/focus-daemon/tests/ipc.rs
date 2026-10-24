@@ -11,7 +11,8 @@ use std::time::Duration;
 use config_toml::TomlConfigSource;
 use focus_core::ports::{Clock, NoopHistory};
 use focus_core::testing::{
-    FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, FakeUi,
+    FakeAutostart, FakeCalendar, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier,
+    FakeTasks, FakeUi, MemorySecrets,
 };
 use focus_core::{ConfigState, EndReason, SessionError, Strictness};
 use focus_daemon::{Ports, Service, serve};
@@ -38,6 +39,7 @@ struct Home {
     settings: PathBuf,
     state: PathBuf,
     clock: Arc<FakeClock>,
+    calendar: Arc<FakeCalendar>,
 }
 
 impl Home {
@@ -54,6 +56,7 @@ impl Home {
             settings,
             dir,
             clock: Arc::new(FakeClock::default()),
+            calendar: Arc::new(FakeCalendar::default()),
         }
     }
 
@@ -72,6 +75,9 @@ impl Home {
             browsers: Vec::new(),
             autostart: Arc::new(FakeAutostart::default()),
             ui: Arc::new(FakeUi::running()),
+            calendar: self.calendar.clone(),
+            tasks: Arc::new(FakeTasks::default()),
+            secrets: Arc::new(MemorySecrets::default()),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let (stop, stopped) = oneshot::channel::<()>();
@@ -233,5 +239,78 @@ async fn install_socket_replaces_a_file_left_by_a_crash() {
     let daemon = home.start_daemon(&endpoint).await;
     let mut client = Client::connect(&endpoint).await.unwrap();
     assert!(client.status().await.is_ok());
+    daemon.stop().await;
+}
+
+/// Asks for status until `done` accepts it, for up to 10 s of real time (the daemon's sync and
+/// tick loops run on real timers even with a fake clock).
+async fn wait_for(
+    client: &mut Client,
+    done: impl Fn(&ipc_proto::StatusReport) -> bool,
+) -> ipc_proto::StatusReport {
+    for _ in 0..100 {
+        let status = client.status().await.unwrap();
+        if done(&status) {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "timed out; last status: {:?}",
+        client.status().await.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn a_tagged_calendar_event_starts_its_config_even_offline() {
+    let home = Home::new();
+    std::fs::write(
+        &home.settings,
+        "[configs.coding]\nfeed_only = [\"reddit.com\"]\n\n\
+         [[auto_start]]\nconfig = \"coding\"\nstrictness = \"locked\"\n\
+         calendar_keywords = [\"#focus\"]\n",
+    )
+    .unwrap();
+    let start = home.clock.now().saturating_add(10 * MINUTE);
+    home.calendar.set(Ok(vec![focus_core::CalendarEvent {
+        id: "focus-block@1".into(),
+        title: "Deep work #focus".into(),
+        start,
+        end: start.saturating_add(60 * MINUTE),
+    }]));
+    let endpoint = unique_endpoint();
+    let daemon = home.start_daemon(&endpoint).await;
+    let mut client = Client::connect(&endpoint).await.unwrap();
+    let synced = wait_for(&mut client, |status| status.plan.upcoming.len() == 1).await;
+    assert_eq!(synced.plan.calendar.state, ipc_proto::SourceState::Ok);
+    assert!(synced.session.running().is_none(), "not before the event");
+    drop(client);
+    daemon.stop().await;
+
+    // Offline from here on: only the cache in the state file knows about the event.
+    home.calendar
+        .set(Err(focus_core::ports::SourceError::Unavailable {
+            reason: "no network".into(),
+        }));
+    home.clock.advance(15 * MINUTE);
+    let daemon = home.start_daemon(&endpoint).await;
+    let mut client = Client::connect(&endpoint).await.unwrap();
+    let status = wait_for(&mut client, |status| status.session.running().is_some()).await;
+    let running = status.session.running().unwrap();
+    assert_eq!(running.spec().config.name, "coding");
+    assert_eq!(running.spec().strictness, Strictness::Locked);
+    assert_eq!(running.time_left(status.now), 55 * MINUTE);
+    let offline = wait_for(&mut client, |status| {
+        matches!(
+            status.plan.calendar.state,
+            ipc_proto::SourceState::Failing { offline: true, .. }
+        )
+    })
+    .await;
+    assert_eq!(
+        offline.plan.calendar.items, 1,
+        "still using the cached event"
+    );
+    drop(client);
     daemon.stop().await;
 }

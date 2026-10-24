@@ -8,15 +8,17 @@ mod daemon;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use focus_core::ports::SecretKey;
 use focus_core::{
-    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, RunningSession, Strictness,
+    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, PlannedStart,
+    RunningSession, Strictness, Timestamp,
 };
 use focus_install::{InstanceLock, Paths};
 use iced::widget::{
-    Column, button, column, container, pick_list, radio, row, slider, text, text_input,
+    Column, button, column, container, pick_list, radio, row, scrollable, slider, text, text_input,
 };
 use iced::{Element, Length, Subscription, Task};
-use ipc_proto::{Request, StatusReport};
+use ipc_proto::{Request, SourceState, SourceStatus, StatusReport};
 use ipc_transport::Endpoint;
 
 fn main() -> iced::Result {
@@ -91,6 +93,10 @@ struct App {
     probe_result: Option<String>,
     /// What the last URL check asked; a new check is sent when this would change.
     probe_asked: Option<ProbeKey>,
+    /// A calendar address being typed or pasted; sent to the daemon's keychain on Save.
+    calendar_input: String,
+    /// A Todoist token being typed or pasted.
+    token_input: String,
     error: Option<String>,
     polls: u32,
     /// A status request is on its way, so polls don't pile up if the daemon is slow.
@@ -115,7 +121,8 @@ struct ProbeKey {
 #[derive(Debug, Clone)]
 enum Message {
     Poll,
-    StatusLoaded(Result<StatusReport, daemon::StatusError>),
+    /// Boxed: a status is much larger than the other messages.
+    StatusLoaded(Box<Result<StatusReport, daemon::StatusError>>),
     ConfigsLoaded(Result<Vec<BlockConfig>, String>),
     ConfigPicked(String),
     StrictnessPicked(Strictness),
@@ -131,6 +138,9 @@ enum Message {
         key: ProbeKey,
         result: Result<String, String>,
     },
+    SecretInput(SecretKey, String),
+    SaveSecret(SecretKey),
+    RemoveSecret(SecretKey),
 }
 
 impl App {
@@ -152,6 +162,8 @@ impl App {
             probe: String::new(),
             probe_result: None,
             probe_asked: None,
+            calendar_input: String::new(),
+            token_input: String::new(),
             error: None,
             polls: 0,
             status_pending: false,
@@ -190,7 +202,7 @@ impl App {
             }
             Message::StatusLoaded(result) => {
                 self.status_pending = false;
-                match result {
+                match *result {
                     Ok(status) => {
                         self.status = Some(status);
                         self.unreachable = None;
@@ -263,6 +275,19 @@ impl App {
                     self.probe_result = Some(result.unwrap_or_else(|error| error));
                 }
             }
+            Message::SecretInput(key, value) => *self.secret_input(key) = value,
+            Message::SaveSecret(key) => {
+                // Taken out of the window's state right away: the daemon keeps it in the keychain.
+                let value = std::mem::take(self.secret_input(key));
+                return self.act(Request::SetSecret {
+                    key,
+                    value: Some(value),
+                });
+            }
+            Message::RemoveSecret(key) => {
+                self.secret_input(key).clear();
+                return self.act(Request::SetSecret { key, value: None });
+            }
         }
         Task::none()
     }
@@ -281,6 +306,13 @@ impl App {
         }
     }
 
+    fn secret_input(&mut self, key: SecretKey) -> &mut String {
+        match key {
+            SecretKey::CalendarUrl => &mut self.calendar_input,
+            SecretKey::TodoistToken => &mut self.token_input,
+        }
+    }
+
     fn set_configs(&mut self, configs: Vec<BlockConfig>) {
         self.config_names = configs.iter().map(|config| config.name.clone()).collect();
         let still_there = self
@@ -295,7 +327,9 @@ impl App {
 
     fn fetch_status(&mut self) -> Task<Message> {
         self.status_pending = true;
-        Task::perform(daemon::status(self.endpoint.clone()), Message::StatusLoaded)
+        Task::perform(daemon::status(self.endpoint.clone()), |result| {
+            Message::StatusLoaded(Box::new(result))
+        })
     }
 
     fn fetch_configs(&mut self) -> Task<Message> {
@@ -389,6 +423,7 @@ impl App {
                 if let Some(pending) = pending_summary(status) {
                     page = page.push(text(pending).size(13).style(text::secondary));
                 }
+                page = page.push(self.plan_view(status));
                 page = page.push(self.probe_view());
                 page = page.push(system_view(status));
             }
@@ -401,9 +436,7 @@ impl App {
                 .size(12)
                 .style(text::secondary),
         );
-        container(page)
-            .padding(24)
-            .width(Length::Fill)
+        scrollable(container(page).padding(24).width(Length::Fill))
             .height(Length::Fill)
             .into()
     }
@@ -528,6 +561,65 @@ impl App {
         .into()
     }
 
+    /// The calendar and task sources, the sessions they'll start, and where to set them up.
+    fn plan_view<'a>(&'a self, status: &'a StatusReport) -> Column<'a, Message> {
+        let mut plan = column![text("Plan")].spacing(8);
+        for line in [
+            source_line("Calendar", "events", &status.plan.calendar, status.now),
+            source_line("Todoist", "tasks", &status.plan.tasks, status.now),
+        ] {
+            plan = plan.push(styled(line));
+        }
+        let upcoming = upcoming_lines(&status.plan.upcoming, status.now);
+        if upcoming.is_empty() {
+            plan = plan.push(
+                text(
+                    "Nothing planned starts a session. Add [[auto_start]] rules to settings.toml \
+                     to start one from a calendar keyword or a Todoist label.",
+                )
+                .size(13)
+                .style(text::secondary),
+            );
+        }
+        for line in upcoming {
+            plan = plan.push(text(line).size(13));
+        }
+        plan.push(self.secret_row(
+            SecretKey::CalendarUrl,
+            "Google Calendar: Settings → your calendar → Secret address in iCal format",
+            &self.calendar_input,
+        ))
+        .push(self.secret_row(
+            SecretKey::TodoistToken,
+            "Todoist: Settings → Integrations → Developer → API token",
+            &self.token_input,
+        ))
+    }
+
+    /// A hidden input that sends its credential to the daemon, plus a button to remove it.
+    fn secret_row<'a>(
+        &'a self,
+        key: SecretKey,
+        placeholder: &'a str,
+        value: &'a str,
+    ) -> Element<'a, Message> {
+        let save = (!value.trim().is_empty())
+            .then_some(Message::SaveSecret(key))
+            .and_then(|message| self.idle_then(message));
+        row![
+            text_input(placeholder, value)
+                .secure(true)
+                .on_input(move |value| Message::SecretInput(key, value))
+                .on_submit_maybe(save.clone()),
+            button("Save").on_press_maybe(save),
+            button("Remove")
+                .style(button::secondary)
+                .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
+        ]
+        .spacing(8)
+        .into()
+    }
+
     /// A box to try URLs against the running (or selected) configuration.
     fn probe_view(&self) -> Column<'_, Message> {
         let result = match (&self.probe_result, self.probe.trim().is_empty()) {
@@ -567,6 +659,84 @@ fn system_view(status: &StatusReport) -> Column<'_, Message> {
         });
     }
     lines.push(text(login_line(status)).size(13).style(text::secondary))
+}
+
+/// A line in small text, red if it's a warning.
+fn styled(line: Line) -> iced::widget::Text<'static> {
+    let label = text(line.text).size(13);
+    if line.warning {
+        label.style(text::danger)
+    } else {
+        label.style(text::secondary)
+    }
+}
+
+/// How one plan source is doing, e.g. `Calendar: synced 2 min ago (12 events).`
+fn source_line(name: &str, noun: &str, source: &SourceStatus, now: Timestamp) -> Line {
+    let count = format!("{} {noun}", source.items);
+    let ago = source
+        .fetched_at
+        .map(|at| format_ago(now.saturating_duration_since(at)));
+    let (text, warning) = match (&source.state, ago) {
+        (SourceState::Unknown, _) => (format!("{name}: checking..."), false),
+        (SourceState::NotConfigured, _) => (format!("{name}: not set up."), false),
+        (SourceState::Ok, ago) => (
+            format!("{name}: synced {} ({count}).", ago.unwrap_or_default()),
+            false,
+        ),
+        (SourceState::Failing { problem, offline }, Some(ago)) => {
+            let why = if *offline {
+                "offline"
+            } else {
+                problem.as_str()
+            };
+            (
+                format!("{name}: {why}; using {count} from {ago}."),
+                !offline,
+            )
+        }
+        (SourceState::Failing { problem, .. }, None) => (format!("{name}: {problem}."), true),
+    };
+    Line { text, warning }
+}
+
+/// Planned sessions, soonest first, e.g. `In 1:30:00: "Deep work" → coding (Deep) for 1:00:00.`
+fn upcoming_lines(upcoming: &[PlannedStart], now: Timestamp) -> Vec<String> {
+    upcoming
+        .iter()
+        .take(4)
+        .map(|start| {
+            let when = if start.starts_at <= now {
+                "Now".to_owned()
+            } else {
+                format!(
+                    "In {}",
+                    format_duration(start.starts_at.saturating_duration_since(now))
+                )
+            };
+            let length = start
+                .ends_at
+                .saturating_duration_since(start.starts_at.max(now));
+            format!(
+                "{when}: \"{}\" → {} ({}) for {}.",
+                start.title,
+                start.config,
+                start.strictness,
+                format_duration(length)
+            )
+        })
+        .collect()
+}
+
+/// `just now`, `5 min ago`, `3 h ago` or `2 days ago`.
+fn format_ago(elapsed: Duration) -> String {
+    let minutes = elapsed.as_secs() / 60;
+    match minutes {
+        0 => "just now".to_owned(),
+        1..60 => format!("{minutes} min ago"),
+        60..1440 => format!("{} h ago", minutes / 60),
+        _ => format!("{} days ago", minutes / 1440),
+    }
 }
 
 /// One line of the system section.
@@ -740,6 +910,7 @@ mod tests {
             start_at_login: true,
             start_at_login_off_after: None,
             start_at_login_problem: None,
+            plan: ipc_proto::PlanStatus::default(),
         }
     }
 
@@ -783,6 +954,75 @@ mod tests {
         assert!(login_line(&status).starts_with("Doesn't start at login"));
         status.start_at_login_problem = Some("not available on Linux".into());
         assert!(login_line(&status).contains("isn't set up: not available on Linux"));
+    }
+
+    #[test]
+    fn describes_plan_sources() {
+        let now = Timestamp::from_millis(3 * 3_600_000);
+        let line = |source: &SourceStatus| source_line("Calendar", "events", source, now);
+        let mut source = SourceStatus::default();
+        assert_eq!(line(&source).text, "Calendar: checking...");
+        source.state = SourceState::NotConfigured;
+        assert_eq!(line(&source).text, "Calendar: not set up.");
+
+        source.state = SourceState::Ok;
+        source.fetched_at = Some(Timestamp::from_millis(3 * 3_600_000 - 120_000));
+        source.items = 12;
+        assert_eq!(
+            line(&source).text,
+            "Calendar: synced 2 min ago (12 events)."
+        );
+
+        source.state = SourceState::Failing {
+            problem: "couldn't reach the service: dns".into(),
+            offline: true,
+        };
+        source.fetched_at = Some(Timestamp::from_millis(0));
+        let offline = line(&source);
+        assert_eq!(
+            offline.text,
+            "Calendar: offline; using 12 events from 3 h ago."
+        );
+        assert!(!offline.warning, "being offline isn't something to fix");
+
+        source.state = SourceState::Failing {
+            problem: "Todoist refused the token".into(),
+            offline: false,
+        };
+        source.fetched_at = None;
+        let refused = source_line("Todoist", "tasks", &source, now);
+        assert_eq!(refused.text, "Todoist: Todoist refused the token.");
+        assert!(refused.warning);
+    }
+
+    #[test]
+    fn lists_upcoming_sessions() {
+        let start = |at: u64, until: u64| PlannedStart {
+            key: format!("calendar:{at}"),
+            source: focus_core::PlanSource::Calendar,
+            title: "Deep work".into(),
+            config: "coding".into(),
+            strictness: Strictness::Deep,
+            starts_at: Timestamp::from_millis(at),
+            ends_at: Timestamp::from_millis(until),
+        };
+        let now = Timestamp::from_millis(600_000);
+        let lines = upcoming_lines(&[start(0, 3_600_000), start(4_200_000, 7_800_000)], now);
+        assert_eq!(
+            lines,
+            [
+                "Now: \"Deep work\" → coding (Deep) for 50:00.",
+                "In 1:00:00: \"Deep work\" → coding (Deep) for 1:00:00.",
+            ]
+        );
+    }
+
+    #[test]
+    fn formats_how_long_ago() {
+        assert_eq!(format_ago(Duration::from_secs(30)), "just now");
+        assert_eq!(format_ago(Duration::from_secs(5 * 60)), "5 min ago");
+        assert_eq!(format_ago(Duration::from_secs(3 * 3600 + 59)), "3 h ago");
+        assert_eq!(format_ago(Duration::from_secs(50 * 3600)), "2 days ago");
     }
 
     #[test]

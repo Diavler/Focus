@@ -1,7 +1,9 @@
 //! The requests clients send and the responses the daemon returns.
 
+use focus_core::ports::SecretKey;
 use focus_core::{
-    BlockConfig, EndEarlyResponse, SessionError, SessionState, Strictness, Timestamp, Verdict,
+    BlockConfig, EndEarlyResponse, PlannedStart, SessionError, SessionState, Strictness, Timestamp,
+    Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -45,6 +47,14 @@ pub enum Request {
         url: String,
         /// Check against this configuration instead of the running session's.
         config: Option<String>,
+    },
+    /// Stores or (with `None` or a blank value) removes a credential in the OS keychain, then
+    /// syncs the plan. Answered with [`Response::Done`]. Not relayed from the browser.
+    SetSecret {
+        /// Which credential.
+        key: SecretKey,
+        /// The new value.
+        value: Option<String>,
     },
 }
 
@@ -106,6 +116,51 @@ pub struct StatusReport {
     /// Why start-at-login couldn't be registered, if it couldn't.
     #[serde(default)]
     pub start_at_login_problem: Option<String>,
+    /// The calendar and task sources, and the sessions they'll start.
+    #[serde(default)]
+    pub plan: PlanStatus,
+}
+
+/// How the plan sources are doing, and what they'll start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStatus {
+    /// The calendar.
+    pub calendar: SourceStatus,
+    /// The task list.
+    pub tasks: SourceStatus,
+    /// Planned sessions that haven't ended yet, soonest first.
+    pub upcoming: Vec<PlannedStart>,
+}
+
+/// How one plan source is doing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceStatus {
+    /// The result of the last sync.
+    pub state: SourceState,
+    /// When the cached data was fetched, if there is any.
+    pub fetched_at: Option<Timestamp>,
+    /// How many events or tasks are cached.
+    pub items: usize,
+}
+
+/// The result of the last sync of one source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SourceState {
+    /// Not synced since the daemon started.
+    #[default]
+    Unknown,
+    /// No address or token stored.
+    NotConfigured,
+    /// The last sync worked.
+    Ok,
+    /// The last sync failed; cached data (if any) is still used.
+    Failing {
+        /// What went wrong.
+        problem: String,
+        /// Whether it looked like being offline (rather than a refused token or bad data).
+        offline: bool,
+    },
 }
 
 /// A config edit waiting out its cooling-off delay.
@@ -175,6 +230,12 @@ pub enum DaemonError {
     /// The daemon is stopping and no longer takes requests.
     #[error("the daemon is shutting down")]
     ShuttingDown,
+    /// The OS keychain refused to store a credential.
+    #[error("couldn't store the credential: {message}")]
+    Credentials {
+        /// What went wrong.
+        message: String,
+    },
     /// The change couldn't be saved, so it wasn't made.
     #[error("couldn't save state: {message}")]
     Storage {

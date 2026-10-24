@@ -21,7 +21,9 @@ use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_daemon::{InstalledUi, Ports, Service, SystemClock, serve};
 use focus_install::{InstanceLock, Paths};
+use integrations::{IcalCalendar, TodoistTasks};
 use ipc_transport::{BindError, Endpoint, bind};
+use secrets_keyring::KeyringSecrets;
 use state_json::JsonStateStore;
 
 /// Written to the settings path on first run, so there is something to start a session with.
@@ -68,6 +70,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let at_login = std::env::args().skip(1).any(|arg| arg == "--at-login");
     let enforcement = platform::enforcement(dry_run, install);
+    // One keychain adapter, shared (`Arc`) by the two sources that read from it and the service
+    // that writes to it.
+    let secrets = Arc::new(KeyringSecrets::new()?);
     let ports = Ports {
         clock: Arc::new(SystemClock),
         configs: Arc::new(TomlConfigSource::new(&paths.settings)),
@@ -84,6 +89,9 @@ async fn main() -> anyhow::Result<()> {
             lock: paths.ui_lock.clone(),
             dry_run,
         }),
+        calendar: Arc::new(IcalCalendar::new(secrets.clone())),
+        tasks: Arc::new(TodoistTasks::new(secrets.clone())),
+        secrets,
     };
     let mut service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
     if at_login {

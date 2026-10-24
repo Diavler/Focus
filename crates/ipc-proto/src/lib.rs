@@ -8,4 +8,7 @@ mod codec;
 mod messages;
 
 pub use codec::{DecodeError, PROTOCOL_VERSION, decode, encode};
-pub use messages::{BrowserStatus, DaemonError, PendingSummary, Request, Response, StatusReport};
+pub use messages::{
+    BrowserStatus, DaemonError, PendingSummary, PlanStatus, Request, Response, SourceState,
+    SourceStatus, StatusReport,
+};

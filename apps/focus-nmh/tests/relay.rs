@@ -10,8 +10,8 @@ use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_core::testing::{
-    FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, FakeUi,
-    MemoryStateStore,
+    FakeAutostart, FakeCalendar, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier,
+    FakeTasks, FakeUi, MemorySecrets, MemoryStateStore,
 };
 use focus_daemon::{Ports, Service, serve};
 use focus_nmh::framing::{Frame, read_message};
@@ -52,6 +52,9 @@ impl Daemon {
             browsers: Vec::new(),
             autostart: Arc::new(FakeAutostart::default()),
             ui: Arc::new(FakeUi::running()),
+            calendar: Arc::new(FakeCalendar::default()),
+            tasks: Arc::new(FakeTasks::default()),
+            secrets: Arc::new(MemorySecrets::default()),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let listener = bind(endpoint).await.unwrap();
@@ -161,6 +164,16 @@ async fn refuses_requests_the_browser_may_not_send() {
     assert_eq!(refused["error"]["kind"], "bad_request");
     let refused = browser.send(2, json!({"type": "end_session"})).await;
     assert_eq!(refused["error"]["kind"], "bad_request");
+    let refused = browser
+        .send(
+            3,
+            json!({"type": "set_secret", "key": "calendar_url", "value": "https://evil.example/"}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["kind"], "bad_request",
+        "a page can't swap the calendar"
+    );
 
     let malformed = browser.send_raw(b"not json").await;
     assert_eq!(malformed["id"], 0);

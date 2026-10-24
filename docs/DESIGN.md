@@ -72,7 +72,7 @@ Catch rabbit holes early and make bypasses slow. Without admin rights a determin
 | Notifications | Silence during sessions | KDE: `Notifications.Inhibit`; Windows: no official toggle API, so prompt to turn on Do Not Disturb (to investigate) | MVP |
 | Calendar write-back, GitHub, Slack | Focus blocks on the calendar, PRs as tasks, status | Your own OAuth client or tokens | Later |
 
-Tokens are stored in the OS keychain (`keyring`). Full OAuth waits because an open-source app can't keep a Google client secret, and unverified test-mode tokens expire after 7 days.
+Tokens, and the private iCal address, are stored in the OS keychain (`keyring-core`). Full OAuth waits because an open-source app can't keep a Google client secret, and unverified test-mode tokens expire after 7 days.
 
 ## Architecture
 
@@ -96,7 +96,7 @@ Dependencies (arrows point to what a crate depends on)
                         │ uses
                         ▼
   focus-core: domain logic (sessions, rules, configs); no OS calls, no network, no disk
-              ports (traits): CalendarSource, TaskSource, Enforcer, Notifier,
+              ports (traits): CalendarSource, TaskSource, Secrets, Enforcer, Notifier,
                               ConfigSource, StateStore, History, Clock
                         ▲ each implements a port
   config-toml · state-json · integrations · enforce-windows · enforce-linux-kde
@@ -152,7 +152,7 @@ GNOME, X11 and macOS later become new adapter crates; nothing in the core change
 | --- | --- |
 | Language and build | Rust, one Cargo workspace |
 | UI | Iced |
-| Async, HTTP | `tokio`, `reqwest` |
+| Async, HTTP | `tokio`; `ureq` for HTTP (synchronous like the ports; see ADR 0009) |
 | Settings and state | `serde` + `toml` for settings; `serde_json` for the state file (written via temp file and rename) |
 | Secrets | `keyring` |
 | IPC | `interprocess` |

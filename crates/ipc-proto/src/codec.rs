@@ -88,13 +88,17 @@ pub fn decode<T: DeserializeOwned>(line: &str) -> Result<T, DecodeError> {
 mod tests {
     use std::time::Duration;
 
+    use focus_core::ports::SecretKey;
     use focus_core::{
-        BlockConfig, EndEarlyResponse, Mode, RuleAction, SessionError, SessionSpec, SessionState,
-        Strictness, Timestamp, Verdict,
+        BlockConfig, EndEarlyResponse, Mode, PlanSource, PlannedStart, RuleAction, SessionError,
+        SessionSpec, SessionState, Strictness, Timestamp, Verdict,
     };
 
     use super::*;
-    use crate::{BrowserStatus, DaemonError, PendingSummary, Request, Response, StatusReport};
+    use crate::{
+        BrowserStatus, DaemonError, PendingSummary, PlanStatus, Request, Response, SourceState,
+        SourceStatus, StatusReport,
+    };
 
     fn round_trip<T>(message: T)
     where
@@ -129,6 +133,14 @@ mod tests {
                 url: "https://reddit.com/".into(),
                 config: Some("coding".into()),
             },
+            Request::SetSecret {
+                key: SecretKey::TodoistToken,
+                value: Some("token".into()),
+            },
+            Request::SetSecret {
+                key: SecretKey::CalendarUrl,
+                value: None,
+            },
         ] {
             round_trip(request);
         }
@@ -162,6 +174,26 @@ mod tests {
                 start_at_login: true,
                 start_at_login_off_after: Some(Timestamp::from_millis(77)),
                 start_at_login_problem: None,
+                plan: PlanStatus {
+                    calendar: SourceStatus {
+                        state: SourceState::Failing {
+                            problem: "offline".into(),
+                            offline: true,
+                        },
+                        fetched_at: Some(Timestamp::from_millis(3)),
+                        items: 4,
+                    },
+                    tasks: SourceStatus::default(),
+                    upcoming: vec![PlannedStart {
+                        key: "calendar:a@1".into(),
+                        source: PlanSource::Calendar,
+                        title: "Deep work".into(),
+                        config: "coding".into(),
+                        strictness: Strictness::Deep,
+                        starts_at: Timestamp::from_millis(20),
+                        ends_at: Timestamp::from_millis(40),
+                    }],
+                },
             })),
             Response::Configs {
                 configs: vec![BlockConfig::new("writing", Mode::Allowlist)],
