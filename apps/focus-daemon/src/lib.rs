@@ -2,13 +2,9 @@
 //! server so tests can run the daemon in-process; `main.rs` is the composition root.
 
 mod clock;
-mod instance;
-mod paths;
 mod server;
 mod service;
 
 pub use clock::SystemClock;
-pub use instance::InstanceLock;
-pub use paths::Paths;
 pub use server::serve;
 pub use service::{Ports, Service, StartupError};

@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use crate::config::BlockConfig;
 use crate::enforcement::{same_app, select_apps};
+use crate::login::Settings;
 use crate::ports::{
-    Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer, ForegroundApp, History,
-    HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState, ProcessList, StateStore,
-    StateStoreError,
+    Autostart, AutostartError, Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer,
+    ForegroundApp, History, HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState,
+    ProcessList, StateStore, StateStoreError,
 };
 use crate::time::Timestamp;
 
@@ -59,14 +60,17 @@ impl Clock for FakeClock {
 /// A config source that returns a fixed result.
 #[derive(Debug)]
 pub struct FakeConfigSource {
-    result: Result<Vec<BlockConfig>, ConfigSourceError>,
+    result: Result<Settings, ConfigSourceError>,
 }
 
 impl FakeConfigSource {
-    /// A source that loads `configs`.
+    /// A source that loads `configs`, with the other settings at their defaults.
     pub fn new(configs: Vec<BlockConfig>) -> Self {
         Self {
-            result: Ok(configs),
+            result: Ok(Settings {
+                configs,
+                ..Settings::default()
+            }),
         }
     }
 
@@ -77,8 +81,28 @@ impl FakeConfigSource {
 }
 
 impl ConfigSource for FakeConfigSource {
-    fn load(&self) -> Result<Vec<BlockConfig>, ConfigSourceError> {
+    fn load(&self) -> Result<Settings, ConfigSourceError> {
         self.result.clone()
+    }
+}
+
+/// An autostart registration that only remembers the last request.
+#[derive(Debug, Default)]
+pub struct FakeAutostart {
+    enabled: Mutex<Option<bool>>,
+}
+
+impl FakeAutostart {
+    /// The last value set, or `None` if it was never set.
+    pub fn enabled(&self) -> Option<bool> {
+        *lock(&self.enabled)
+    }
+}
+
+impl Autostart for FakeAutostart {
+    fn set_enabled(&self, enabled: bool) -> Result<(), AutostartError> {
+        *lock(&self.enabled) = Some(enabled);
+        Ok(())
     }
 }
 

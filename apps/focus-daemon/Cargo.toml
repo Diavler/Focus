@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 focus-core.workspace = true
+focus-install.workspace = true
 ipc-proto.workspace = true
 ipc-transport.workspace = true
 config-toml.workspace = true

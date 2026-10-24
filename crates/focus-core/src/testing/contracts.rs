@@ -7,8 +7,8 @@ use std::time::Duration;
 use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
 use crate::ports::{
-    Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier, PersistedState,
-    ProcessList, StateStore,
+    Autostart, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier,
+    PersistedState, ProcessList, StateStore,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -35,9 +35,9 @@ pub fn clock_contract(clock: &dyn Clock) {
 pub fn config_source_contract(source: &dyn ConfigSource) {
     let first = source.load();
     assert_eq!(first, source.load(), "two loads disagree");
-    let Ok(configs) = first else { return };
+    let Ok(settings) = first else { return };
     let mut names = HashSet::new();
-    for config in &configs {
+    for config in &settings.configs {
         assert!(!config.name.trim().is_empty(), "a config has an empty name");
         assert!(
             names.insert(&config.name),
@@ -121,6 +121,20 @@ pub fn foreground_app_contract(foreground: &dyn ForegroundApp) {
     }
 }
 
+/// Switching start-at-login on and off succeeds, including repeated calls.
+///
+/// This changes the real registration, so run it on a dry-run adapter or one pointed at a
+/// test-only entry.
+pub fn autostart_contract(autostart: &dyn Autostart) {
+    for enabled in [true, true, false, false] {
+        assert_eq!(
+            autostart.set_enabled(enabled),
+            Ok(()),
+            "set_enabled({enabled}) failed"
+        );
+    }
+}
+
 /// Silencing and restoring both succeed, including repeated calls in either order.
 pub fn notifier_contract(notifier: &dyn Notifier) {
     assert_eq!(notifier.restore(), Ok(()), "restore before silence failed");
@@ -175,6 +189,9 @@ fn running_state() -> PersistedState {
         "contract fixture failed to request an end"
     );
     let mut configs = ConfigState::default();
+    let mut start_at_login = crate::login::LoginSetting::default();
+    start_at_login.sync(true, SANE_EPOCH, Duration::ZERO);
+    start_at_login.sync(false, SANE_EPOCH, ConfigState::DEFAULT_COOLING_OFF);
     let coding = BlockConfig::new("coding", Mode::Blocklist);
     configs.sync(vec![coding], &[], SANE_EPOCH, Duration::ZERO);
     configs.sync(
@@ -188,5 +205,9 @@ fn running_state() -> PersistedState {
         1,
         "contract fixture failed to queue a change"
     );
-    PersistedState { session, configs }
+    PersistedState {
+        session,
+        configs,
+        start_at_login,
+    }
 }

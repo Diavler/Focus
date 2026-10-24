@@ -4,6 +4,7 @@
 //! Ports are synchronous and `Send + Sync`, so the daemon can share one adapter across threads
 //! behind an `Arc<dyn Port>`.
 
+mod autostart;
 mod clock;
 mod config_source;
 mod enforcer;
@@ -13,6 +14,7 @@ mod notifier;
 mod process_list;
 mod state_store;
 
+pub use autostart::{Autostart, AutostartError};
 pub use clock::Clock;
 pub use config_source::{ConfigSource, ConfigSourceError};
 pub use enforcer::{EnforceError, Enforcer};

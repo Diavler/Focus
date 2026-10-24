@@ -6,9 +6,11 @@ use focus_core::{Mode, RuleAction, Verdict};
 use serde::Deserialize;
 
 /// The whole settings file.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SettingsFile {
+    #[serde(default = "start_at_login_default")]
+    pub(crate) start_at_login: bool,
     #[serde(default)]
     pub(crate) lists: BTreeMap<String, ListTable>,
     #[serde(default)]
@@ -101,6 +103,11 @@ fn groups<'a>(
         ),
         ("block", block, Verdict::Restrict(RuleAction::Block)),
     ]
+}
+
+/// Start at login unless the settings say otherwise: it's what brings Focus back after a reboot.
+fn start_at_login_default() -> bool {
+    true
 }
 
 fn default_mode() -> Mode {

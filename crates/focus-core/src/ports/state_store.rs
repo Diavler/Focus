@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::cooling::ConfigState;
+use crate::login::LoginSetting;
 use crate::session::SessionState;
 
 /// Everything the daemon persists between runs.
@@ -14,6 +15,9 @@ pub struct PersistedState {
     /// Configurations in effect and edits still cooling off.
     #[serde(default)]
     pub configs: ConfigState,
+    /// Whether Focus starts at login, and a switch-off still cooling off.
+    #[serde(default)]
+    pub start_at_login: LoginSetting,
 }
 
 /// Saves and loads [`PersistedState`].

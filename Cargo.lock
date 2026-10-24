@@ -648,6 +648,7 @@ dependencies = [
  "enforce-linux-kde",
  "enforce-windows",
  "focus-core",
+ "focus-install",
  "ipc-proto",
  "ipc-transport",
  "state-json",
@@ -656,6 +657,13 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "focus-install"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

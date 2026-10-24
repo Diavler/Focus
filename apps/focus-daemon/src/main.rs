@@ -12,7 +12,8 @@ use anyhow::Context;
 use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
-use focus_daemon::{InstanceLock, Paths, Ports, Service, SystemClock, serve};
+use focus_daemon::{Ports, Service, SystemClock, serve};
+use focus_install::{InstanceLock, Paths};
 use ipc_transport::{BindError, Endpoint, bind};
 use state_json::JsonStateStore;
 
@@ -38,8 +39,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Take the install's lock before anything else, so a second daemon exits without binding,
     // reading or writing anything. The lock is held until the process exits.
-    let Some(_instance) = InstanceLock::acquire(&paths.lock)
-        .with_context(|| format!("locking {}", paths.lock.display()))?
+    let Some(_instance) = InstanceLock::acquire(&paths.daemon_lock)
+        .with_context(|| format!("locking {}", paths.daemon_lock.display()))?
     else {
         tracing::info!("a Focus daemon is already running for this install; exiting");
         return Ok(());

@@ -3,12 +3,13 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use focus_core::BlockConfig;
+use focus_core::Settings;
 use focus_core::ports::{ConfigSource, ConfigSourceError};
 
 use crate::parse::parse_settings;
 
-/// Reads configurations from a TOML file on each `load`. A missing file means no configurations yet.
+/// Reads settings from a TOML file on each `load`. A missing file means default settings (no
+/// configurations yet).
 #[derive(Debug, Clone)]
 pub struct TomlConfigSource {
     path: PathBuf,
@@ -27,10 +28,10 @@ impl TomlConfigSource {
 }
 
 impl ConfigSource for TomlConfigSource {
-    fn load(&self) -> Result<Vec<BlockConfig>, ConfigSourceError> {
+    fn load(&self) -> Result<Settings, ConfigSourceError> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
             Err(error) => {
                 return Err(ConfigSourceError::Unavailable {
                     reason: format!("couldn't read {}: {error}", self.path.display()),
@@ -73,7 +74,7 @@ mod tests {
     fn missing_file_means_no_configs() {
         let dir = tempfile::tempdir().unwrap();
         let source = TomlConfigSource::new(dir.path().join("settings.toml"));
-        assert_eq!(source.load(), Ok(Vec::new()));
+        assert_eq!(source.load(), Ok(Settings::default()));
     }
 
     #[test]
