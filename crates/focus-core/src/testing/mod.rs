@@ -11,11 +11,12 @@ pub use contracts::{
     autostart_contract, calendar_source_contract, clock_contract, config_source_contract,
     enforcer_contract, foreground_app_contract, history_contract, notifier_contract,
     process_list_contract, secrets_contract, settings_editor_contract, state_store_contract,
-    task_source_contract, ui_watch_contract,
+    task_source_contract, ui_watch_contract, windowed_apps_contract,
 };
 pub use fakes::{
     FakeAutostart, FakeCalendar, FakeClock, FakeConfigSource, FakeEnforcer, FakeForegroundApp,
-    FakeNotifier, FakeTasks, FakeUi, MemorySecrets, MemoryStateStore, RecordingHistory,
+    FakeNotifier, FakeSettingsFile, FakeTasks, FakeUi, FakeWindowedApps, MemorySecrets,
+    MemoryStateStore, RecordingHistory,
 };
 
 #[cfg(test)]
@@ -51,8 +52,23 @@ mod tests {
         ui_watch_contract(&FakeUi::default());
         ui_watch_contract(&FakeUi::running());
         secrets_contract(&MemorySecrets::default());
-        let settings = FakeConfigSource::new(vec![BlockConfig::new("coding", Mode::Blocklist)]);
+        let settings = FakeSettingsFile::new(crate::EditableSettings {
+            start_at_login: true,
+            lists: Vec::new(),
+            configs: vec![crate::ConfigEntry {
+                name: "coding".into(),
+                mode: Mode::Blocklist,
+                include: Vec::new(),
+                patterns: crate::RulePatterns::default(),
+                apps: Vec::new(),
+            }],
+            auto_start: Vec::new(),
+            revision: String::new(),
+        });
         settings_editor_contract(&settings, &settings);
+        config_source_contract(&settings);
+        windowed_apps_contract(&FakeWindowedApps::default());
+        windowed_apps_contract(&FakeWindowedApps::with(["Steam", "discord", "steam"]));
     }
 
     #[test]

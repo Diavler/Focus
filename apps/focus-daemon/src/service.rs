@@ -5,14 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use focus_core::ports::{
-    Autostart, CalendarSource, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent,
-    Notifier, PersistedState, ProcessList, SecretKey, Secrets, SettingsEditor, StateStore,
-    StateStoreError, TaskSource, UiWatch,
+    Autostart, CalendarSource, Clock, ConfigSource, ConfigSourceError, Enforcer, ForegroundApp,
+    History, HistoryEvent, Notifier, PersistedState, ProcessList, SecretKey, Secrets,
+    SettingsEditor, StateStore, StateStoreError, TaskSource, UiWatch, WindowedApps,
 };
 use focus_core::{
-    AutoStartRule, BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, PlannedStart,
-    SessionError, SessionSpec, SessionState, Strictness, Timestamp, Verdict, apps_to_close,
-    planned_starts, scheduled_configs,
+    AutoStartRule, BrowserPolicy, BrowserWatch, EditableSettings, Heartbeat, KillSwitch,
+    KnownBrowser, PlannedStart, SessionError, SessionSpec, SessionState, StopPolicy, Strictness,
+    Timestamp, Verdict, apps_to_close, planned_starts, scheduled_configs,
 };
 use ipc_proto::{
     BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
@@ -55,6 +55,8 @@ pub struct Ports {
     pub secrets: Arc<dyn Secrets>,
     /// Writes the window's settings changes into the settings file.
     pub settings: Arc<dyn SettingsEditor>,
+    /// Lists the apps with a window open, for picking apps to close.
+    pub windowed: Arc<dyn WindowedApps>,
 }
 
 /// Why the daemon couldn't start.
@@ -94,6 +96,10 @@ pub struct Service {
     calendar_state: SourceState,
     /// How the last task sync went.
     tasks_state: SourceState,
+    /// A pending request to stop Focus (the kill switch).
+    kill_switch: KillSwitch,
+    /// Set when a stop was confirmed: the server shuts down after answering.
+    stopping: bool,
 }
 
 /// The shortest time between two UI launches.
@@ -128,6 +134,8 @@ impl Service {
             sync: SyncSchedule::default(),
             calendar_state: SourceState::Unknown,
             tasks_state: SourceState::Unknown,
+            kill_switch: KillSwitch::default(),
+            stopping: false,
         };
         service.reload_settings();
         service.ensure_autostart();
@@ -189,7 +197,35 @@ impl Service {
                 .set_secret(key, value.as_deref())
                 .map(|()| Response::Done),
             Request::Plan => Ok(Response::Plan(Box::new(self.plan_view()))),
-            Request::SetAutoStart { rules } => self.set_auto_start(&rules).map(|()| Response::Done),
+            Request::Settings => self
+                .ports
+                .settings
+                .load_editable()
+                .map(|settings| Response::Settings(Box::new(settings)))
+                .map_err(settings_error),
+            Request::SaveSettings { settings } => {
+                self.save_settings(&settings).map(|()| Response::Done)
+            }
+            Request::WindowedApps => self
+                .ports
+                .windowed
+                .windowed_apps()
+                .map(|apps| Response::Apps { apps })
+                .map_err(|error| DaemonError::Internal {
+                    message: error.to_string(),
+                }),
+            Request::RequestStop => {
+                let policy = self.stop_policy();
+                Ok(Response::Stop {
+                    allowed_at: self.kill_switch.request(now, policy),
+                    reason_required: policy.reason_required,
+                })
+            }
+            Request::ConfirmStop { reason } => self.stop(&reason).map(|()| Response::Done),
+            Request::CancelStop => {
+                self.kill_switch.cancel();
+                Ok(Response::Done)
+            }
         };
         result.unwrap_or_else(|error| Response::Error { error })
     }
@@ -278,17 +314,45 @@ impl Service {
         }
     }
 
-    /// Replaces the automatic-start rules in the settings file for the window, then applies the
-    /// file as usual.
-    fn set_auto_start(&mut self, rules: &[AutoStartRule]) -> Result<(), DaemonError> {
+    /// Saves the window's edited settings into the settings file, then applies the file as for a
+    /// hand edit (with cooling-off where it applies).
+    fn save_settings(&mut self, settings: &EditableSettings) -> Result<(), DaemonError> {
         self.ports
             .settings
-            .set_auto_start(rules)
-            .map_err(|error| DaemonError::Settings {
-                message: error.to_string(),
-            })?;
+            .save_editable(settings)
+            .map_err(settings_error)?;
         self.reload_settings();
         Ok(())
+    }
+
+    /// How hard stopping Focus is right now.
+    fn stop_policy(&self) -> StopPolicy {
+        StopPolicy::for_session(self.state.session.running())
+    }
+
+    /// The kill switch: once the wait is over (and with a reason during a Locked session), ends
+    /// any session, saves that, and marks the daemon to exit after answering. The saved state then
+    /// shows no running session, which is how the browser extension learns to lift its blocks
+    /// while the daemon is gone.
+    fn stop(&mut self, reason: &str) -> Result<(), DaemonError> {
+        let now = self.now();
+        let policy = self.stop_policy();
+        self.kill_switch
+            .confirm(now, reason, policy)
+            .map_err(|error| DaemonError::Stop { error })?;
+        let reason = Some(reason.to_owned());
+        self.update(|state| {
+            state.session.stop(reason, now);
+            Ok(())
+        })?;
+        tracing::info!("stopping Focus with the kill switch");
+        self.stopping = true;
+        Ok(())
+    }
+
+    /// Whether the last request stopped Focus; the server then shuts down. Reading it clears it.
+    pub fn take_stop(&mut self) -> bool {
+        std::mem::take(&mut self.stopping)
     }
 
     /// The cached plan for the window's agenda.
@@ -298,7 +362,6 @@ impl Service {
             now,
             events: self.state.plan.events().to_vec(),
             tasks: self.state.plan.tasks().to_vec(),
-            rules: self.auto_rules.clone(),
             upcoming: self
                 .state
                 .auto_started
@@ -532,6 +595,8 @@ impl Service {
             start_at_login_off_after: self.state.start_at_login.off_after(),
             start_at_login_problem: self.autostart_problem.clone(),
             plan: self.plan_status(),
+            stop_allowed_at: self.kill_switch.allowed_at(self.stop_policy()),
+            stop_reason_required: self.stop_policy().reason_required,
         }
     }
 
@@ -668,6 +733,15 @@ fn session_error(error: SessionError) -> DaemonError {
     DaemonError::Session { error }
 }
 
+fn settings_error(error: ConfigSourceError) -> DaemonError {
+    match error {
+        ConfigSourceError::Changed => DaemonError::SettingsChanged,
+        other => DaemonError::Settings {
+            message: other.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -680,7 +754,7 @@ mod tests {
         FakeAutostart, FakeCalendar, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier,
         FakeTasks, FakeUi, MemorySecrets, MemoryStateStore, RecordingHistory, state_store_contract,
     };
-    use focus_core::{CalendarEvent, EndEarlyResponse, EndReason, RuleAction, Task};
+    use focus_core::{CalendarEvent, EndEarlyResponse, EndReason, RuleAction, StopError, Task};
     use tempfile::TempDir;
 
     use super::*;
@@ -760,6 +834,9 @@ mod tests {
                 tasks: self.tasks.clone(),
                 secrets: self.secrets.clone(),
                 settings: Arc::new(TomlConfigSource::new(&self.settings)),
+                windowed: Arc::new(focus_core::testing::FakeWindowedApps::with([
+                    "discord", "notepad",
+                ])),
             }
         }
 
@@ -1376,7 +1453,6 @@ mod tests {
         let view = plan(&mut service);
         assert_eq!(view.events.len(), 1, "the agenda shows the event");
         assert_eq!(view.upcoming.len(), 1, "shows the planned session");
-        assert_eq!(view.rules.len(), 1);
 
         service.auto_start();
         assert!(
@@ -1559,43 +1635,69 @@ mod tests {
         );
     }
 
+    fn editable(service: &mut Service) -> EditableSettings {
+        match service.handle(Request::Settings) {
+            Response::Settings(settings) => *settings,
+            other => panic!("expected settings, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn rules_set_from_the_window_are_written_and_take_effect() {
+    fn settings_saved_from_the_window_are_written_and_take_effect() {
         let harness = Harness::new();
         harness.calendar.set(Ok(vec![focus_event(&harness, 0, 60)]));
         let mut service = harness.open();
         sync(&mut service);
+        let mut settings = editable(&mut service);
+        assert_eq!(settings.configs.len(), 2);
         let rule = AutoStartRule {
-            config: "coding".into(),
+            config: "reading".into(),
             strictness: Strictness::Locked,
             calendar_keywords: vec!["#focus".into()],
             task_labels: Vec::new(),
             task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
         };
+        settings.configs.push(focus_core::ConfigEntry {
+            name: "reading".into(),
+            mode: focus_core::Mode::Blocklist,
+            include: Vec::new(),
+            patterns: focus_core::RulePatterns {
+                block: vec!["x.com".into()],
+                ..focus_core::RulePatterns::default()
+            },
+            apps: Vec::new(),
+        });
+        settings.auto_start.push(rule.clone());
         assert_eq!(
-            service.handle(Request::SetAutoStart {
-                rules: vec![rule.clone()]
+            service.handle(Request::SaveSettings {
+                settings: settings.clone()
             }),
             Response::Done
         );
         let text = std::fs::read_to_string(&harness.settings).unwrap();
-        assert!(text.contains("[[auto_start]]"), "{text}");
-        assert!(text.contains("[configs.writing]"), "the rest is kept");
-        assert_eq!(plan(&mut service).rules, std::slice::from_ref(&rule));
-        service.auto_start();
-        assert_eq!(
-            service.state().session.running().unwrap().spec().strictness,
-            Strictness::Locked
+        assert!(
+            text.contains("[configs.reading]") && text.contains("[[auto_start]]"),
+            "{text}"
         );
+        assert_eq!(config_names(&mut service), ["coding", "reading", "writing"]);
+        service.auto_start();
+        let running = service
+            .state()
+            .session
+            .running()
+            .expect("the new rule starts it");
+        assert_eq!(running.spec().config.name, "reading");
+        assert_eq!(running.spec().strictness, Strictness::Locked);
 
-        let unknown = AutoStartRule {
-            config: "gaming".into(),
-            ..rule
-        };
+        assert_eq!(
+            error(service.handle(Request::SaveSettings { settings })),
+            DaemonError::SettingsChanged,
+            "saved from an old revision"
+        );
+        let mut invalid = editable(&mut service);
+        invalid.auto_start[0].config = "gaming".into();
         assert!(matches!(
-            error(service.handle(Request::SetAutoStart {
-                rules: vec![unknown]
-            })),
+            error(service.handle(Request::SaveSettings { settings: invalid })),
             DaemonError::Settings { .. }
         ));
         assert_eq!(
@@ -1603,6 +1705,102 @@ mod tests {
             text,
             "nothing written"
         );
+    }
+
+    #[test]
+    fn lists_windowed_apps_for_picking() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(
+            service.handle(Request::WindowedApps),
+            Response::Apps {
+                apps: vec!["discord".into(), "notepad".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn the_kill_switch_waits_then_ends_the_session_and_stops() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Deep);
+        assert!(matches!(
+            error(service.handle(Request::ConfirmStop {
+                reason: String::new()
+            })),
+            DaemonError::Stop {
+                error: StopError::NotRequested
+            }
+        ));
+        let Response::Stop {
+            allowed_at,
+            reason_required: false,
+        } = service.handle(Request::RequestStop)
+        else {
+            panic!("expected the stop wait");
+        };
+        assert_eq!(status(&mut service).stop_allowed_at, Some(allowed_at));
+        harness.clock.advance(MINUTE / 2);
+        assert!(matches!(
+            error(service.handle(Request::ConfirmStop {
+                reason: String::new()
+            })),
+            DaemonError::Stop {
+                error: StopError::StillWaiting { .. }
+            }
+        ));
+        assert!(!service.take_stop(), "not stopping yet");
+
+        harness.clock.advance(MINUTE / 2);
+        assert_eq!(
+            service.handle(Request::ConfirmStop {
+                reason: String::new()
+            }),
+            Response::Done
+        );
+        assert!(service.take_stop(), "the server shuts down");
+        let saved = harness.store.load().unwrap().unwrap();
+        assert!(
+            matches!(
+                saved.session.ended().unwrap().reason(),
+                EndReason::Stopped { .. }
+            ),
+            "saved as stopped, so the browser extension lifts its blocks"
+        );
+        assert!(!harness.notifier.is_silenced(), "notifications come back");
+    }
+
+    #[test]
+    fn stopping_during_a_locked_session_waits_longer_and_needs_a_reason() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Locked);
+        let Response::Stop {
+            reason_required: true,
+            ..
+        } = service.handle(Request::RequestStop)
+        else {
+            panic!("expected a reason to be required");
+        };
+        harness.clock.advance(MINUTE);
+        assert!(matches!(
+            error(service.handle(Request::ConfirmStop {
+                reason: "now".into()
+            })),
+            DaemonError::Stop {
+                error: StopError::StillWaiting { .. }
+            }
+        ));
+        harness.clock.advance(MINUTE * 4);
+        assert!(matches!(
+            error(service.handle(Request::ConfirmStop { reason: " ".into() })),
+            DaemonError::Stop {
+                error: StopError::ReasonRequired
+            }
+        ));
+        service.handle(Request::CancelStop);
+        assert_eq!(status(&mut service).stop_allowed_at, None, "cancelled");
+        assert!(service.state().session.running().is_some());
     }
 
     #[test]

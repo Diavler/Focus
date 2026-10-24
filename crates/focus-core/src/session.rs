@@ -49,6 +49,11 @@ pub enum EndReason {
         /// The reason given, if one was required.
         reason: Option<String>,
     },
+    /// Focus was stopped with the kill switch.
+    Stopped {
+        /// The reason given, if one was required (during a Locked session).
+        reason: Option<String>,
+    },
 }
 
 /// Where the session lifecycle is. Starts `Idle`; a new session can start once the last one ends.
@@ -209,6 +214,16 @@ impl SessionState {
             },
         );
         Ok(())
+    }
+
+    /// Ends a running session because Focus is being stopped with the kill switch, whatever its
+    /// strictness (the kill switch has its own wait). Does nothing if no session is running.
+    pub fn stop(&mut self, reason: Option<String>, now: Timestamp) {
+        self.tick(now);
+        let reason = reason
+            .map(|reason| reason.trim().to_owned())
+            .filter(|reason| !reason.is_empty());
+        self.finish(now, EndReason::Stopped { reason });
     }
 
     /// Withdraws a pending request to end early; a later request starts a fresh wait.
@@ -527,6 +542,25 @@ mod tests {
         );
         assert_eq!(state.cancel_end_request(), Err(SessionError::NotRunning));
         assert!(!state.tick(clock.now()));
+    }
+
+    #[test]
+    fn stopping_ends_even_a_locked_session() {
+        let clock = FakeClock::default();
+        let mut state = started(Strictness::Locked, &clock);
+        clock.advance(Duration::from_secs(60));
+        state.stop(Some("  emergency ".into()), clock.now());
+        let ended = state.ended().unwrap();
+        assert_eq!(
+            ended.reason(),
+            &EndReason::Stopped {
+                reason: Some("emergency".into())
+            }
+        );
+        assert_eq!(ended.ended_at(), clock.now());
+        let mut idle = SessionState::default();
+        idle.stop(None, clock.now());
+        assert_eq!(idle, SessionState::Idle, "nothing to stop");
     }
 
     #[test]

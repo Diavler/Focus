@@ -14,12 +14,14 @@ mod enforcer;
 mod foreground;
 mod notifier;
 mod processes;
+mod windowed;
 
 pub use autostart::WindowsAutostart;
 pub use browsers::known_browsers;
 pub use enforcer::WindowsEnforcer;
 pub use foreground::WindowsForeground;
 pub use notifier::WindowsNotifier;
+pub use windowed::WindowsWindowedApps;
 
 /// Whether adapters act or only log what they would do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

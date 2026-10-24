@@ -79,6 +79,9 @@ impl Home {
             tasks: Arc::new(FakeTasks::default()),
             secrets: Arc::new(MemorySecrets::default()),
             settings: Arc::new(TomlConfigSource::new(&self.settings)),
+            windowed: Arc::new(focus_core::testing::FakeWindowedApps::with([
+                "discord", "notepad",
+            ])),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let (stop, stopped) = oneshot::channel::<()>();
@@ -321,4 +324,45 @@ async fn a_tagged_calendar_event_starts_its_config_even_offline() {
     );
     drop(client);
     daemon.stop().await;
+}
+
+#[tokio::test]
+async fn the_kill_switch_ends_the_session_and_stops_the_daemon() {
+    let home = Home::new();
+    let endpoint = unique_endpoint();
+    let daemon = home.start_daemon(&endpoint).await;
+    let mut client = Client::connect(&endpoint).await.unwrap();
+    client
+        .start_session("coding", Strictness::Locked, 25 * MINUTE)
+        .await
+        .unwrap();
+    let Response::Stop {
+        reason_required: true,
+        ..
+    } = client.request(&Request::RequestStop).await.unwrap()
+    else {
+        panic!("a locked session needs a reason");
+    };
+    home.clock.advance(focus_core::StopPolicy::LOCKED_WAIT);
+    let confirm = Request::ConfirmStop {
+        reason: "family emergency".into(),
+    };
+    assert_eq!(client.request(&confirm).await.unwrap(), Response::Done);
+
+    // The daemon stops by itself, without being told to from outside.
+    tokio::time::timeout(Duration::from_secs(10), daemon.task)
+        .await
+        .expect("the daemon stopped")
+        .unwrap();
+    assert!(Client::connect(&endpoint).await.is_err(), "nothing listens");
+    let saved =
+        <JsonStateStore as focus_core::ports::StateStore>::load(&JsonStateStore::new(&home.state))
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        saved.session.ended().unwrap().reason(),
+        &EndReason::Stopped {
+            reason: Some("family emergency".into())
+        }
+    );
 }

@@ -7,11 +7,12 @@ use std::time::Duration;
 use crate::auto_start::{AutoStartLog, AutoStartRule, PlanSource, PlannedStart};
 use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
+use crate::editable::{ConfigEntry, EditableSettings, ListEntry, RulePatterns};
 use crate::plan::{CalendarEvent, Fetched, PlanCache, Task};
 use crate::ports::{
-    Autostart, CalendarSource, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent,
-    Notifier, PersistedState, ProcessList, SecretKey, Secrets, SettingsEditor, StateStore,
-    TaskSource, UiWatch,
+    Autostart, CalendarSource, Clock, ConfigSource, ConfigSourceError, Enforcer, ForegroundApp,
+    History, HistoryEvent, Notifier, PersistedState, ProcessList, SecretKey, Secrets,
+    SettingsEditor, StateStore, TaskSource, UiWatch, WindowedApps,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -251,60 +252,141 @@ pub fn secrets_contract(secrets: &dyn Secrets) {
     }
 }
 
-/// Rules set through the editor are what the source then loads, the rest of the settings stay,
-/// a rule for a missing configuration is refused without changing anything, and the original
-/// rules can be put back. `editor` and `source` must be the same settings. Skipped if the
-/// settings can't be loaded.
+/// The editor reads the settings as written and saves edits that the source then loads: a new
+/// list, configuration and automatic-start rule appear, a save from an old revision is refused
+/// with `Changed`, an invalid save is refused, and refused saves change nothing. The original
+/// settings are put back afterwards. `editor` and `source` must be the same settings. Skipped if
+/// the settings can't be read.
 pub fn settings_editor_contract(editor: &dyn SettingsEditor, source: &dyn ConfigSource) {
-    let Ok(before) = source.load() else { return };
-    let missing = AutoStartRule {
+    let Ok(original) = editor.load_editable() else {
+        return;
+    };
+    let stale = EditableSettings {
+        revision: format!("{}-stale", original.revision),
+        ..original.clone()
+    };
+    assert_eq!(
+        editor.save_editable(&stale),
+        Err(ConfigSourceError::Changed),
+        "a save from another revision was accepted"
+    );
+    let mut invalid = original.clone();
+    invalid.auto_start.push(AutoStartRule {
         config: "focus-contract-no-such-config".into(),
         strictness: Strictness::Light,
         calendar_keywords: vec!["#contract".into()],
         task_labels: Vec::new(),
         task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
-    };
+    });
     assert!(
-        editor
-            .set_auto_start(std::slice::from_ref(&missing))
-            .is_err(),
+        matches!(
+            editor.save_editable(&invalid),
+            Err(ConfigSourceError::Invalid { .. })
+        ),
         "a rule for a missing config was accepted"
     );
     assert_eq!(
-        source.load(),
-        Ok(before.clone()),
-        "a refused edit changed the settings"
+        editor.load_editable(),
+        Ok(original.clone()),
+        "a refused save changed the settings"
     );
-    if let Some(config) = before.configs.first() {
-        let rule = AutoStartRule {
-            config: config.name.clone(),
-            strictness: Strictness::Deep,
-            calendar_keywords: vec!["#contract".into()],
-            task_labels: vec!["contract".into()],
-            task_duration: Duration::from_secs(25 * 60),
-        };
-        assert_eq!(editor.set_auto_start(std::slice::from_ref(&rule)), Ok(()));
-        let after = source.load();
-        assert_eq!(
-            after.as_ref().map(|settings| settings.auto_start.clone()),
-            Ok(vec![rule]),
-            "the rule didn't read back"
-        );
-        assert_eq!(
-            after.map(|settings| (settings.configs, settings.start_at_login)),
-            Ok((before.configs.clone(), before.start_at_login)),
-            "other settings changed"
+
+    let mut edited = original.clone();
+    edited.lists.push(ListEntry {
+        name: "focus-contract-list".into(),
+        patterns: RulePatterns {
+            block: vec!["contract-list.example".into()],
+            ..RulePatterns::default()
+        },
+    });
+    edited.configs.push(ConfigEntry {
+        name: "focus-contract".into(),
+        mode: Mode::Blocklist,
+        include: vec!["focus-contract-list".into()],
+        patterns: RulePatterns {
+            feed_only: vec!["contract.example".into()],
+            ..RulePatterns::default()
+        },
+        apps: vec!["contract-app".into()],
+    });
+    let rule = AutoStartRule {
+        config: "focus-contract".into(),
+        strictness: Strictness::Deep,
+        calendar_keywords: vec!["#contract".into()],
+        task_labels: vec!["contract".into()],
+        task_duration: Duration::from_secs(25 * 60),
+    };
+    edited.auto_start.push(rule.clone());
+    assert_eq!(editor.save_editable(&edited), Ok(()), "a valid save failed");
+    let loaded = source
+        .load()
+        .unwrap_or_else(|error| panic!("loading after a save: {error}"));
+    let config = loaded
+        .configs
+        .iter()
+        .find(|config| config.name == "focus-contract")
+        .unwrap_or_else(|| panic!("the new config didn't load"));
+    assert_eq!(
+        config.verdict("https://contract-list.example/"),
+        crate::rule::Verdict::Restrict(crate::rule::RuleAction::Block),
+        "the included list's rules didn't load"
+    );
+    assert_eq!(config.apps, ["contract-app"]);
+    assert_eq!(loaded.auto_start.last(), Some(&rule));
+    let reread = editor
+        .load_editable()
+        .unwrap_or_else(|error| panic!("reading after a save: {error}"));
+    assert_ne!(
+        reread.revision, original.revision,
+        "the revision didn't change"
+    );
+    assert_eq!(
+        editor.save_editable(&edited),
+        Err(ConfigSourceError::Changed),
+        "saving twice from the same revision was accepted"
+    );
+
+    let restore = EditableSettings {
+        revision: reread.revision,
+        ..original.clone()
+    };
+    assert_eq!(editor.save_editable(&restore), Ok(()), "restoring failed");
+    let restored = editor
+        .load_editable()
+        .unwrap_or_else(|error| panic!("reading after restoring: {error}"));
+    assert_eq!(
+        EditableSettings {
+            revision: String::new(),
+            ..restored
+        },
+        EditableSettings {
+            revision: String::new(),
+            ..original
+        },
+        "restoring didn't bring the settings back"
+    );
+}
+
+/// Listing windowed apps succeeds with unique, non-blank names, sorted ignoring case, and never
+/// lists Focus itself.
+pub fn windowed_apps_contract(apps: &dyn WindowedApps) {
+    let listed = apps
+        .windowed_apps()
+        .unwrap_or_else(|error| panic!("listing windowed apps failed: {error}"));
+    let mut seen = HashSet::new();
+    for app in &listed {
+        assert!(!app.trim().is_empty(), "a blank app name");
+        assert!(seen.insert(app.to_lowercase()), "{app} listed twice");
+        assert!(
+            !app.to_lowercase().starts_with("focus-"),
+            "Focus itself was listed"
         );
     }
-    assert_eq!(
-        editor.set_auto_start(&before.auto_start),
-        Ok(()),
-        "restoring failed"
-    );
-    assert_eq!(
-        source.load(),
-        Ok(before),
-        "restoring didn't bring the settings back"
+    assert!(
+        listed
+            .windows(2)
+            .all(|pair| pair[0].to_lowercase() <= pair[1].to_lowercase()),
+        "apps aren't sorted: {listed:?}"
     );
 }
 

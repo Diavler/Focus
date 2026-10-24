@@ -12,7 +12,14 @@ import { FEED_MATCHES } from "./feeds";
 import { delaySeconds } from "./friction";
 import { type Grant, delayKey, delayOver, grantRule, isGranted, makeGrant } from "./grants";
 import { NativeClient, type PortLike } from "./native";
-import { HOST_NAME, actionOf, runningSession, type RunningSession, type Verdict } from "./protocol";
+import {
+  HOST_NAME,
+  actionOf,
+  isStopped,
+  sessionFromStatus,
+  type RunningSession,
+  type Verdict,
+} from "./protocol";
 import { browserName } from "./platform/chromium";
 
 /** How often to send a heartbeat and refresh rules while the worker is awake. */
@@ -45,8 +52,9 @@ async function refresh(): Promise<void> {
     const incognito = await browser.extension.isAllowedIncognitoAccess();
     await client.request({ type: "heartbeat", browser: browserName(), incognito_allowed: incognito });
     const status = await client.request({ type: "status" });
-    if (status.type !== "status") throw new Error(`status: ${JSON.stringify(status)}`);
-    session = runningSession(status.session);
+    const reported = sessionFromStatus(status);
+    if (reported === undefined) throw new Error(`status: ${JSON.stringify(status)}`);
+    session = reported;
     await browser.storage.local.set({ session });
   } catch {
     session = await knownSession();
@@ -87,6 +95,7 @@ async function verdictFor(url: string): Promise<Verdict> {
   try {
     const response = await client.request({ type: "rules_for", url, config: null });
     if (response.type === "verdict") return response.verdict;
+    if (isStopped(response)) return "allow";
   } catch {
     // Fall through to the local decision.
   }

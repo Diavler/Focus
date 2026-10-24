@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use focus_core::KnownBrowser;
 use focus_core::ports::{
     Autostart, AutostartError, EnforceError, Enforcer, ForegroundApp, Notifier, NotifyError,
-    ProcessList,
+    ProcessList, WindowedApps,
 };
 
 /// No enforcement yet: closes nothing, sees no apps, leaves notifications alone and doesn't
@@ -71,6 +71,12 @@ impl Autostart for PendingEnforcer {
     }
 }
 
+impl WindowedApps for PendingEnforcer {
+    fn windowed_apps(&self) -> Result<Vec<String>, EnforceError> {
+        Ok(Vec::new())
+    }
+}
+
 /// Browsers to watch on Linux: none until step 9.
 pub fn known_browsers() -> Vec<KnownBrowser> {
     Vec::new()
@@ -80,7 +86,7 @@ pub fn known_browsers() -> Vec<KnownBrowser> {
 mod tests {
     use focus_core::testing::{
         autostart_contract, enforcer_contract, foreground_app_contract, notifier_contract,
-        process_list_contract,
+        process_list_contract, windowed_apps_contract,
     };
 
     use super::*;
@@ -93,5 +99,6 @@ mod tests {
         foreground_app_contract(&pending);
         notifier_contract(&pending);
         autostart_contract(&pending);
+        windowed_apps_contract(&pending);
     }
 }

@@ -10,6 +10,7 @@ use iced::{Alignment, Element, Length};
 
 use crate::Message;
 use crate::help::{info, tip};
+use crate::style::{self, Tone, caption, toned};
 
 /// Shortest and longest task session the slider offers, in minutes.
 const TASK_MINUTES: std::ops::RangeInclusive<u16> = 5..=240;
@@ -141,60 +142,29 @@ pub fn problem(drafts: &[Draft], configs: &[String]) -> Option<String> {
     })
 }
 
-/// The rules section: one card per rule, then Add / Save / Discard.
-pub fn view<'a>(
-    drafts: &'a [Draft],
-    configs: &'a [String],
-    dirty: bool,
-    busy: bool,
-) -> Element<'a, Message> {
-    let header = row![
-        text("Automatic starts").size(20),
-        info(
-            "Start a session by itself when your plan says so. A calendar event whose title \
-             contains a keyword runs until the event ends; a Todoist task that's due at a time \
-             and has one of the labels runs for the task's duration (or the length below). \
-             Events and tasks are checked every few minutes, and saved for when you're offline."
-        ),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    let mut section = column![header].spacing(12);
+/// The rules tab: one card per rule, then a button to add one. Saving is the Settings page's.
+pub fn view<'a>(drafts: &'a [Draft], configs: &'a [String]) -> Element<'a, Message> {
+    let mut section = column![caption(
+        "A calendar event whose title contains a keyword runs its configuration until the event          ends. A Todoist task that's due at a time and has one of the labels runs it for the          task's duration (or the length below)."
+    )]
+    .spacing(14);
     if drafts.is_empty() {
-        section = section.push(
-            text("No rules yet: nothing in your calendar or Todoist starts a session.")
-                .size(13)
-                .style(text::secondary),
-        );
+        section = section.push(caption(
+            "No rules yet: nothing in your calendar or Todoist starts a session.",
+        ));
     }
     for (index, draft) in drafts.iter().enumerate() {
         section = section.push(card(index, draft, configs));
     }
-    let problem = problem(drafts, configs);
-    let save = (dirty && problem.is_none() && !busy).then_some(Message::SaveRules);
-    let discard = (dirty && !busy).then_some(Message::DiscardRules);
     let add = (!configs.is_empty()).then_some(Message::Rule(Edit::Add));
-    section = section.push(
-        row![
-            button("Add rule").on_press_maybe(add),
-            tip(
-                button("Save rules")
-                    .style(button::success)
-                    .on_press_maybe(save),
-                "Writes these rules into settings.toml. Edits to a configuration with a \
-                 session planned in the next 24 hours wait 24 hours (cooling off); the rules \
-                 themselves apply right away."
-            ),
-            button("Discard changes")
-                .style(button::secondary)
-                .on_press_maybe(discard),
-        ]
-        .spacing(8),
-    );
-    if dirty && let Some(problem) = problem {
-        section = section.push(text(problem).size(13).style(text::danger));
-    } else if dirty {
-        section = section.push(text("Unsaved changes.").size(13).style(text::secondary));
+    section = section.push(button("Add rule").on_press_maybe(add));
+    if configs.is_empty() {
+        section = section.push(caption(
+            "Create a configuration first (Configurations tab).",
+        ));
+    }
+    if let Some(problem) = problem(drafts, configs) {
+        section = section.push(toned(problem, Tone::Bad).size(14));
     }
     section.into()
 }
@@ -265,16 +235,13 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
         .step(5u16),
     ]
     .spacing(6);
-    container(column![top, keywords, labels, task_length].spacing(10))
-        .padding(12)
-        .width(Length::Fill)
-        .style(container::bordered_box)
-        .into()
+    style::card(column![top, keywords, labels, task_length].spacing(12)).into()
 }
 
-/// A list of removable entries with a box and button to add more.
+/// A list of removable entries with a box and button to add more; shared with the
+/// configuration editor.
 #[allow(clippy::too_many_arguments)]
-fn entries<'a>(
+pub(crate) fn entries<'a>(
     title: &'a str,
     explanation: &'a str,
     placeholder: &'a str,

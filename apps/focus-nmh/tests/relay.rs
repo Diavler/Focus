@@ -56,6 +56,9 @@ impl Daemon {
             tasks: Arc::new(FakeTasks::default()),
             secrets: Arc::new(MemorySecrets::default()),
             settings: Arc::new(TomlConfigSource::new(&settings)),
+            windowed: Arc::new(focus_core::testing::FakeWindowedApps::with([
+                "discord", "notepad",
+            ])),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let listener = bind(endpoint).await.unwrap();
@@ -83,12 +86,17 @@ struct Browser {
 }
 
 impl Browser {
+    /// A browser whose host sees a session saved as running whenever the daemon is gone.
     fn connect(endpoint: &Endpoint) -> Self {
+        Self::connect_with_saved_session(endpoint, true)
+    }
+
+    fn connect_with_saved_session(endpoint: &Endpoint, session_saved: bool) -> Self {
         let (browser, host_side) = duplex(64 * 1024);
         let endpoint = endpoint.clone();
         let host = tokio::spawn(async move {
             let (mut reader, mut writer) = tokio::io::split(host_side);
-            focus_nmh::host::run(&mut reader, &mut writer, &endpoint).await
+            focus_nmh::host::run(&mut reader, &mut writer, &endpoint, move || !session_saved).await
         });
         Self {
             pipe: browser,
@@ -205,6 +213,17 @@ async fn refuses_requests_the_browser_may_not_send() {
 
     browser.close().await;
     daemon.stop().await;
+}
+
+#[tokio::test]
+async fn reports_focus_stopped_when_no_session_is_saved() {
+    let endpoint = unique_endpoint();
+    let mut browser = Browser::connect_with_saved_session(&endpoint, false);
+    let status = browser.send(1, json!({"type": "status"})).await;
+    assert_eq!(
+        status["error"]["kind"], "stopped",
+        "the extension may lift its blocks"
+    );
 }
 
 #[tokio::test]

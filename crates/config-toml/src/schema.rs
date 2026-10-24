@@ -38,15 +38,15 @@ pub(crate) struct AutoStartTable {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ListTable {
     #[serde(default)]
-    allow: Vec<String>,
+    pub(crate) allow: Vec<String>,
     #[serde(default)]
-    ask: Vec<String>,
+    pub(crate) ask: Vec<String>,
     #[serde(default)]
-    delay: Vec<String>,
+    pub(crate) delay: Vec<String>,
     #[serde(default)]
-    feed_only: Vec<String>,
+    pub(crate) feed_only: Vec<String>,
     #[serde(default)]
-    block: Vec<String>,
+    pub(crate) block: Vec<String>,
 }
 
 /// `[configs.<name>]`: a block configuration. Repeats the rule keys of [`ListTable`] because serde
@@ -61,15 +61,15 @@ pub(crate) struct ConfigTable {
     #[serde(default)]
     pub(crate) apps: Vec<String>,
     #[serde(default)]
-    allow: Vec<String>,
+    pub(crate) allow: Vec<String>,
     #[serde(default)]
-    ask: Vec<String>,
+    pub(crate) ask: Vec<String>,
     #[serde(default)]
-    delay: Vec<String>,
+    pub(crate) delay: Vec<String>,
     #[serde(default)]
-    feed_only: Vec<String>,
+    pub(crate) feed_only: Vec<String>,
     #[serde(default)]
-    block: Vec<String>,
+    pub(crate) block: Vec<String>,
 }
 
 /// One rule key: its name in the file, its patterns and the verdict they get.

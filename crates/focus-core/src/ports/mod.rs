@@ -17,6 +17,7 @@ mod secrets;
 mod settings_editor;
 mod state_store;
 mod ui_watch;
+mod windowed_apps;
 
 pub use autostart::{Autostart, AutostartError};
 pub use clock::Clock;
@@ -31,3 +32,4 @@ pub use secrets::{SecretKey, Secrets, SecretsError};
 pub use settings_editor::SettingsEditor;
 pub use state_store::{PersistedState, StateStore, StateStoreError};
 pub use ui_watch::{UiWatch, UiWatchError};
+pub use windowed_apps::WindowedApps;

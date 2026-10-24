@@ -2,29 +2,33 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 //! Iced desktop UI. Talks only to `focus-daemon` over IPC, so closing the window never ends a session.
+//!
+//! The window has a sidebar with three pages (Sessions, Calendar, Todoist) and a Settings page
+//! opened from Sessions. Each page lives in its own module as an `impl App` block; this file holds
+//! the state, the messages and how they change the state.
 
 mod agenda;
+mod configs;
 mod daemon;
 mod help;
+mod plan_pages;
 mod rules;
+mod sessions;
+mod settings;
+mod style;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use focus_core::ports::SecretKey;
-use focus_core::{
-    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, RunningSession,
-    Strictness, Timestamp,
-};
+use focus_core::{BlockConfig, EditableSettings, Strictness};
 use focus_install::{InstanceLock, Paths};
-use iced::widget::{
-    Column, button, column, container, pick_list, radio, row, scrollable, slider, text, text_input,
-};
-use iced::{Element, Length, Subscription, Task};
-use ipc_proto::{PlanView, Request, SourceState, SourceStatus, StatusReport};
-
-use crate::help::{info, tip};
+use iced::widget::{Column, column, container, row, scrollable, space, text};
+use iced::{Alignment, Element, Length, Subscription, Task};
+use ipc_proto::{PlanView, Request, SourceState, StatusReport};
 use ipc_transport::Endpoint;
+
+use crate::style::{Tone, caption, dot, nav};
 
 fn main() -> iced::Result {
     let install = focus_install::install_folder().unwrap_or_default();
@@ -56,13 +60,14 @@ fn main() -> iced::Result {
     )
     .title("Focus")
     .subscription(App::subscription)
-    .window_size((520.0, 720.0))
+    .theme(App::theme)
+    .window_size((1040.0, 760.0))
     .centered()
     .run()
 }
 
 /// Shortest and longest session the duration slider offers, in minutes.
-const MINUTES: std::ops::RangeInclusive<u16> = 1..=180;
+pub(crate) const MINUTES: std::ops::RangeInclusive<u16> = 1..=180;
 
 /// How often the window asks the daemon for its status.
 const POLL: Duration = Duration::from_secs(1);
@@ -70,14 +75,24 @@ const POLL: Duration = Duration::from_secs(1);
 /// Configurations are re-fetched every this many polls, to pick up settings edits.
 const CONFIGS_EVERY_POLLS: u32 = 10;
 
-/// The calendar, tasks and rules are re-fetched every this many polls.
+/// The calendar and tasks are re-fetched every this many polls.
 const PLAN_EVERY_POLLS: u32 = 5;
 
 /// After this many failed status polls in a row, the UI starts the daemon (ADR 0008).
 const RESTART_DAEMON_AFTER: u32 = 3;
 
+/// The pages of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Page {
+    Sessions,
+    Calendar,
+    Todoist,
+    /// Opened from Sessions.
+    Settings,
+}
+
 /// Everything the window shows.
-struct App {
+pub(crate) struct App {
     /// The folder holding the executables, for starting the daemon.
     install: PathBuf,
     endpoint: Endpoint,
@@ -91,65 +106,62 @@ struct App {
     status: Option<StatusReport>,
     /// Why the daemon can't be reached, if it can't.
     unreachable: Option<String>,
+    page: Page,
     configs: Vec<BlockConfig>,
     config_names: Vec<String>,
     selected: Option<String>,
     strictness: Strictness,
     minutes: u16,
     reason: String,
-    probe: String,
-    probe_result: Option<String>,
-    /// What the last URL check asked; a new check is sent when this would change.
-    probe_asked: Option<ProbeKey>,
+    /// The calendar and tasks, from the daemon; `None` until it first answers.
+    plan: Option<PlanView>,
     /// A calendar address being typed or pasted; sent to the daemon's keychain on Save.
     calendar_input: String,
     /// A Todoist token being typed or pasted.
     token_input: String,
-    /// The calendar, tasks and rules, from the daemon; `None` until it first answers.
-    plan: Option<PlanView>,
-    /// A plan request is on its way.
-    plan_pending: bool,
-    /// The automatic-start rules as edited in the window.
-    rules: Vec<rules::Draft>,
-    /// The rules were edited and not yet saved, so new answers from the daemon don't overwrite
-    /// them.
-    rules_dirty: bool,
-    /// What the action on its way saves, so a failure keeps what was typed.
-    saving: Option<Saving>,
+    /// The settings being edited; loaded when Settings opens.
+    settings: Option<settings::Draft>,
+    settings_tab: settings::Tab,
+    /// Configuration names as edited, offered by the rule editor.
+    rule_configs: Vec<String>,
+    /// Apps with a window open, offered by the configuration editor.
+    apps: Vec<String>,
+    /// The reason typed to stop Focus during a Locked session.
+    stop_reason: String,
     error: Option<String>,
     polls: u32,
     /// A status request is on its way, so polls don't pile up if the daemon is slow.
     status_pending: bool,
     /// A configs request is on its way.
     configs_pending: bool,
-    /// An action (start, end, ...) is on its way; its buttons are disabled until it answers.
+    /// A plan request is on its way.
+    plan_pending: bool,
+    /// An action (start, end, save, ...) is on its way; its buttons are disabled until it answers.
     action_pending: bool,
+    /// What the action on its way does, so its answer can be handled.
+    saving: Option<Saving>,
+    /// Focus's colours for the system's light or dark mode.
+    theme: iced::Theme,
 }
 
-/// Something being saved through the daemon.
+/// An action whose answer needs more than showing an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Saving {
     Secret(SecretKey),
-    Rules,
-}
-
-/// One URL check: the URL and what it was checked against.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProbeKey {
-    url: String,
-    /// The running session's config, if a session was running.
-    session: Option<String>,
-    /// The config picked in the setup view, used when no session is running.
-    selected: Option<String>,
+    Settings,
+    Stop,
 }
 
 /// User actions, timer ticks and daemon answers.
 #[derive(Debug, Clone)]
-enum Message {
+pub(crate) enum Message {
     Poll,
     /// Boxed: a status is much larger than the other messages.
     StatusLoaded(Box<Result<StatusReport, daemon::StatusError>>),
     ConfigsLoaded(Result<Vec<BlockConfig>, String>),
+    /// Boxed: the plan is much larger than the other messages.
+    PlanLoaded(Box<Result<PlanView, String>>),
+    Navigate(Page),
     ConfigPicked(String),
     StrictnessPicked(Strictness),
     MinutesChanged(u16),
@@ -159,19 +171,21 @@ enum Message {
     ConfirmEnd,
     CancelEnd,
     ActionDone(Result<(), String>),
-    ProbeChanged(String),
-    ProbeChecked {
-        key: ProbeKey,
-        result: Result<String, String>,
-    },
     SecretInput(SecretKey, String),
     SaveSecret(SecretKey),
     RemoveSecret(SecretKey),
-    /// Boxed: the plan is much larger than the other messages.
-    PlanLoaded(Box<Result<PlanView, String>>),
+    OpenSettings,
+    /// Boxed like the other large answers.
+    SettingsLoaded(Box<Result<EditableSettings, String>>),
+    AppsLoaded(Result<Vec<String>, String>),
+    Settings(settings::Msg),
     Rule(rules::Edit),
-    SaveRules,
-    DiscardRules,
+    RequestStop,
+    StopReasonChanged(String),
+    ConfirmStop,
+    CancelStop,
+    /// The system switched between light and dark mode (or said which at startup).
+    ThemeMode(iced::theme::Mode),
 }
 
 impl App {
@@ -184,29 +198,36 @@ impl App {
             dry_run,
             status: None,
             unreachable: None,
+            page: Page::Sessions,
             configs: Vec::new(),
             config_names: Vec::new(),
             selected: None,
             strictness: Strictness::Deep,
             minutes: 25,
             reason: String::new(),
-            probe: String::new(),
-            probe_result: None,
-            probe_asked: None,
+            plan: None,
             calendar_input: String::new(),
             token_input: String::new(),
-            plan: None,
-            plan_pending: false,
-            rules: Vec::new(),
-            rules_dirty: false,
-            saving: None,
+            settings: None,
+            settings_tab: settings::Tab::default(),
+            rule_configs: Vec::new(),
+            apps: Vec::new(),
+            stop_reason: String::new(),
             error: None,
             polls: 0,
             status_pending: false,
             configs_pending: false,
+            plan_pending: false,
             action_pending: false,
+            saving: None,
+            theme: style::theme(iced::theme::Mode::Dark),
         };
-        let mut boot = vec![app.fetch_status(), app.fetch_configs(), app.fetch_plan()];
+        let mut boot = vec![
+            app.fetch_status(),
+            app.fetch_configs(),
+            app.fetch_plan(),
+            iced::system::theme().map(Message::ThemeMode),
+        ];
         if minimized {
             boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
         }
@@ -215,31 +236,7 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Poll => {
-                self.polls = self.polls.wrapping_add(1);
-                let mut tasks = Vec::new();
-                if std::fs::remove_file(&self.show_request).is_ok() {
-                    tasks.push(iced::window::oldest().and_then(|id| {
-                        Task::batch([
-                            iced::window::minimize(id, false),
-                            iced::window::gain_focus(id),
-                        ])
-                    }));
-                }
-                if !self.status_pending {
-                    tasks.push(self.fetch_status());
-                }
-                let configs_due =
-                    self.polls.is_multiple_of(CONFIGS_EVERY_POLLS) || self.configs.is_empty();
-                if configs_due && !self.configs_pending {
-                    tasks.push(self.fetch_configs());
-                }
-                let plan_due = self.polls.is_multiple_of(PLAN_EVERY_POLLS) || self.plan.is_none();
-                if plan_due && !self.plan_pending {
-                    tasks.push(self.fetch_plan());
-                }
-                return Task::batch(tasks);
-            }
+            Message::Poll => return self.poll(),
             Message::StatusLoaded(result) => {
                 self.status_pending = false;
                 match *result {
@@ -257,24 +254,27 @@ impl App {
                         }
                     }
                 }
-                return self.check_probe();
             }
             Message::ConfigsLoaded(result) => {
                 self.configs_pending = false;
                 match result {
-                    Ok(configs) => {
-                        self.set_configs(configs);
-                        // The rules may have changed, so check the URL again.
-                        self.probe_asked = None;
-                    }
+                    Ok(configs) => self.set_configs(configs),
                     Err(problem) => self.unreachable = Some(problem),
                 }
-                return self.check_probe();
             }
-            Message::ConfigPicked(name) => {
-                self.selected = Some(name);
-                return self.check_probe();
+            Message::PlanLoaded(result) => {
+                self.plan_pending = false;
+                if let Ok(plan) = *result {
+                    self.plan = Some(plan);
+                }
             }
+            Message::Navigate(page) => {
+                self.page = page;
+                if page == Page::Settings {
+                    return self.open_settings();
+                }
+            }
+            Message::ConfigPicked(name) => self.selected = Some(name),
             Message::StrictnessPicked(strictness) => self.strictness = strictness,
             Message::MinutesChanged(minutes) => self.minutes = minutes,
             Message::Start => {
@@ -299,78 +299,179 @@ impl App {
                 self.reason.clear();
                 return self.act(Request::CancelEndSession);
             }
-            Message::ActionDone(result) => {
-                self.action_pending = false;
-                // A failed save keeps what was typed, so it can be fixed and tried again.
-                match (self.saving.take(), result.is_ok()) {
-                    (Some(Saving::Secret(key)), true) => self.secret_input(key).clear(),
-                    (Some(Saving::Rules), true) => self.rules_dirty = false,
-                    _ => {}
-                }
-                self.error = result.err();
-                // The URL check follows once the new status arrives.
-                return Task::batch([self.fetch_status(), self.fetch_plan()]);
-            }
-            Message::ProbeChanged(probe) => {
-                self.probe = probe;
-                return self.check_probe();
-            }
-            Message::ProbeChecked { key, result } => {
-                // Answers can arrive out of order; only show the one for what's on screen now.
-                if self.probe_key().as_ref() == Some(&key) {
-                    self.probe_result = Some(result.unwrap_or_else(|error| error));
-                }
-            }
+            Message::ActionDone(result) => return self.action_done(result),
             Message::SecretInput(key, value) => *self.secret_input(key) = value,
             Message::SaveSecret(key) => {
                 // Cleared once the daemon has it in the keychain.
                 let value = self.secret_input(key).clone();
-                self.saving = Some(Saving::Secret(key));
-                return self.act(Request::SetSecret {
-                    key,
-                    value: Some(value),
-                });
-            }
-            Message::PlanLoaded(result) => {
-                self.plan_pending = false;
-                if let Ok(plan) = *result {
-                    if !self.rules_dirty {
-                        self.rules = plan
-                            .rules
-                            .iter()
-                            .cloned()
-                            .map(rules::Draft::from_rule)
-                            .collect();
-                    }
-                    self.plan = Some(plan);
-                }
-            }
-            Message::Rule(change) => {
-                rules::apply(&mut self.rules, change, &self.config_names);
-                self.rules_dirty = true;
-            }
-            Message::SaveRules => {
-                let rules = self.rules.iter().map(|draft| draft.rule.clone()).collect();
-                self.saving = Some(Saving::Rules);
-                return self.act(Request::SetAutoStart { rules });
-            }
-            Message::DiscardRules => {
-                self.rules_dirty = false;
-                if let Some(plan) = &self.plan {
-                    self.rules = plan
-                        .rules
-                        .iter()
-                        .cloned()
-                        .map(rules::Draft::from_rule)
-                        .collect();
-                }
+                return self.act_saving(
+                    Saving::Secret(key),
+                    Request::SetSecret {
+                        key,
+                        value: Some(value),
+                    },
+                );
             }
             Message::RemoveSecret(key) => {
                 self.secret_input(key).clear();
                 return self.act(Request::SetSecret { key, value: None });
             }
+            Message::OpenSettings => {
+                self.page = Page::Settings;
+                return self.open_settings();
+            }
+            Message::SettingsLoaded(result) => match *result {
+                Ok(settings) => {
+                    self.settings = Some(settings::Draft::new(settings));
+                    self.refresh_rule_configs();
+                }
+                Err(problem) => self.error = Some(format!("couldn't read the settings: {problem}")),
+            },
+            Message::AppsLoaded(result) => {
+                if let Ok(apps) = result {
+                    self.apps = apps;
+                }
+            }
+            Message::Settings(message) => return self.settings_message(message),
+            Message::Rule(edit) => {
+                if let Some(draft) = &mut self.settings {
+                    rules::apply(&mut draft.rules, edit, &self.rule_configs);
+                }
+            }
+            Message::RequestStop => {
+                self.stop_reason.clear();
+                return self.act(Request::RequestStop);
+            }
+            Message::StopReasonChanged(reason) => self.stop_reason = reason,
+            Message::ConfirmStop => {
+                let reason = self.stop_reason.clone();
+                return self.act_saving(Saving::Stop, Request::ConfirmStop { reason });
+            }
+            Message::CancelStop => {
+                self.stop_reason.clear();
+                return self.act(Request::CancelStop);
+            }
+            Message::ThemeMode(mode) => self.theme = style::theme(mode),
         }
         Task::none()
+    }
+
+    /// The once-a-second poll: status every time, configs and plan now and then.
+    fn poll(&mut self) -> Task<Message> {
+        self.polls = self.polls.wrapping_add(1);
+        let mut tasks = Vec::new();
+        if std::fs::remove_file(&self.show_request).is_ok() {
+            tasks.push(iced::window::oldest().and_then(|id| {
+                Task::batch([
+                    iced::window::minimize(id, false),
+                    iced::window::gain_focus(id),
+                ])
+            }));
+        }
+        if !self.status_pending {
+            tasks.push(self.fetch_status());
+        }
+        let configs_due = self.polls.is_multiple_of(CONFIGS_EVERY_POLLS) || self.configs.is_empty();
+        if configs_due && !self.configs_pending {
+            tasks.push(self.fetch_configs());
+        }
+        let plan_due = self.polls.is_multiple_of(PLAN_EVERY_POLLS) || self.plan.is_none();
+        if plan_due && !self.plan_pending {
+            tasks.push(self.fetch_plan());
+        }
+        Task::batch(tasks)
+    }
+
+    /// An action's answer: errors are shown, and saves that worked clear what was typed.
+    fn action_done(&mut self, result: Result<(), String>) -> Task<Message> {
+        self.action_pending = false;
+        let saving = self.saving.take();
+        match (saving, &result) {
+            (Some(Saving::Stop), Ok(())) => {
+                // The daemon has ended the session and is exiting; the window goes too.
+                return iced::exit();
+            }
+            (Some(Saving::Secret(key)), Ok(())) => self.secret_input(key).clear(),
+            (Some(Saving::Settings), Ok(())) => {
+                return Task::batch([
+                    self.fetch_settings(),
+                    self.fetch_status(),
+                    self.fetch_configs(),
+                ]);
+            }
+            (Some(Saving::Settings), Err(problem)) => {
+                if let Some(draft) = &mut self.settings {
+                    draft.error = Some(problem.clone());
+                }
+                return self.fetch_status();
+            }
+            _ => {}
+        }
+        self.error = result.err();
+        Task::batch([self.fetch_status(), self.fetch_plan()])
+    }
+
+    fn settings_message(&mut self, message: settings::Msg) -> Task<Message> {
+        let Some(draft) = &mut self.settings else {
+            return Task::none();
+        };
+        draft.error = None;
+        match message {
+            settings::Msg::Tab(tab) => {
+                self.settings_tab = tab;
+                if tab == settings::Tab::Configs {
+                    return self.fetch_apps();
+                }
+            }
+            settings::Msg::Config(edit) => {
+                let removed = configs::apply(
+                    &mut draft.edited,
+                    &mut draft.configs,
+                    configs::Target::Configs,
+                    edit,
+                );
+                if let Some(configs::Removed::Config(name)) = removed {
+                    // Rules can't start a configuration that's gone.
+                    draft.rules.retain(|rule| rule.rule.config != name);
+                }
+                self.refresh_rule_configs();
+            }
+            settings::Msg::List(edit) => {
+                configs::apply(
+                    &mut draft.edited,
+                    &mut draft.lists,
+                    configs::Target::Lists,
+                    edit,
+                );
+            }
+            settings::Msg::StartAtLogin(on) => draft.edited.start_at_login = on,
+            settings::Msg::Save => {
+                let settings = draft.to_save();
+                return self.act_saving(Saving::Settings, Request::SaveSettings { settings });
+            }
+            settings::Msg::Discard => {
+                draft.discard();
+                self.refresh_rule_configs();
+            }
+            settings::Msg::Reload => return self.fetch_settings(),
+        }
+        Task::none()
+    }
+
+    fn open_settings(&mut self) -> Task<Message> {
+        let mut tasks = vec![self.fetch_settings()];
+        if self.settings_tab == settings::Tab::Configs {
+            tasks.push(self.fetch_apps());
+        }
+        Task::batch(tasks)
+    }
+
+    fn refresh_rule_configs(&mut self) {
+        self.rule_configs = self
+            .settings
+            .as_ref()
+            .map(settings::Draft::config_names)
+            .unwrap_or_default();
     }
 
     /// Starts the daemon after [`RESTART_DAEMON_AFTER`] polls in a row found nothing listening. A
@@ -428,6 +529,16 @@ impl App {
         )
     }
 
+    fn fetch_settings(&self) -> Task<Message> {
+        Task::perform(daemon::settings(self.endpoint.clone()), |result| {
+            Message::SettingsLoaded(Box::new(result))
+        })
+    }
+
+    fn fetch_apps(&self) -> Task<Message> {
+        Task::perform(daemon::apps(self.endpoint.clone()), Message::AppsLoaded)
+    }
+
     fn act(&mut self, request: Request) -> Task<Message> {
         self.action_pending = true;
         Task::perform(
@@ -436,704 +547,126 @@ impl App {
         )
     }
 
-    /// What a URL check would ask right now, or `None` if the probe box is empty.
-    fn probe_key(&self) -> Option<ProbeKey> {
-        let url = self.probe.trim();
-        (!url.is_empty()).then(|| ProbeKey {
-            url: url.to_owned(),
-            session: self
-                .running()
-                .map(|running| running.spec().config.name.clone()),
-            selected: self.selected.clone(),
-        })
-    }
-
-    /// Asks the daemon what the running session (or, with none, the selected config) does with
-    /// the URL in the probe box, unless that exact question was already asked.
-    fn check_probe(&mut self) -> Task<Message> {
-        let key = self.probe_key();
-        if key == self.probe_asked {
-            return Task::none();
-        }
-        self.probe_asked.clone_from(&key);
-        let Some(key) = key else {
-            return Task::none();
-        };
-        // With a session running, the daemon checks against the session's own copy of the rules.
-        let config = match key.session {
-            Some(_) => None,
-            None => key.selected.clone(),
-        };
-        let request = daemon::check(self.endpoint.clone(), key.url.clone(), config);
-        Task::perform(request, move |result| Message::ProbeChecked {
-            key: key.clone(),
-            result,
-        })
-    }
-
-    /// Polls the daemon once a second.
-    fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(POLL).map(|_| Message::Poll)
-    }
-
-    fn running(&self) -> Option<&RunningSession> {
-        self.status.as_ref()?.session.running()
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        let mut page = column![].spacing(24);
-        match (&self.status, &self.unreachable) {
-            (_, Some(problem)) => {
-                page = page.push(
-                    column![
-                        text("Can't reach the Focus daemon.").size(20),
-                        text("Starting it again; this window reconnects by itself."),
-                        text(problem).size(13).style(text::secondary),
-                    ]
-                    .spacing(8),
-                );
-            }
-            (None, None) => page = page.push(text("Connecting to the Focus daemon...")),
-            (Some(status), None) => {
-                if let Some(problem) = &status.settings_problem {
-                    page = page.push(
-                        text(format!(
-                            "Settings problem (the last good settings stay in effect): {problem}"
-                        ))
-                        .size(13)
-                        .style(text::danger),
-                    );
-                }
-                page = page.push(match status.session.running() {
-                    Some(running) => self.running_view(running, status),
-                    None => self.setup_view(status),
-                });
-                if let Some(pending) = pending_summary(status) {
-                    page = page.push(text(pending).size(13).style(text::secondary));
-                }
-                if let Some(plan) = &self.plan {
-                    let agenda = agenda::build(plan, &chrono::Local);
-                    page = page.push(agenda::view_owned(agenda, &status.plan));
-                }
-                page = page.push(rules::view(
-                    &self.rules,
-                    &self.config_names,
-                    self.rules_dirty,
-                    self.action_pending,
-                ));
-                page = page.push(self.connections_view(status));
-                page = page.push(self.probe_view());
-                page = page.push(system_view(status));
-            }
-        }
-        if let Some(error) = &self.error {
-            page = page.push(text(error).style(text::danger));
-        }
-        page = page.push(
-            text("Sessions run in the background daemon; closing this window doesn't end them.")
-                .size(12)
-                .style(text::secondary),
-        );
-        scrollable(container(page).padding(24).width(Length::Fill))
-            .height(Length::Fill)
-            .into()
-    }
-
-    fn setup_view<'a>(&'a self, status: &'a StatusReport) -> Column<'a, Message> {
-        let config = row![
-            text("Configuration"),
-            pick_list(
-                self.config_names.as_slice(),
-                self.selected.as_ref(),
-                Message::ConfigPicked
-            )
-            .placeholder("no configurations"),
-            info(
-                "A named set of rules: which sites are blocked, delayed, asked about or have                  their feeds hidden, and which apps are closed. Defined in settings.toml for                  now; editing them here comes next."
-            ),
-        ]
-        .spacing(12)
-        .align_y(iced::Alignment::Center);
-        let strictness_title = row![
-            text("Strictness"),
-            info(
-                "How hard the session is to get out of. Pick Deep or Locked when you know                  you'll be tempted: the extra friction is the point."
-            ),
-        ]
-        .spacing(8);
-        let strictness =
-            Strictness::ALL
-                .iter()
-                .fold(column![strictness_title].spacing(8), |levels, &level| {
-                    levels.push(radio(
-                        format!("{level}: {}", describe(level)),
-                        level,
-                        Some(self.strictness),
-                        Message::StrictnessPicked,
-                    ))
-                });
-        let duration = column![
-            row![
-                text(format!("Duration: {} min", self.minutes)),
-                info("How long the session runs. It ends by itself when the time is up."),
-            ]
-            .spacing(8),
-            slider(MINUTES, self.minutes, Message::MinutesChanged),
-        ]
-        .spacing(8);
-        let can_start = self.selected.is_some() && !self.action_pending;
-        let start = button("Start session")
-            .style(button::success)
-            .on_press_maybe(can_start.then_some(Message::Start));
-
-        let mut setup = column![text("New session").size(24), config].spacing(18);
-        if let Some(summary) = self.selected_config().map(config_summary) {
-            setup = setup.push(text(summary).size(13).style(text::secondary));
-        }
-        setup = setup.push(strictness).push(duration).push(start);
-        if let Some(ended) = status.session.ended() {
-            setup = setup.push(text(last_session_summary(ended)));
-        }
-        setup
-    }
-
-    fn running_view<'a>(
-        &'a self,
-        running: &'a RunningSession,
-        status: &'a StatusReport,
-    ) -> Column<'a, Message> {
-        let spec = running.spec();
-        column![
-            text(format!(
-                "Focusing: {} · {}",
-                spec.config.name, spec.strictness
-            ))
-            .size(20),
-            text(format_duration(running.time_left(status.now))).size(64),
-            self.end_controls(running, status),
-        ]
-        .spacing(16)
-    }
-
-    /// End-early controls, which depend on the session's strictness.
-    fn end_controls<'a>(
-        &'a self,
-        running: &'a RunningSession,
-        status: &'a StatusReport,
-    ) -> Element<'a, Message> {
-        match running.spec().strictness.end_early_policy() {
-            EndEarlyPolicy::Immediate => button("End session")
-                .style(button::danger)
-                .on_press_maybe(self.idle_then(Message::EndEarly))
-                .into(),
-            EndEarlyPolicy::Forbidden => text("Locked: this session can't be ended early.")
-                .style(text::secondary)
-                .into(),
-            EndEarlyPolicy::WaitAndReason { .. } => match running.end_allowed_at() {
-                None => button("Ask to end early")
-                    .style(button::secondary)
-                    .on_press_maybe(self.idle_then(Message::EndEarly))
-                    .into(),
-                Some(allowed_at) => {
-                    self.deep_end_form(allowed_at.saturating_duration_since(status.now))
-                }
-            },
-        }
-    }
-
-    /// The wait countdown and reason box for ending a Deep session.
-    fn deep_end_form(&self, wait: Duration) -> Element<'_, Message> {
-        let ready = wait.is_zero() && !self.reason.trim().is_empty();
-        let confirm = if ready {
-            self.idle_then(Message::ConfirmEnd)
-        } else {
-            None
-        };
-        let status = if wait.is_zero() {
-            "Why are you ending early?".to_owned()
-        } else {
-            format!(
-                "You can end in {}. Why are you ending early?",
-                format_duration(wait)
-            )
-        };
-        column![
-            text(status),
-            text_input("Type a reason", &self.reason)
-                .on_input(Message::ReasonChanged)
-                .on_submit_maybe(confirm.clone()),
-            row![
-                button("End session")
-                    .style(button::danger)
-                    .on_press_maybe(confirm),
-                button("Keep focusing").on_press_maybe(self.idle_then(Message::CancelEnd)),
-            ]
-            .spacing(12),
-        ]
-        .spacing(10)
-        .into()
-    }
-
-    /// The calendar and task sources, the sessions they'll start, and where to set them up.
-    /// Where the calendar and tasks come from: how each is doing, and where to paste the
-    /// address or token.
-    fn connections_view<'a>(&'a self, status: &'a StatusReport) -> Column<'a, Message> {
-        let header = row![
-            text("Connections").size(20),
-            info(
-                "Focus reads your calendar and tasks; it never changes them. The address and \
-                 token are kept in Windows Credential Manager, not in settings.toml, and are \
-                 never shown again after saving."
-            ),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-        column![
-            header,
-            styled(source_line(
-                "Calendar",
-                "events",
-                &status.plan.calendar,
-                status.now
-            )),
-            self.secret_row(
-                SecretKey::CalendarUrl,
-                "Paste your calendar's secret iCal address",
-                "In Google Calendar on the web: Settings → click your calendar under \
-                 \"Settings for my calendars\" → Integrate calendar → \"Secret address in \
-                 iCal format\" → copy. Anyone with this address can read your calendar, so \
-                 Focus keeps it in the keychain.",
-                &self.calendar_input,
-            ),
-            styled(source_line(
-                "Todoist",
-                "tasks",
-                &status.plan.tasks,
-                status.now
-            )),
-            self.secret_row(
-                SecretKey::TodoistToken,
-                "Paste your Todoist API token",
-                "In Todoist: Settings → Integrations → Developer → copy the API token. It lets \
-                 Focus read your tasks.",
-                &self.token_input,
-            ),
-        ]
-        .spacing(8)
-    }
-
-    /// A hidden input that sends its credential to the daemon, plus a button to remove it.
-    fn secret_row<'a>(
-        &'a self,
-        key: SecretKey,
-        placeholder: &'a str,
-        how_to: &'a str,
-        value: &'a str,
-    ) -> Element<'a, Message> {
-        let save = (!value.trim().is_empty())
-            .then_some(Message::SaveSecret(key))
-            .and_then(|message| self.idle_then(message));
-        row![
-            text_input(placeholder, value)
-                .secure(true)
-                .on_input(move |value| Message::SecretInput(key, value))
-                .on_submit_maybe(save.clone()),
-            button("Save").on_press_maybe(save),
-            tip(
-                button("Remove")
-                    .style(button::secondary)
-                    .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
-                "Deletes the saved address or token, and the events or tasks kept from it."
-            ),
-            info(how_to),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center)
-        .into()
-    }
-
-    /// A box to try URLs against the running (or selected) configuration.
-    fn probe_view(&self) -> Column<'_, Message> {
-        let result = match (&self.probe_result, self.probe.trim().is_empty()) {
-            (Some(result), false) => result.clone(),
-            _ => "Type a URL to see what the configuration would do with it.".to_owned(),
-        };
-        column![
-            row![
-                text("Check a URL"),
-                info(
-                    "Type an address to see what the running session (or the configuration \
-                     picked above) would do with it. Nothing is opened."
-                ),
-            ]
-            .spacing(8),
-            text_input("reddit.com/r/rust/comments/abc", &self.probe)
-                .on_input(Message::ProbeChanged),
-            text(result),
-        ]
-        .spacing(8)
+    fn act_saving(&mut self, saving: Saving, request: Request) -> Task<Message> {
+        self.saving = Some(saving);
+        self.act(request)
     }
 
     /// `message`, unless an action is still waiting for the daemon (so double clicks don't send
     /// it twice).
-    fn idle_then(&self, message: Message) -> Option<Message> {
+    pub(crate) fn idle_then(&self, message: Message) -> Option<Message> {
         (!self.action_pending).then_some(message)
     }
 
-    fn selected_config(&self) -> Option<&BlockConfig> {
-        let name = self.selected.as_ref()?;
-        self.configs.iter().find(|config| &config.name == name)
+    /// Polls the daemon once a second, and follows the system's light or dark mode.
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::batch([
+            iced::time::every(POLL).map(|_| Message::Poll),
+            iced::system::theme_changes().map(Message::ThemeMode),
+        ])
     }
-}
 
-/// Browser protection and start-at-login, with warnings in red.
-fn system_view(status: &StatusReport) -> Column<'_, Message> {
-    let mut lines = column![].spacing(4);
-    for line in browser_lines(status) {
-        let label = text(line.text).size(13);
-        lines = lines.push(if line.warning {
-            label.style(text::danger)
-        } else {
-            label.style(text::secondary)
-        });
+    /// Focus's colours (kept, since building a theme derives a whole palette).
+    fn theme(&self) -> iced::Theme {
+        self.theme.clone()
     }
-    lines.push(text(login_line(status)).size(13).style(text::secondary))
-}
 
-/// A line in small text, red if it's a warning.
-fn styled(line: Line) -> iced::widget::Text<'static> {
-    let label = text(line.text).size(13);
-    if line.warning {
-        label.style(text::danger)
-    } else {
-        label.style(text::secondary)
-    }
-}
-
-/// How one plan source is doing, e.g. `Calendar: synced 2 min ago (12 events).`
-fn source_line(name: &str, noun: &str, source: &SourceStatus, now: Timestamp) -> Line {
-    let count = format!("{} {noun}", source.items);
-    let ago = source
-        .fetched_at
-        .map(|at| format_ago(now.saturating_duration_since(at)));
-    let (text, warning) = match (&source.state, ago) {
-        (SourceState::Unknown, _) => (format!("{name}: checking..."), false),
-        (SourceState::NotConfigured, _) => (format!("{name}: not set up."), false),
-        (SourceState::Ok, ago) => (
-            format!("{name}: synced {} ({count}).", ago.unwrap_or_default()),
-            false,
-        ),
-        (SourceState::Failing { problem, offline }, Some(ago)) => {
-            let why = if *offline {
-                "offline"
-            } else {
-                problem.as_str()
-            };
-            (
-                format!("{name}: {why}; using {count} from {ago}."),
-                !offline,
-            )
+    fn view(&self) -> Element<'_, Message> {
+        let content: Element<'_, Message> = match (&self.status, &self.unreachable) {
+            (_, Some(problem)) => column![
+                style::title("Can't reach the Focus daemon"),
+                text("Starting it again; this window reconnects by itself."),
+                caption(problem.as_str()),
+            ]
+            .spacing(10)
+            .into(),
+            (None, None) => style::title("Connecting to Focusâ€¦").into(),
+            (Some(status), None) => match self.page {
+                Page::Sessions => self.sessions_page(status),
+                Page::Calendar => self.calendar_page(status),
+                Page::Todoist => self.todoist_page(status),
+                Page::Settings => self.settings_page(status),
+            },
+        };
+        let mut main: Column<'_, Message> = column![content].spacing(18);
+        if let Some(error) = &self.error {
+            main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
         }
-        (SourceState::Failing { problem, .. }, None) => (format!("{name}: {problem}."), true),
-    };
-    Line { text, warning }
-}
-
-/// `just now`, `5 min ago`, `3 h ago` or `2 days ago`.
-fn format_ago(elapsed: Duration) -> String {
-    let minutes = elapsed.as_secs() / 60;
-    match minutes {
-        0 => "just now".to_owned(),
-        1..60 => format!("{minutes} min ago"),
-        60..1440 => format!("{} h ago", minutes / 60),
-        _ => format!("{} days ago", minutes / 1440),
-    }
-}
-
-/// One line of the system section.
-#[derive(Debug, PartialEq, Eq)]
-struct Line {
-    text: String,
-    warning: bool,
-}
-
-/// Which browsers are protected, and what to fix for the others.
-fn browser_lines(status: &StatusReport) -> Vec<Line> {
-    if status.browsers.is_empty() {
-        return vec![Line {
-            text: "No browser extension is connected, so browsers are closed during sessions."
-                .to_owned(),
-            warning: true,
-        }];
-    }
-    status
-        .browsers
-        .iter()
-        .map(|browser| {
-            let name = browser_name(&browser.browser);
-            // The same limit the daemon enforces.
-            let stale = status.now.saturating_duration_since(browser.last_seen)
-                > BrowserPolicy::default().heartbeat_timeout;
-            let (text, warning) = if stale {
-                (format!("{name}: the extension stopped checking in."), true)
-            } else if !browser.incognito_allowed {
-                (
-                    format!(
-                        "{name}: turn on \"Allow in Incognito\" for Focus (Extensions → Focus → \
-                         Details), or {name} is closed during sessions."
-                    ),
-                    true,
-                )
-            } else {
-                (format!("{name}: protected."), false)
-            };
-            Line { text, warning }
-        })
-        .collect()
-}
-
-/// A browser's heartbeat name as people write it.
-fn browser_name(heartbeat: &str) -> String {
-    match heartbeat {
-        "chrome" => "Chrome".to_owned(),
-        "edge" => "Edge".to_owned(),
-        "brave" => "Brave".to_owned(),
-        "opera" => "Opera".to_owned(),
-        "chromium" => "Chromium".to_owned(),
-        other => other.to_owned(),
-    }
-}
-
-/// Whether Focus starts at login, and when a requested switch-off takes effect.
-fn login_line(status: &StatusReport) -> String {
-    if let Some(problem) = &status.start_at_login_problem {
-        return format!("Start at login isn't set up: {problem}");
-    }
-    match (status.start_at_login, status.start_at_login_off_after) {
-        (true, Some(off_after)) => format!(
-            "Starts at login; turning that off takes effect in {} (cooling off).",
-            format_duration(off_after.saturating_duration_since(status.now))
-        ),
-        (true, None) => "Starts at login.".to_owned(),
-        (false, _) => "Doesn't start at login (start_at_login in settings.toml).".to_owned(),
-    }
-}
-
-/// One line on what a strictness level allows, derived from its policy.
-fn describe(strictness: Strictness) -> String {
-    match strictness.end_early_policy() {
-        EndEarlyPolicy::Immediate => "end any time with one click".to_owned(),
-        EndEarlyPolicy::WaitAndReason { wait } => format!(
-            "end early after a {}-second wait and a typed reason",
-            wait.as_secs()
-        ),
-        EndEarlyPolicy::Forbidden => "no ending early".to_owned(),
-    }
-}
-
-/// Mode, rule count and apps for a configuration.
-fn config_summary(config: &BlockConfig) -> String {
-    let apps = if config.apps.is_empty() {
-        "no apps".to_owned()
-    } else {
-        format!("closes {}", config.apps.join(", "))
-    };
-    format!("{} · {} rules · {apps}", config.mode, config.rules.len())
-}
-
-/// Config edits still cooling off, e.g. `Edit to "coding" applies in 23:59:59.`
-fn pending_summary(status: &StatusReport) -> Option<String> {
-    let lines: Vec<String> = status
-        .pending_changes
-        .iter()
-        .map(|change| {
-            let what = if change.deleted {
-                "Deleting"
-            } else {
-                "Edit to"
-            };
-            let wait = change.apply_after.saturating_duration_since(status.now);
-            format!(
-                "{what} \"{}\" applies in {} (cooling off).",
-                change.config,
-                format_duration(wait)
-            )
-        })
-        .collect();
-    (!lines.is_empty()).then(|| lines.join("\n"))
-}
-
-/// How the last session went.
-fn last_session_summary(ended: &EndedSession) -> String {
-    let how = match ended.reason() {
-        EndReason::Completed => "completed".to_owned(),
-        EndReason::EndedEarly { reason: None } => "ended early".to_owned(),
-        EndReason::EndedEarly {
-            reason: Some(reason),
-        } => format!("ended early (\"{reason}\")"),
-    };
-    let spec = ended.spec();
-    let length = ended
-        .ended_at()
-        .saturating_duration_since(ended.started_at());
-    format!(
-        "Last session: {} · {}, {how} after {}.",
-        spec.config.name,
-        spec.strictness,
-        format_duration(length)
-    )
-}
-
-/// `m:ss` or `h:mm:ss`, rounding up so a countdown shows `0:00` only when it's over.
-fn format_duration(duration: Duration) -> String {
-    let total = duration.as_millis().div_ceil(1000);
-    let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use focus_core::{SessionState, Timestamp};
-    use ipc_proto::PendingSummary;
-
-    use super::*;
-
-    #[test]
-    fn formats_countdowns() {
-        assert_eq!(format_duration(Duration::ZERO), "0:00");
-        assert_eq!(format_duration(Duration::from_millis(1)), "0:01");
-        assert_eq!(format_duration(Duration::from_secs(25 * 60)), "25:00");
-        assert_eq!(format_duration(Duration::from_secs(3600 + 62)), "1:01:02");
+        main = main.push(caption(
+            "Sessions run in the background; closing this window doesn't end them.",
+        ));
+        row![
+            self.sidebar(),
+            scrollable(container(main).padding([28, 32]).width(Length::Fill))
+                .height(Length::Fill)
+                .width(Length::Fill),
+        ]
+        .into()
     }
 
-    fn status_at(now: u64) -> StatusReport {
-        StatusReport {
-            now: Timestamp::from_millis(now),
-            session: SessionState::Idle,
-            pending_changes: Vec::new(),
-            settings_problem: None,
-            browsers: Vec::new(),
-            foreground_app: None,
-            start_at_login: true,
-            start_at_login_off_after: None,
-            start_at_login_problem: None,
-            plan: ipc_proto::PlanStatus::default(),
-        }
-    }
-
-    fn beat(browser: &str, at: u64, incognito_allowed: bool) -> ipc_proto::BrowserStatus {
-        ipc_proto::BrowserStatus {
-            browser: browser.into(),
-            last_seen: Timestamp::from_millis(at),
-            incognito_allowed,
-        }
-    }
-
-    #[test]
-    fn warns_about_unprotected_browsers() {
-        let mut status = status_at(100_000);
-        assert!(browser_lines(&status)[0].warning, "no extension at all");
-
-        status.browsers = vec![
-            beat("chrome", 99_000, true),
-            beat("edge", 99_000, false),
-            beat("brave", 1_000, true),
-        ];
-        let lines = browser_lines(&status);
-        assert_eq!(
-            lines[0],
-            Line {
-                text: "Chrome: protected.".into(),
-                warning: false
+    /// The app name, what's happening now, the pages, and the sources' sync status.
+    fn sidebar(&self) -> Element<'_, Message> {
+        let now_line: Element<'_, Message> = match self
+            .status
+            .as_ref()
+            .and_then(|status| Some((status, status.session.running()?)))
+        {
+            Some((status, running)) => row![
+                dot(Tone::Good),
+                text(format!(
+                    "{} Â· {}",
+                    running.spec().config.name,
+                    sessions::format_duration(running.time_left(status.now))
+                ))
+                .size(13),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
+            None => caption("Not in a session").into(),
+        };
+        let on_sessions = matches!(self.page, Page::Sessions | Page::Settings);
+        let mut sources = column![].spacing(6);
+        if let Some(status) = &self.status {
+            for (name, source) in [
+                ("Calendar", &status.plan.calendar),
+                ("Todoist", &status.plan.tasks),
+            ] {
+                let (label, tone) = match &source.state {
+                    SourceState::Ok => ("synced", Tone::Good),
+                    SourceState::Failing { offline: true, .. } => ("offline", Tone::Warn),
+                    SourceState::Failing { .. } => ("problem", Tone::Bad),
+                    SourceState::NotConfigured => ("not connected", Tone::Quiet),
+                    SourceState::Unknown => ("checking", Tone::Quiet),
+                };
+                sources = sources.push(
+                    row![dot(tone), caption(format!("{name}: {label}"))]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                );
             }
-        );
-        assert!(lines[1].warning && lines[1].text.contains("Allow in Incognito"));
-        assert!(lines[2].warning && lines[2].text.contains("stopped checking in"));
-    }
-
-    #[test]
-    fn describes_start_at_login() {
-        let mut status = status_at(0);
-        assert_eq!(login_line(&status), "Starts at login.");
-        status.start_at_login_off_after = Some(Timestamp::from_millis(90_000));
-        assert!(login_line(&status).contains("in 1:30"));
-        status.start_at_login = false;
-        assert!(login_line(&status).starts_with("Doesn't start at login"));
-        status.start_at_login_problem = Some("not available on Linux".into());
-        assert!(login_line(&status).contains("isn't set up: not available on Linux"));
-    }
-
-    #[test]
-    fn describes_plan_sources() {
-        let now = Timestamp::from_millis(3 * 3_600_000);
-        let line = |source: &SourceStatus| source_line("Calendar", "events", source, now);
-        let mut source = SourceStatus::default();
-        assert_eq!(line(&source).text, "Calendar: checking...");
-        source.state = SourceState::NotConfigured;
-        assert_eq!(line(&source).text, "Calendar: not set up.");
-
-        source.state = SourceState::Ok;
-        source.fetched_at = Some(Timestamp::from_millis(3 * 3_600_000 - 120_000));
-        source.items = 12;
-        assert_eq!(
-            line(&source).text,
-            "Calendar: synced 2 min ago (12 events)."
-        );
-
-        source.state = SourceState::Failing {
-            problem: "couldn't reach the service: dns".into(),
-            offline: true,
-        };
-        source.fetched_at = Some(Timestamp::from_millis(0));
-        let offline = line(&source);
-        assert_eq!(
-            offline.text,
-            "Calendar: offline; using 12 events from 3 h ago."
-        );
-        assert!(!offline.warning, "being offline isn't something to fix");
-
-        source.state = SourceState::Failing {
-            problem: "Todoist refused the token".into(),
-            offline: false,
-        };
-        source.fetched_at = None;
-        let refused = source_line("Todoist", "tasks", &source, now);
-        assert_eq!(refused.text, "Todoist: Todoist refused the token.");
-        assert!(refused.warning);
-    }
-
-    #[test]
-    fn formats_how_long_ago() {
-        assert_eq!(format_ago(Duration::from_secs(30)), "just now");
-        assert_eq!(format_ago(Duration::from_secs(5 * 60)), "5 min ago");
-        assert_eq!(format_ago(Duration::from_secs(3 * 3600 + 59)), "3 h ago");
-        assert_eq!(format_ago(Duration::from_secs(50 * 3600)), "2 days ago");
-    }
-
-    #[test]
-    fn summarises_pending_changes() {
-        let mut status = status_at(0);
-        assert_eq!(pending_summary(&status), None);
-        status.pending_changes = vec![
-            PendingSummary {
-                config: "coding".into(),
-                apply_after: Timestamp::from_millis(90_000),
-                deleted: false,
-            },
-            PendingSummary {
-                config: "old".into(),
-                apply_after: Timestamp::from_millis(3_600_000),
-                deleted: true,
-            },
-        ];
-        assert_eq!(
-            pending_summary(&status).unwrap(),
-            "Edit to \"coding\" applies in 1:30 (cooling off).\n\
-             Deleting \"old\" applies in 1:00:00 (cooling off)."
-        );
+        }
+        style::sidebar(
+            column![
+                style::brand(),
+                now_line,
+                space::vertical().height(Length::Fixed(12.0)),
+                nav("Sessions", on_sessions, Message::Navigate(Page::Sessions)),
+                nav(
+                    "Calendar",
+                    self.page == Page::Calendar,
+                    Message::Navigate(Page::Calendar)
+                ),
+                nav(
+                    "Todoist",
+                    self.page == Page::Todoist,
+                    Message::Navigate(Page::Todoist)
+                ),
+                space::vertical(),
+                sources,
+            ]
+            .spacing(8),
+        )
+        .into()
     }
 }

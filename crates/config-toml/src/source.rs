@@ -4,9 +4,9 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use focus_core::ports::{ConfigSource, ConfigSourceError, SettingsEditor};
-use focus_core::{AutoStartRule, Settings};
+use focus_core::{EditableSettings, Settings};
 
-use crate::edit::with_auto_start;
+use crate::edit::{editable, revision, with_settings};
 use crate::parse::parse_settings;
 
 /// Reads settings from a TOML file on each `load`. A missing file means default settings (no
@@ -40,11 +40,22 @@ impl ConfigSource for TomlConfigSource {
 }
 
 impl SettingsEditor for TomlConfigSource {
-    fn set_auto_start(&self, rules: &[AutoStartRule]) -> Result<(), ConfigSourceError> {
+    fn load_editable(&self) -> Result<EditableSettings, ConfigSourceError> {
         let text = self.read()?.unwrap_or_default();
-        let edited = with_auto_start(&text, rules).map_err(|error| ConfigSourceError::Invalid {
-            reason: error.to_string(),
-        })?;
+        editable(&text).map_err(|error| ConfigSourceError::Invalid {
+            reason: format!("{}: {error}", self.path.display()),
+        })
+    }
+
+    fn save_editable(&self, settings: &EditableSettings) -> Result<(), ConfigSourceError> {
+        let text = self.read()?.unwrap_or_default();
+        if revision(&text) != settings.revision {
+            return Err(ConfigSourceError::Changed);
+        }
+        let edited =
+            with_settings(&text, settings).map_err(|error| ConfigSourceError::Invalid {
+                reason: error.to_string(),
+            })?;
         self.write(&edited)
     }
 }

@@ -25,7 +25,7 @@ mod parse;
 mod schema;
 mod source;
 
-pub use edit::with_auto_start;
+pub use edit::{editable, revision, with_settings};
 pub use error::{Problem, SettingsError};
 pub use parse::parse_settings;
 pub use source::TomlConfigSource;

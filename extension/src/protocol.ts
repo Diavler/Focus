@@ -69,6 +69,22 @@ export function runningSession(state: SessionState): RunningSession | null {
   return typeof state === "object" && "running" in state ? state.running : null;
 }
 
+/**
+ * The session a status answer reports: the running one, null for none, or undefined when the
+ * daemon couldn't say (keep using the last one known, so killing the daemon doesn't lift blocks).
+ * A "stopped" error means Focus was stopped with its kill switch, which ends the session.
+ */
+export function sessionFromStatus(response: Response): RunningSession | null | undefined {
+  if (response.type === "status") return runningSession(response.session);
+  if (isStopped(response)) return null;
+  return undefined;
+}
+
+/** Whether the answer says Focus was stopped with its kill switch (no session, no daemon). */
+export function isStopped(response: Response): boolean {
+  return response.type === "error" && response.error.kind === "stopped";
+}
+
 /** The restricting action of a verdict, or null for Allow. */
 export function actionOf(verdict: Verdict): RuleAction | null {
   return verdict === "allow" ? null : verdict.restrict;
