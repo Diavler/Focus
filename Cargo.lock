@@ -572,6 +572,7 @@ dependencies = [
  "focus-core",
  "tempfile",
  "tracing",
+ "widestring",
  "win-user",
  "windows-sys 0.61.2",
 ]

@@ -8,10 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use focus_core::KnownBrowser;
 use focus_core::ports::{
-    EnforceError, Enforcer, ForegroundApp, Notifier, NotifyError, ProcessList,
+    Autostart, AutostartError, EnforceError, Enforcer, ForegroundApp, Notifier, NotifyError,
+    ProcessList,
 };
 
-/// No enforcement yet: closes nothing, sees no apps, and leaves notifications alone.
+/// No enforcement yet: closes nothing, sees no apps, leaves notifications alone and doesn't
+/// register for login.
 #[derive(Debug, Default)]
 pub struct PendingEnforcer {
     warned: AtomicBool,
@@ -57,6 +59,15 @@ impl Notifier for PendingEnforcer {
     }
 }
 
+impl Autostart for PendingEnforcer {
+    fn set_enabled(&self, enabled: bool) -> Result<(), AutostartError> {
+        if enabled {
+            self.warn_once();
+        }
+        Ok(())
+    }
+}
+
 /// Browsers to watch on Linux: none until step 9.
 pub fn known_browsers() -> Vec<KnownBrowser> {
     Vec::new()
@@ -65,7 +76,8 @@ pub fn known_browsers() -> Vec<KnownBrowser> {
 #[cfg(test)]
 mod tests {
     use focus_core::testing::{
-        enforcer_contract, foreground_app_contract, notifier_contract, process_list_contract,
+        autostart_contract, enforcer_contract, foreground_app_contract, notifier_contract,
+        process_list_contract,
     };
 
     use super::*;
@@ -77,5 +89,6 @@ mod tests {
         process_list_contract(&pending);
         foreground_app_contract(&pending);
         notifier_contract(&pending);
+        autostart_contract(&pending);
     }
 }
