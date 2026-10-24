@@ -580,6 +580,7 @@ mod tests {
             pending_changes: Vec::new(),
             settings_problem: None,
             browsers: Vec::new(),
+            foreground_app: None,
         };
         assert_eq!(pending_summary(&status), None);
         status.pending_changes = vec![

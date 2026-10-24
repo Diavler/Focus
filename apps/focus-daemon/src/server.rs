@@ -17,6 +17,9 @@ const TICK: Duration = Duration::from_secs(1);
 /// The settings file is re-read every this many ticks (and on `ListConfigs` / `StartSession`).
 const RELOAD_EVERY_TICKS: u32 = 5;
 
+/// Blocked apps and unwatched browsers are checked every this many ticks.
+const ENFORCE_EVERY_TICKS: u32 = 5;
+
 /// Pause after a failed `accept`, so a persistent error doesn't spin the CPU.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
@@ -110,6 +113,7 @@ async fn tick_forever(shared: Shared) {
     loop {
         interval.tick().await;
         let reload = ticks.is_multiple_of(RELOAD_EVERY_TICKS);
+        let enforce = ticks.is_multiple_of(ENFORCE_EVERY_TICKS);
         let shared = Arc::clone(&shared);
         let ticked = tokio::task::spawn_blocking(move || {
             if let Some(service) = lock(&shared).as_mut() {
@@ -117,6 +121,9 @@ async fn tick_forever(shared: Shared) {
                     service.reload_settings();
                 }
                 service.tick();
+                if enforce {
+                    service.enforce();
+                }
             }
         })
         .await;

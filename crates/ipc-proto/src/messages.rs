@@ -52,8 +52,9 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    /// Answer to [`Request::Status`].
-    Status(StatusReport),
+    /// Answer to [`Request::Status`]. Boxed because it's much larger than the other answers; the
+    /// JSON is the same.
+    Status(Box<StatusReport>),
     /// Answer to [`Request::ListConfigs`].
     Configs {
         /// The configurations in effect, sorted by name.
@@ -93,6 +94,9 @@ pub struct StatusReport {
     pub settings_problem: Option<String>,
     /// Browsers whose extension has sent a heartbeat, sorted by name.
     pub browsers: Vec<BrowserStatus>,
+    /// The app owning the window in front, if known.
+    #[serde(default)]
+    pub foreground_app: Option<String>,
 }
 
 /// A config edit waiting out its cooling-off delay.
