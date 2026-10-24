@@ -5,9 +5,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::config::BlockConfig;
+use crate::enforcement::same_app;
 use crate::ports::{
-    Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer, History, HistoryError,
-    HistoryEvent, Notifier, NotifyError, PersistedState, StateStore, StateStoreError,
+    Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer, ForegroundApp, History,
+    HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState, ProcessList, StateStore,
+    StateStoreError,
 };
 use crate::time::Timestamp;
 
@@ -127,13 +129,46 @@ impl Enforcer for FakeEnforcer {
         let mut closed: Vec<String> = Vec::new();
         for app in apps {
             let before = running.len();
-            running.retain(|name| !name.eq_ignore_ascii_case(app));
-            let already = closed.iter().any(|name| name.eq_ignore_ascii_case(app));
+            running.retain(|name| !same_app(name, app));
+            let already = closed.iter().any(|name| same_app(name, app));
             if running.len() < before && !already {
                 closed.push(app.clone());
             }
         }
         Ok(closed)
+    }
+}
+
+impl ProcessList for FakeEnforcer {
+    fn running_apps(&self, apps: &[String]) -> Result<Vec<String>, EnforceError> {
+        let running = lock(&self.running);
+        let mut found: Vec<String> = Vec::new();
+        for app in apps {
+            let is_running = running.iter().any(|name| same_app(name, app));
+            if is_running && !found.iter().any(|name| same_app(name, app)) {
+                found.push(app.clone());
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// A foreground-app source that reports whatever it was last told.
+#[derive(Debug, Default)]
+pub struct FakeForegroundApp {
+    app: Mutex<Option<String>>,
+}
+
+impl FakeForegroundApp {
+    /// Makes `app` the foreground app (`None`: no window in front).
+    pub fn set(&self, app: Option<&str>) {
+        *lock(&self.app) = app.map(str::to_owned);
+    }
+}
+
+impl ForegroundApp for FakeForegroundApp {
+    fn foreground_app(&self) -> Result<Option<String>, EnforceError> {
+        Ok(lock(&self.app).clone())
     }
 }
 
@@ -198,6 +233,15 @@ mod tests {
         );
         clock.set(start);
         assert_eq!(clock.now(), start);
+    }
+
+    #[test]
+    fn fake_enforcer_lists_running_apps_with_or_without_exe() {
+        let enforcer = FakeEnforcer::with_running(["Discord.exe", "steam"]);
+        let found = enforcer
+            .running_apps(&["discord".into(), "STEAM.exe".into(), "slack".into()])
+            .unwrap();
+        assert_eq!(found, ["discord", "STEAM.exe"]);
     }
 
     #[test]

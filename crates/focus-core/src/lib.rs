@@ -2,6 +2,7 @@
 
 mod config;
 mod cooling;
+mod enforcement;
 mod matcher;
 mod pattern;
 pub mod ports;
@@ -16,6 +17,9 @@ pub mod testing;
 
 pub use config::{BlockConfig, Mode, SharedList};
 pub use cooling::{ConfigState, PendingChange, SyncReport};
+pub use enforcement::{
+    BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, apps_to_close, same_app,
+};
 pub use matcher::evaluate;
 pub use pattern::{PatternError, UrlPattern};
 pub use rule::{Rule, RuleAction, Verdict};
