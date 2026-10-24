@@ -20,7 +20,7 @@ The browser extension has to reach the daemon (ADR 0001, ADR 0004). Chromium bro
 - **Windows:** one manifest at `<install>/native-messaging/dev.focus.nmh.json`, plus one key per browser at `HKCU\Software\<browser>\NativeMessagingHosts\dev.focus.nmh` pointing at it. The keys are written with the built-in `reg.exe`, so no registry crate is needed. HKCU needs no admin.
 - **Linux:** a manifest in `~/.config/<browser>/NativeMessagingHosts/` for each supported browser whose config folder exists. Browsers only look there, so this is the one file outside the install folder.
 - **Browsers:** Chrome, Chromium, Edge and Brave.
-- **Extension ID:** passed explicitly for now. Step 4b gives the extension a fixed `key` in its manifest so the ID is stable, and makes it the default.
+- **Extension ID:** defaults to the Focus extension's fixed ID (from the `key` in its manifest, ADR 0006); `--extension-id` overrides it.
 
 ## Consequences
 
