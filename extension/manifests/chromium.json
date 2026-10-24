@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Focus",
+  "version": "0.1.0",
+  "description": "Blocks distractions during Focus sessions. Needs the Focus app running.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAn6lsL3LgCsPsN7S43pgmTMRVKQ8VQOI6kTWNI+6p5KgI7Xn/e7dbB7xzvKFYFKr5pfPGlUIt22iZVwn7cZEtC0+45F6/iDpo40UUdmycJlx85G1ZjsE70Wr/OmKizn3FebOMrOAho7nI14z06JyOmFoBdXfBstBi6ABMLhKHCMCJSYUaRqSw+q1l7ZRqqkdRoiYswVTNHlFYpWMd0iLabCOK2NibhzbikDE6HgfELQmP7rgaHrVVFvyRJn082Dwa3PvH6bAe3dJMyW4UrLBpFEWb/8X/PLy87eRnK1/WwgKr/TE5xCJwQrK6v9RbRGoR21XEUQSi/21QLrsDEF6sUQIDAQAB",
+  "minimum_chrome_version": "120",
+  "incognito": "spanning",
+  "background": { "service_worker": "background.js" },
+  "permissions": [
+    "nativeMessaging",
+    "declarativeNetRequestWithHostAccess",
+    "webNavigation",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.reddit.com/*", "*://*.youtube.com/*"],
+      "js": ["feeds.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["interstitial.html", "interstitial.js"], "matches": ["<all_urls>"] }
+  ]
+}

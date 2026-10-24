@@ -14,6 +14,10 @@ use thiserror::Error;
 /// The host's name as browsers know it.
 pub const HOST_NAME: &str = "dev.focus.nmh";
 
+/// The Focus extension's ID, fixed by the `key` in `extension/manifests/chromium.json`
+/// (checked by the extension's tests).
+pub const DEFAULT_EXTENSION_ID: &str = "hjeodjhhiiaojdakfafaebijlmdckebo";
+
 /// Where registration happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {

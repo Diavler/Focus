@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Focus</title>
+    <style>
+      :root { color-scheme: light dark; --fg: #1f2328; --muted: #59636e; --bg: #f6f8fa; --accent: #1a7f37; }
+      @media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --muted: #9198a1; --bg: #0d1117; --accent: #3fb950; } }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+      main { max-width: 34rem; padding: 2rem; }
+      h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+      #site { color: var(--muted); word-break: break-all; font-size: 0.9rem; }
+      .actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
+      button { font: inherit; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--muted); background: transparent; color: var(--fg); cursor: pointer; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section id="block" hidden>
+        <h1>Blocked during your focus session</h1>
+        <p>This site is on the block list for the session you're running.</p>
+        <div class="actions"><button class="primary" data-back>Go back</button></div>
+      </section>
+      <section id="ask" hidden>
+        <h1>Is this part of what you're working on?</h1>
+        <p>Only continue if this page helps with your current task.</p>
+        <div class="actions">
+          <button class="primary" data-back>No, go back</button>
+          <button data-continue>Yes, continue</button>
+        </div>
+      </section>
+      <section id="delay" hidden>
+        <h1>Take a breath</h1>
+        <p>You can continue in <span id="countdown">…</span> seconds. The wait grows each time you come back.</p>
+        <div class="actions">
+          <button class="primary" data-back>Go back</button>
+          <button disabled data-continue>Continue</button>
+        </div>
+      </section>
+      <p id="refused" hidden>This page can't be opened during your session.</p>
+      <p id="site"></p>
+    </main>
+    <script src="interstitial.js"></script>
+  </body>
+</html>
