@@ -570,6 +570,7 @@ mod tests {
                 apps: Vec::new(),
             }],
             auto_start: Vec::new(),
+            friction: focus_core::Friction::default(),
             revision: "1".into(),
         }
     }

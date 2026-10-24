@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { decide } from "../src/dnr";
-import { GRANT_MS, delayKey, delayOver, grantRule, isGranted, makeGrant } from "../src/grants";
+import { GRANT_MS, delayKey, delayOver, grantRule, isGranted, makeGrant, makeUnlockGrant } from "../src/grants";
 import type { BlockConfig } from "../src/protocol";
 
 /** YouTube is Ask, Shorts are Block, Reddit is Delay. */
@@ -57,6 +57,42 @@ describe("grants", () => {
     expect(rule.action).toEqual({ type: "allow" });
     expect(rule.condition.tabIds).toEqual([TAB]);
     expect(rule.priority).toBe(decide(CONFIG, "https://reddit.com/r/all").priority);
+  });
+});
+
+describe("unlock grants", () => {
+  const ALLOWLIST: BlockConfig = {
+    name: "writing",
+    mode: "allowlist",
+    rules: [
+      { pattern: "docs.google.com", verdict: "allow" },
+      { pattern: "x.com/messages/*", verdict: { restrict: "block" } },
+    ],
+    apps: [],
+  };
+  const UNTIL = NOW + 600_000;
+
+  function unlocked(config: BlockConfig, grantUrl: string, url: string, now = NOW + 1) {
+    const grant = makeUnlockGrant(1, TAB, decide(config, grantUrl), grantUrl, UNTIL);
+    if (!grant) throw new Error(`no unlock for ${grantUrl}`);
+    return isGranted([grant], TAB, url, decide(config, url), now);
+  }
+
+  it("open the blocked site, not every site an allowlist blocks", () => {
+    expect(unlocked(ALLOWLIST, "https://news.example/a", "https://news.example/b")).toBe(true);
+    expect(unlocked(ALLOWLIST, "https://news.example/a", "https://other.example/")).toBe(false);
+  });
+
+  it("don't open a stricter, more specific rule on the same site", () => {
+    expect(unlocked(ALLOWLIST, "https://x.com/home", "https://x.com/messages/1")).toBe(false);
+  });
+
+  it("last until the daemon says, and only for Block", () => {
+    expect(unlocked(ALLOWLIST, "https://news.example/", "https://news.example/", UNTIL)).toBe(false);
+    expect(makeUnlockGrant(1, TAB, decide(CONFIG, "https://www.youtube.com/"), "https://www.youtube.com/", UNTIL)).toBeNull();
+    expect(
+      makeUnlockGrant(1, TAB, decide(ALLOWLIST, "chrome://settings"), "chrome://settings", UNTIL),
+    ).toBeNull();
   });
 });
 

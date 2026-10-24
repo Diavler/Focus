@@ -5,9 +5,12 @@ use thiserror::Error;
 
 use crate::auto_start::AutoStartLog;
 use crate::cooling::ConfigState;
+use crate::delay::DelayLadder;
+use crate::friction::FrictionSetting;
 use crate::login::LoginSetting;
 use crate::plan::PlanCache;
 use crate::session::SessionState;
+use crate::unlock::UnlockLedger;
 
 /// Everything the daemon persists between runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +29,15 @@ pub struct PersistedState {
     /// Planned sessions that have already started.
     #[serde(default)]
     pub auto_started: AutoStartLog,
+    /// The friction limits in effect, and a loosening still cooling off.
+    #[serde(default)]
+    pub friction: FrictionSetting,
+    /// Unlocks spent in the last 24 hours.
+    #[serde(default)]
+    pub unlocks: UnlockLedger,
+    /// Visits to Delay sites during the running session.
+    #[serde(default)]
+    pub delays: DelayLadder,
 }
 
 /// Saves and loads [`PersistedState`].

@@ -74,11 +74,20 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
         .map(|(index, table)| build_auto_start(index + 1, table, &configs, &mut problems))
         .collect();
 
+    let friction = file.friction.friction();
+    problems.extend(
+        friction
+            .problems()
+            .into_iter()
+            .map(|(key, accepts)| Problem::Friction { key, accepts }),
+    );
+
     if problems.is_empty() {
         Ok(Settings {
             configs,
             start_at_login: file.start_at_login,
             auto_start,
+            friction,
         })
     } else {
         Err(SettingsError::Invalid { problems })
@@ -255,6 +264,47 @@ mod tests {
                 Verdict::Restrict(RuleAction::Block),
             ]
         );
+    }
+
+    #[test]
+    fn friction_limits_are_read_and_checked() {
+        let settings = parse_settings(
+            "[friction]
+unlocks_per_day = 0
+tab_cap = 0
+unlock_minutes = 5
+",
+        )
+        .unwrap();
+        assert_eq!(settings.friction.unlocks_per_day, 0);
+        assert_eq!(settings.friction.tab_cap, 0);
+        assert_eq!(settings.friction.unlock_minutes, 5);
+        assert_eq!(settings.friction.drift_hops, 4, "a default");
+
+        let Err(SettingsError::Invalid { problems }) = parse_settings(
+            "[friction]
+tab_cap = -3
+unlock_minutes = 9000
+",
+        ) else {
+            panic!("out-of-range limits are refused");
+        };
+        let messages: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "friction.unlock_minutes: use 1 to 60",
+                "friction.tab_cap: use 0 (off) or 2 to 50"
+            ]
+        );
+        assert!(matches!(
+            parse_settings(
+                "[friction]
+tabs = 4
+"
+            ),
+            Err(SettingsError::Syntax { .. })
+        ));
     }
 
     #[test]

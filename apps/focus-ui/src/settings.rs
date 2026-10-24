@@ -24,7 +24,7 @@ pub enum Tab {
     Configs,
     /// Shared lists.
     Lists,
-    /// Start at login and the kill switch.
+    /// Start at login, friction limits and the kill switch.
     General,
 }
 
@@ -133,11 +133,13 @@ fn same_content<'a>(
         lists,
         configs,
         auto_start: _,
+        friction,
         revision: _,
     } = settings;
     *start_at_login == other.start_at_login
         && *lists == other.lists
         && *configs == other.configs
+        && *friction == other.friction
         && auto_start.into_iter().eq(&other.auto_start)
 }
 
@@ -148,6 +150,7 @@ pub enum Msg {
     Config(configs::Edit),
     List(configs::Edit),
     StartAtLogin(bool),
+    Friction(crate::friction::Edit),
     Save,
     Discard,
     Reload,
@@ -275,7 +278,7 @@ impl App {
         card(column).into()
     }
 
-    /// Start at login and the kill switch.
+    /// Start at login, friction limits and the kill switch.
     fn general_tab<'a>(
         &'a self,
         draft: &'a Draft,
@@ -303,7 +306,11 @@ impl App {
             ]
             .spacing(12),
         );
-        column![start_at_login, self.kill_switch_card(status)]
+        let friction = crate::friction::view(
+            &draft.edited.friction,
+            status.friction_loosen_after.map(|at| (at, status.now)),
+        );
+        column![start_at_login, friction, self.kill_switch_card(status)]
             .spacing(16)
             .into()
     }
@@ -410,6 +417,7 @@ mod tests {
             lists: Vec::new(),
             configs: Vec::new(),
             auto_start: Vec::new(),
+            friction: focus_core::Friction::default(),
             revision: revision.into(),
         }
     }

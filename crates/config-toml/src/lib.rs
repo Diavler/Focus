@@ -17,6 +17,12 @@
 //! calendar_keywords = ["#focus"]
 //! task_labels = ["deep"]
 //! task_minutes = 50             # for tasks without a duration
+//!
+//! [friction]                     # each key optional; these are the defaults
+//! unlocks_per_day = 3           # Deep sessions' unlock budget per 24 hours
+//! unlock_minutes = 10
+//! tab_cap = 10                  # 0 = off
+//! drift_hops = 4                # 0 = off
 //! ```
 
 mod edit;

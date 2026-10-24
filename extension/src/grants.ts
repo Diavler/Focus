@@ -1,8 +1,10 @@
 // "Continue" on an Ask or Delay page: a short-lived allow for that tab, scoped to the rule that
 // asked, never to the whole site, so stricter or more specific rules on the same site still apply.
+// "Unlock" on a Block page: the same kind of allow, for the blocked site, until the daemon says.
 
-import type { Decision, DnrRule } from "./dnr";
+import { type Decision, type DnrRule, parsePattern, patternRegex } from "./dnr";
 import { actionOf } from "./protocol";
+import { siteOf } from "./sites";
 
 /** How long Continue lasts. */
 export const GRANT_MS = 5 * 60 * 1000;
@@ -21,6 +23,18 @@ export function makeGrant(id: number, tabId: number, decision: Decision, now: nu
   const action = actionOf(decision.verdict);
   if ((action !== "ask" && action !== "delay") || decision.regexFilter === null) return null;
   return { id, tabId, regexFilter: decision.regexFilter, priority: decision.priority, expires: now + GRANT_MS };
+}
+
+/**
+ * A grant for an unlocked Block page: its whole site (an allowlist's catch-all has no narrower
+ * rule to scope to), at the deciding rule's priority so stricter, more specific rules still
+ * block. Null if the page isn't blocked or isn't a web page.
+ */
+export function makeUnlockGrant(id: number, tabId: number, decision: Decision, url: string, until: number): Grant | null {
+  const site = siteOf(url);
+  const parts = site === null ? null : parsePattern(site);
+  if (actionOf(decision.verdict) !== "block" || parts === null) return null;
+  return { id, tabId, regexFilter: patternRegex(parts), priority: decision.priority, expires: until };
 }
 
 /**

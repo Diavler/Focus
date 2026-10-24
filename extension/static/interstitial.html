@@ -16,6 +16,12 @@
       button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
       button:disabled { opacity: 0.5; cursor: default; }
       #countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+      input { font: inherit; width: 100%; box-sizing: border-box; margin-top: 0.75rem; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--muted); background: transparent; color: var(--fg); }
+      .note { color: var(--muted); font-size: 0.9rem; }
+      #trail { font-weight: 600; word-break: break-word; }
+      #tab-list { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.5rem; }
+      #tab-list li { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; }
+      #tab-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     </style>
   </head>
   <body>
@@ -24,6 +30,29 @@
         <h1>Blocked during your focus session</h1>
         <p>This site is on the block list for the session you're running.</p>
         <div class="actions"><button class="primary" data-back>Go back</button></div>
+        <div id="unlock" hidden>
+          <input id="unlock-reason" placeholder="Why do you need this page now?" hidden />
+          <div class="actions"><button id="unlock-button">Unlock</button></div>
+          <p id="unlock-note" class="note"></p>
+        </div>
+        <p id="locked-note" class="note" hidden>Locked sessions can't be unlocked.</p>
+      </section>
+      <section id="drift" hidden>
+        <h1>You've drifted away</h1>
+        <p>Since leaving your session's sites, this tab went: <span id="trail"></span></p>
+        <div class="actions">
+          <button class="primary" id="drift-back">Go back</button>
+          <button id="drift-continue">Keep going</button>
+        </div>
+      </section>
+      <section id="tabs" hidden>
+        <h1>Close a tab first</h1>
+        <p>Your session allows <span id="cap"></span> tabs. Close one to open this page.</p>
+        <ul id="tab-list"></ul>
+        <div class="actions">
+          <button class="primary" id="close-self">Close this tab</button>
+          <button id="tab-continue" disabled>Open the page</button>
+        </div>
       </section>
       <section id="ask" hidden>
         <h1>Is this part of what you're working on?</h1>

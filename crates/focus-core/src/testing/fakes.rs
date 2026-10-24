@@ -116,6 +116,9 @@ impl FakeSettingsFile {
     }
 
     fn problem(settings: &EditableSettings) -> Option<String> {
+        if let Some((key, accepts)) = settings.friction.problems().into_iter().next() {
+            return Some(format!("friction.{key}: use {accepts}"));
+        }
         for config in &settings.configs {
             if let Some(missing) = config
                 .include
@@ -173,6 +176,7 @@ impl ConfigSource for FakeSettingsFile {
                 .collect(),
             start_at_login: settings.start_at_login,
             auto_start: settings.auto_start,
+            friction: settings.friction,
         })
     }
 }

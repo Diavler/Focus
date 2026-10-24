@@ -12,7 +12,7 @@ The browser extension has to reach the daemon (ADR 0001, ADR 0004). Chromium bro
 **Relay protocol.**
 - `focus-nmh` reads Chrome's framing (4-byte native-endian length, then UTF-8 JSON) and relays to the daemon over the normal IPC client.
 - Messages use the daemon's envelope plus an `id`: `{"id":7,"version":1,"message":<Request>}`, answered with `{"id":7,"version":1,"message":<Response>}`. The extension matches answers to requests by `id`. Unreadable input is answered with `id` 0.
-- Only `Heartbeat`, `RulesFor` and `Status` are relayed. The extension, and any page that compromises it, can't start or end sessions.
+- Only `Heartbeat`, `RulesFor` and `Status` are relayed. The extension, and any page that compromises it, can't start or end sessions. (ADR 0011 adds `Unlock` and `DelayVisit`, which only work within the running session's own limits.)
 - If the daemon is down, the host answers `Unreachable` (a new `DaemonError` variant). It reconnects on the next message, so a restarted daemon is picked up without restarting the browser.
 - Incoming messages are capped at 1 MiB, and outgoing ones at Chrome's 1 MiB limit.
 

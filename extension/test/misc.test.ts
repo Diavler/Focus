@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { FEED_MATCHES, hideFeedCss } from "../src/feeds";
 import { BASE_DELAY, MAX_DELAY, delaySeconds } from "../src/friction";
-import { sessionFromStatus, type RunningSession } from "../src/protocol";
+import { DEFAULT_FRICTION, frictionFromStatus, sessionFromStatus, unlockRefusal, type RunningSession } from "../src/protocol";
 
 describe("delaySeconds", () => {
   it("grows with each visit up to the cap", () => {
@@ -45,6 +45,32 @@ describe("chromium manifest", () => {
 
   it("runs the feed script exactly where the background expects it", () => {
     expect(manifest.content_scripts[0].matches).toEqual(FEED_MATCHES);
+  });
+});
+
+describe("frictionFromStatus", () => {
+  it("reads the limits and unlocks left, with defaults for an older daemon", () => {
+    const friction = { ...DEFAULT_FRICTION, tab_cap: 0 };
+    expect(frictionFromStatus({ type: "status", now: 1, session: "idle", friction, unlocks_left: 1 })).toEqual({
+      friction,
+      unlocksLeft: 1,
+    });
+    expect(frictionFromStatus({ type: "status", now: 1, session: "idle" })).toEqual({
+      friction: DEFAULT_FRICTION,
+      unlocksLeft: 3,
+    });
+    expect(frictionFromStatus({ type: "done" })).toBeUndefined();
+  });
+});
+
+describe("unlockRefusal", () => {
+  it("explains each refusal the daemon sends", () => {
+    const refused = (error: unknown) => unlockRefusal({ type: "error", error: { kind: "unlock", error } });
+    expect(refused("forbidden")).toContain("Locked");
+    expect(refused("reason_required")).toContain("reason");
+    expect(refused({ budget_spent: { next_at: null } })).toContain("budget is 0");
+    expect(refused({ budget_spent: { next_at: 0 } })).toContain("comes back at");
+    expect(unlockRefusal({ type: "error", error: { kind: "unreachable", message: "x" } })).toContain("running");
   });
 });
 

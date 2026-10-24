@@ -96,7 +96,7 @@ async fn answer(bytes: &[u8], daemon: &mut Option<Client>, endpoint: &Endpoint) 
     };
     if !allowed_from_browser(&request) {
         return error_response(DaemonError::BadRequest {
-            message: "the browser extension may only send Heartbeat, RulesFor and Status".into(),
+            message: "the browser extension may only send Heartbeat, RulesFor, Status, Unlock and DelayVisit".into(),
         });
     }
     forward(&request, daemon, endpoint).await
@@ -106,7 +106,11 @@ async fn answer(bytes: &[u8], daemon: &mut Option<Client>, endpoint: &Endpoint) 
 fn allowed_from_browser(request: &Request) -> bool {
     matches!(
         request,
-        Request::Heartbeat { .. } | Request::RulesFor { .. } | Request::Status
+        Request::Heartbeat { .. }
+            | Request::RulesFor { .. }
+            | Request::Status
+            | Request::Unlock { .. }
+            | Request::DelayVisit { .. }
     )
 }
 

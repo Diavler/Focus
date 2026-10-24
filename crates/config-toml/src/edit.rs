@@ -5,7 +5,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use focus_core::{
-    ACTIONS, AutoStartRule, ConfigEntry, EditableSettings, ListEntry, Mode, RulePatterns,
+    ACTIONS, AutoStartRule, ConfigEntry, EditableSettings, Friction, ListEntry, Mode, RulePatterns,
     Strictness, Verdict,
 };
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
@@ -55,6 +55,7 @@ pub fn editable(text: &str) -> Result<EditableSettings, SettingsError> {
             })
             .collect(),
         auto_start: file.auto_start.iter().map(rule_from_table).collect(),
+        friction: file.friction.friction(),
         revision: revision(text),
     })
 }
@@ -105,6 +106,8 @@ pub fn with_settings(text: &str, settings: &EditableSettings) -> Result<String, 
     }
     drop_if_empty(&mut document, "configs");
 
+    set_friction(&mut document, settings.friction);
+
     document.remove("auto_start");
     if !settings.auto_start.is_empty() {
         let mut tables = ArrayOfTables::new();
@@ -144,6 +147,49 @@ fn child_table<'a>(parent: &'a mut Table, name: &str) -> &'a mut Table {
     }
     // Just made sure it's a table.
     item.as_table_mut().unwrap_or_else(|| unreachable!())
+}
+
+/// Writes `[friction]`: only keys that changed or aren't at their defaults, so comments beside
+/// the others stay, and no table at all while everything is at its default.
+fn set_friction(document: &mut DocumentMut, friction: Friction) {
+    let defaults = Friction::default();
+    let keys: [(&str, i64, i64); 4] = [
+        (
+            "unlocks_per_day",
+            friction.unlocks_per_day.into(),
+            defaults.unlocks_per_day.into(),
+        ),
+        (
+            "unlock_minutes",
+            friction.unlock_minutes.into(),
+            defaults.unlock_minutes.into(),
+        ),
+        ("tab_cap", friction.tab_cap.into(), defaults.tab_cap.into()),
+        (
+            "drift_hops",
+            friction.drift_hops.into(),
+            defaults.drift_hops.into(),
+        ),
+    ];
+    let all_defaults = keys.iter().all(|&(_, wanted, default)| wanted == default);
+    if all_defaults && !document.contains_key("friction") {
+        return;
+    }
+    let item = document
+        .entry("friction")
+        .or_insert_with(|| Item::Table(Table::new()));
+    if !item.is_table() {
+        *item = Item::Table(Table::new());
+    }
+    // Just made sure it's a table.
+    let table = item.as_table_mut().unwrap_or_else(|| unreachable!());
+    for (key, wanted, default) in keys {
+        let written: Option<i64> = table.get(key).and_then(Item::as_integer);
+        if written != Some(wanted) && (written.is_some() || wanted != default) {
+            table.insert(key, value(wanted));
+        }
+    }
+    drop_if_empty(document, "friction");
 }
 
 fn drop_if_empty(document: &mut DocumentMut, key: &str) {
@@ -375,6 +421,7 @@ allow = ["docs.google.com"]
                 apps: Vec::new(),
             }],
             auto_start: Vec::new(),
+            friction: Friction::default(),
             revision: String::new(),
         };
         let written = with_settings("", &settings).unwrap();
@@ -388,7 +435,39 @@ allow = ["docs.google.com"]
             "the default isn't written"
         );
         assert!(!written.contains("[lists]"));
+        assert!(!written.contains("[friction]"), "defaults aren't written");
         assert_eq!(editable(&written).unwrap().configs, settings.configs);
+    }
+
+    #[test]
+    fn friction_round_trips_and_keeps_comments() {
+        let text = "[friction]
+tab_cap = 6  # tabs are my weakness
+";
+        let mut settings = editable(text).unwrap();
+        assert_eq!(settings.friction.tab_cap, 6);
+        assert_eq!(settings.friction.unlocks_per_day, 3, "a default");
+        settings.friction.unlocks_per_day = 1;
+        let written = with_settings(text, &settings).unwrap();
+        assert!(written.contains("# tabs are my weakness"), "{written}");
+        assert!(written.contains("unlocks_per_day = 1"), "{written}");
+        assert!(!written.contains("drift_hops"), "defaults stay out");
+        assert_eq!(
+            parse_settings(&written).unwrap().friction,
+            settings.friction
+        );
+
+        settings.friction = Friction::default();
+        let reset = with_settings(&written, &settings).unwrap();
+        assert!(
+            reset.contains("tab_cap = 10"),
+            "a written key is kept: {reset}"
+        );
+        settings.friction.tab_cap = 1;
+        assert!(
+            with_settings(text, &settings).is_err(),
+            "an out-of-range cap is refused"
+        );
     }
 
     #[test]

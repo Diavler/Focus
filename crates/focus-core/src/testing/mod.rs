@@ -63,6 +63,7 @@ mod tests {
                 apps: Vec::new(),
             }],
             auto_start: Vec::new(),
+            friction: crate::Friction::default(),
             revision: String::new(),
         });
         settings_editor_contract(&settings, &settings);

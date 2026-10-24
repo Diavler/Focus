@@ -91,8 +91,8 @@ mod tests {
     use focus_core::ports::SecretKey;
     use focus_core::{
         AutoStartRule, BlockConfig, CalendarEvent, ConfigEntry, EditableSettings, EndEarlyResponse,
-        Mode, PlanSource, PlannedStart, RuleAction, RulePatterns, SessionError, SessionSpec,
-        SessionState, StopError, Strictness, Task, Timestamp, Verdict,
+        Friction, Mode, PlanSource, PlannedStart, RuleAction, RulePatterns, SessionError,
+        SessionSpec, SessionState, StopError, Strictness, Task, Timestamp, UnlockError, Verdict,
     };
 
     use super::*;
@@ -132,6 +132,10 @@ mod tests {
                 task_labels: Vec::new(),
                 task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
             }],
+            friction: Friction {
+                tab_cap: 6,
+                ..Friction::default()
+            },
             revision: "abc".into(),
         }
     }
@@ -178,6 +182,13 @@ mod tests {
                 reason: "emergency".into(),
             },
             Request::CancelStop,
+            Request::Unlock {
+                url: "https://x.com/".into(),
+                reason: "the thread has the fix".into(),
+            },
+            Request::DelayVisit {
+                url: "https://news.ycombinator.com/".into(),
+            },
         ] {
             round_trip(request);
         }
@@ -213,6 +224,9 @@ mod tests {
                 start_at_login_problem: None,
                 stop_allowed_at: Some(Timestamp::from_millis(70_000)),
                 stop_reason_required: true,
+                friction: Friction::default(),
+                friction_loosen_after: Some(Timestamp::from_millis(88)),
+                unlocks_left: 2,
                 plan: PlanStatus {
                     calendar: SourceStatus {
                         state: SourceState::Failing {
@@ -272,6 +286,17 @@ mod tests {
             },
             Response::Error {
                 error: DaemonError::SettingsChanged,
+            },
+            Response::Unlocked {
+                until: Timestamp::from_millis(600_000),
+            },
+            Response::Delay { seconds: 20 },
+            Response::Error {
+                error: DaemonError::Unlock {
+                    error: UnlockError::BudgetSpent {
+                        next_at: Some(Timestamp::from_millis(5)),
+                    },
+                },
             },
             Response::EndSession {
                 outcome: EndEarlyResponse::WaitUntil(Timestamp::from_millis(30)),

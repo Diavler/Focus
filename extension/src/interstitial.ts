@@ -1,6 +1,10 @@
-// The page Ask, Delay and Block send you to: `interstitial.html?a=<action>#<original url>`.
+// The page Ask, Delay, Block, the drift prompt and the tab cap send you to:
+// `interstitial.html?a=<action>#<original url>`.
 
 import browser from "webextension-polyfill";
+
+import type { Friction } from "./protocol";
+import { siteOf } from "./sites";
 
 const params = new URLSearchParams(location.search);
 const action = params.get("a") ?? "block";
@@ -15,6 +19,10 @@ function show(id: string): HTMLElement {
   return element;
 }
 
+function element<T extends HTMLElement>(id: string): T {
+  return document.getElementById(id) as T;
+}
+
 function goBack(): void {
   if (history.length > stepsBack) history.go(-stepsBack);
   else window.close();
@@ -27,7 +35,7 @@ async function continueToSite(): Promise<void> {
 
 async function startDelay(): Promise<void> {
   const button = show("delay").querySelector("[data-continue]") as HTMLButtonElement;
-  const count = document.getElementById("countdown") as HTMLElement;
+  const count = element("countdown");
   let left = (await browser.runtime.sendMessage({ kind: "delay", url: target })) as number;
   count.textContent = String(left);
   const timer = setInterval(() => {
@@ -41,7 +49,114 @@ async function startDelay(): Promise<void> {
   button.addEventListener("click", () => void continueToSite());
 }
 
-(document.getElementById("site") as HTMLElement).textContent = target;
+interface UnlockInfo {
+  strictness: "light" | "deep" | "locked";
+  unlocksLeft: number;
+  friction: Friction;
+}
+
+/** Offers an unlock on the block page: free in Light, from the budget with a reason in Deep. */
+async function offerUnlock(): Promise<void> {
+  const info = (await browser.runtime.sendMessage({ kind: "unlock-info" })) as UnlockInfo | null;
+  if (info === null) return;
+  if (info.strictness === "locked") {
+    show("locked-note");
+    return;
+  }
+  show("unlock");
+  const button = element<HTMLButtonElement>("unlock-button");
+  const reason = element<HTMLInputElement>("unlock-reason");
+  const note = element("unlock-note");
+  const minutes = info.friction.unlock_minutes;
+  const deep = info.strictness === "deep";
+  if (deep) {
+    reason.hidden = false;
+    button.textContent = `Use an unlock for ${minutes} min`;
+    note.textContent = `${info.unlocksLeft} of ${info.friction.unlocks_per_day} unlocks left in the last 24 hours.`;
+    const update = () => {
+      button.disabled = info.unlocksLeft === 0 || reason.value.trim() === "";
+    };
+    reason.addEventListener("input", update);
+    update();
+  } else {
+    button.textContent = `Unlock for ${minutes} min`;
+  }
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const refusal = (await browser.runtime.sendMessage({
+      kind: "unlock",
+      url: target,
+      reason: reason.value,
+    })) as string | null;
+    if (refusal !== null) {
+      note.textContent = refusal;
+      button.disabled = false;
+    }
+  });
+}
+
+/** The drift prompt: the trail away from the session's sites, and a way back. */
+function showDrift(): void {
+  show("drift");
+  const trail = (params.get("trail") ?? "").split(" ").filter(Boolean);
+  element("trail").textContent = trail.join(" → ");
+  const back = params.get("back") ?? "";
+  const home = back ? siteOf(back) : null;
+  const homeButton = element<HTMLButtonElement>("drift-back");
+  homeButton.textContent = home ? `Back to ${home}` : "Go back";
+  homeButton.addEventListener("click", () => {
+    if (back) location.href = back;
+    else goBack();
+  });
+  element("drift-continue").addEventListener("click", () => {
+    void browser.runtime.sendMessage({ kind: "drift-continue", url: target });
+  });
+}
+
+interface OpenTab {
+  id: number;
+  title: string;
+  url: string;
+}
+
+/** The tab cap: lists the other tabs to close one, then opens the page this tab was opening. */
+async function showTabCap(): Promise<void> {
+  show("tabs");
+  const cap = (await browser.runtime.sendMessage({ kind: "tab-cap" })) as number;
+  element("cap").textContent = String(cap);
+  const list = element("tab-list");
+  const proceed = element<HTMLButtonElement>("tab-continue");
+  const render = async () => {
+    const tabs = (await browser.runtime.sendMessage({ kind: "tabs" })) as OpenTab[];
+    list.replaceChildren(
+      ...tabs.map((tab) => {
+        const item = document.createElement("li");
+        const label = document.createElement("span");
+        label.textContent = tab.title || siteOf(tab.url) || tab.url;
+        const close = document.createElement("button");
+        close.textContent = "Close";
+        close.addEventListener("click", async () => {
+          await browser.runtime.sendMessage({ kind: "close-tab", id: tab.id });
+          await render();
+        });
+        item.append(label, close);
+        return item;
+      }),
+    );
+    // This tab counts too.
+    proceed.disabled = cap > 0 && tabs.length + 1 > cap;
+  };
+  proceed.addEventListener("click", () => {
+    void browser.runtime.sendMessage({ kind: "tab-continue", url: target });
+  });
+  element("close-self").addEventListener("click", async () => {
+    const tab = await browser.tabs.getCurrent();
+    if (tab?.id !== undefined) await browser.tabs.remove(tab.id);
+  });
+  await render();
+}
+
+element("site").textContent = target;
 for (const back of document.querySelectorAll("[data-back]")) back.addEventListener("click", goBack);
 
 if (action === "ask") {
@@ -50,6 +165,11 @@ if (action === "ask") {
     ?.addEventListener("click", () => void continueToSite());
 } else if (action === "delay") {
   void startDelay();
+} else if (action === "drift") {
+  showDrift();
+} else if (action === "tabs") {
+  void showTabCap();
 } else {
   show("block");
+  void offerUnlock();
 }
