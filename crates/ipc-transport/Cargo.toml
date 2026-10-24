@@ -16,3 +16,13 @@ focus-core.workspace = true
 interprocess.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+# Windows: pipe access limited to the current user, and checking who serves a pipe (ADR 0004).
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }

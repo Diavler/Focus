@@ -4,6 +4,8 @@
 mod client;
 mod connection;
 mod endpoint;
+#[cfg(windows)]
+mod windows_security;
 
 pub use client::{Client, ClientError};
 pub use connection::{Connection, MAX_LINE_BYTES};

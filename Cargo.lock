@@ -1265,6 +1265,8 @@ dependencies = [
  "ipc-proto",
  "thiserror 2.0.21",
  "tokio",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
