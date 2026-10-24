@@ -28,6 +28,12 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.8
+# Mozilla's root certificate list, which rustls (via ureq) bundles as data. CDLA-Permissive-2.0
+# is a permissive data licence; allowed for these crates only.
+exceptions = [
+    { name = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+    { name = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+]
 unused-allowed-license = "allow"
 private = { ignore = true }
 
