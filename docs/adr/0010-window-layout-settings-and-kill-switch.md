@@ -48,19 +48,19 @@ The developer decided:
 **Kill switch:**
 - Core `KillSwitch` and `StopPolicy`:
   - Asking starts a wait of 1 minute, or 5 minutes plus a typed reason during a Locked session.
-  - The policy in force when confirming applies, so a Locked session that starts during the wait makes it longer.
+  - The policy in force when confirming applies, and the wait never counts time from before the running session started. So a session that starts during the wait restarts it (5 minutes for a Locked one), and a request left pending while idle can't shorten a later session's wait.
   - It's not persisted: a restart just starts a fresh wait.
 - `SessionState::stop` ends any session with `EndReason::Stopped { reason }`.
 - New requests: `RequestStop`, `ConfirmStop { reason }` and `CancelStop`. `Status` shows `stop_allowed_at`, so the window can count down.
-- On confirm, the daemon saves the ended session and answers `Done`. The server then shuts down: `Service::take_stop` reports the stop and a `Notify` wakes `serve`. The window exits when it sees `Done`.
+- On confirm, the daemon saves the ended session and answers `Done`. The server then shuts down: `Service::take_stop` reports the stop, the service is taken out of the shared slot under the same lock (so no tick can start a session or save after the stop), and a `Notify` wakes `serve`. The window exits when it sees `Done`.
 - Neither process restarts the other:
   - The daemon only relaunches the UI during a session, and there isn't one any more.
   - The UI that would relaunch the daemon has exited.
 - Focus starts again at the next login (the HKCU Run entry is untouched) or when the user opens it.
 - **Lifting the browser's blocks.** The extension deliberately keeps enforcing its last-known session while the daemon is unreachable, so killing the daemon isn't a way out of a session (ADR 0006).
   - When the daemon can't be reached, `focus-nmh` now looks at the saved state with `JsonStateStore::peek`, which reads only, never moving or rewriting a file.
-  - If no session is saved as running, it answers `DaemonError::Stopped`, and the extension drops its cached session and blocks.
-  - Killing the processes by hand leaves the session saved as running, so blocks stay. Faking "stopped" means editing the state file, which ADR 0003 already counts as deliberate tampering.
+  - If the saved state has no running session, it answers `DaemonError::Stopped`, and the extension drops its cached session and blocks. A missing or unreadable state file counts as a session (blocks stay), since the kill switch always saves the stopped state before exiting.
+  - Killing the processes by hand leaves the session saved as running, so blocks stay, and so does deleting the state file. Faking "stopped" means writing a state file, which ADR 0003 already counts as deliberate tampering.
 
 ## Consequences
 

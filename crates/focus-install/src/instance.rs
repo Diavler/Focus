@@ -65,17 +65,20 @@ mod tests {
     fn only_one_holder_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("daemon.lock");
+        // On Linux a lock belongs to the open file, and a child process being started by another
+        // test inherits our open files until it runs its program. Until then a lock we've let go
+        // of (including the momentary one `is_held` takes) stays held, so wait briefly for each
+        // release rather than expect it at once.
         assert!(!is_held(&path).unwrap());
-        let first = InstanceLock::acquire(&path).unwrap().expect("first lock");
+        let first = InstanceLock::acquire_patiently(&path)
+            .unwrap()
+            .expect("first lock");
         assert!(is_held(&path).unwrap());
         assert!(
             InstanceLock::acquire(&path).unwrap().is_none(),
             "second is refused"
         );
         drop(first);
-        // On Linux a lock belongs to the open file, and a child process being started by another
-        // test inherits our open files until it runs its program. Until then the lock stays held,
-        // so wait briefly for the release rather than expect it at once.
         let released = (0..20).any(|_| {
             let free = !is_held(&path).unwrap();
             if !free {

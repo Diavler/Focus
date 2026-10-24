@@ -2,7 +2,9 @@
 //! mode, included lists and apps to close. Patterns are checked as they're added, and a URL can
 //! be tried against the edited configuration before saving.
 
-use focus_core::{ConfigEntry, EditableSettings, ListEntry, Mode, RulePatterns, UrlPattern};
+use focus_core::{
+    ConfigEntry, EditableSettings, ListEntry, Mode, RulePatterns, UrlPattern, same_app,
+};
 use iced::widget::{
     Column, button, checkbox, column, pick_list, radio, row, space, text, text_input,
 };
@@ -270,18 +272,20 @@ fn edit_selected(
     }
 }
 
-/// Adds an app by executable name (without `.exe`), unless it's blank or already there.
+/// Adds an app by executable name (without `.exe`, keeping its case), unless it's blank or
+/// already there by the core's matching ([`same_app`]).
 fn add_app(apps: &mut Vec<String>, app: &str) {
     let app = app.trim();
     let app = app
-        .strip_suffix(".exe")
-        .or_else(|| app.strip_suffix(".EXE"))
+        .len()
+        .checked_sub(".exe".len())
+        .filter(|&cut| {
+            app.get(cut..)
+                .is_some_and(|end| end.eq_ignore_ascii_case(".exe"))
+        })
+        .and_then(|cut| app.get(..cut))
         .unwrap_or(app);
-    if !app.is_empty()
-        && !apps
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(app))
-    {
+    if !app.is_empty() && !apps.iter().any(|existing| same_app(existing, app)) {
         apps.push(app.to_owned());
     }
 }
@@ -493,12 +497,7 @@ fn apps_editor<'a>(
 ) -> Element<'a, Message> {
     let offer: Vec<String> = open_apps
         .iter()
-        .filter(|app| {
-            !config
-                .apps
-                .iter()
-                .any(|added| added.eq_ignore_ascii_case(app))
-        })
+        .filter(|app| !config.apps.iter().any(|added| same_app(added, app)))
         .cloned()
         .collect();
     column![
@@ -600,7 +599,7 @@ mod tests {
             &mut settings,
             &mut editor,
             configs,
-            Edit::AppTyped("Discord.exe".into()),
+            Edit::AppTyped("Discord.Exe".into()),
         );
         apply(&mut settings, &mut editor, configs, Edit::AddApp);
         apply(

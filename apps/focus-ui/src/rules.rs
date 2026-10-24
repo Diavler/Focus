@@ -145,7 +145,9 @@ pub fn problem(drafts: &[Draft], configs: &[String]) -> Option<String> {
 /// The rules tab: one card per rule, then a button to add one. Saving is the Settings page's.
 pub fn view<'a>(drafts: &'a [Draft], configs: &'a [String]) -> Element<'a, Message> {
     let mut section = column![caption(
-        "A calendar event whose title contains a keyword runs its configuration until the event          ends. A Todoist task that's due at a time and has one of the labels runs it for the          task's duration (or the length below)."
+        "A calendar event whose title contains a keyword runs its configuration until the event \
+         ends. A Todoist task that's due at a time and has one of the labels runs it for the \
+         task's duration (or the length below)."
     )]
     .spacing(14);
     if drafts.is_empty() {

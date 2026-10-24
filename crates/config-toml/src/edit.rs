@@ -142,6 +142,7 @@ fn child_table<'a>(parent: &'a mut Table, name: &str) -> &'a mut Table {
     if !item.is_table() {
         *item = Item::Table(Table::new());
     }
+    // Just made sure it's a table.
     item.as_table_mut().unwrap_or_else(|| unreachable!())
 }
 

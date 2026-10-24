@@ -121,6 +121,8 @@ pub(crate) struct App {
     token_input: String,
     /// The settings being edited; loaded when Settings opens.
     settings: Option<settings::Draft>,
+    /// Why the settings couldn't be read, if the last try failed.
+    settings_problem: Option<String>,
     settings_tab: settings::Tab,
     /// Configuration names as edited, offered by the rule editor.
     rule_configs: Vec<String>,
@@ -209,6 +211,7 @@ impl App {
             calendar_input: String::new(),
             token_input: String::new(),
             settings: None,
+            settings_problem: None,
             settings_tab: settings::Tab::default(),
             rule_configs: Vec::new(),
             apps: Vec::new(),
@@ -322,10 +325,14 @@ impl App {
             }
             Message::SettingsLoaded(result) => match *result {
                 Ok(settings) => {
-                    self.settings = Some(settings::Draft::new(settings));
+                    self.settings_problem = None;
+                    match &mut self.settings {
+                        Some(draft) => draft.reload(settings),
+                        None => self.settings = Some(settings::Draft::new(settings)),
+                    }
                     self.refresh_rule_configs();
                 }
-                Err(problem) => self.error = Some(format!("couldn't read the settings: {problem}")),
+                Err(problem) => self.settings_problem = Some(problem),
             },
             Message::AppsLoaded(result) => {
                 if let Ok(apps) = result {
@@ -401,6 +408,7 @@ impl App {
             }
             (Some(Saving::Settings), Err(problem)) => {
                 if let Some(draft) = &mut self.settings {
+                    draft.sent = None;
                     draft.error = Some(problem.clone());
                 }
                 return self.fetch_status();
@@ -412,17 +420,32 @@ impl App {
     }
 
     fn settings_message(&mut self, message: settings::Msg) -> Task<Message> {
+        // Tabs and reloading work without settings, so the kill switch stays reachable when
+        // settings.toml can't be read.
+        match message {
+            settings::Msg::Tab(tab) => {
+                self.settings_tab = tab;
+                if let Some(draft) = &mut self.settings {
+                    draft.error = None;
+                }
+                if tab == settings::Tab::Configs {
+                    return self.fetch_apps();
+                }
+                return Task::none();
+            }
+            settings::Msg::Reload => {
+                // Throws the edits away on purpose: the file wins.
+                self.settings = None;
+                return self.fetch_settings();
+            }
+            _ => {}
+        }
         let Some(draft) = &mut self.settings else {
             return Task::none();
         };
         draft.error = None;
         match message {
-            settings::Msg::Tab(tab) => {
-                self.settings_tab = tab;
-                if tab == settings::Tab::Configs {
-                    return self.fetch_apps();
-                }
-            }
+            settings::Msg::Tab(_) | settings::Msg::Reload => {}
             settings::Msg::Config(edit) => {
                 let removed = configs::apply(
                     &mut draft.edited,
@@ -447,13 +470,13 @@ impl App {
             settings::Msg::StartAtLogin(on) => draft.edited.start_at_login = on,
             settings::Msg::Save => {
                 let settings = draft.to_save();
+                draft.sent = Some(settings.clone());
                 return self.act_saving(Saving::Settings, Request::SaveSettings { settings });
             }
             settings::Msg::Discard => {
                 draft.discard();
                 self.refresh_rule_configs();
             }
-            settings::Msg::Reload => return self.fetch_settings(),
         }
         Task::none()
     }
@@ -580,7 +603,7 @@ impl App {
             ]
             .spacing(10)
             .into(),
-            (None, None) => style::title("Connecting to Focusâ€¦").into(),
+            (None, None) => style::title("Connecting to Focus…").into(),
             (Some(status), None) => match self.page {
                 Page::Sessions => self.sessions_page(status),
                 Page::Calendar => self.calendar_page(status),
@@ -614,7 +637,7 @@ impl App {
             Some((status, running)) => row![
                 dot(Tone::Good),
                 text(format!(
-                    "{} Â· {}",
+                    "{} · {}",
                     running.spec().config.name,
                     sessions::format_duration(running.time_left(status.now))
                 ))

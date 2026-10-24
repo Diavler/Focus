@@ -18,6 +18,9 @@ pub struct StopPolicy {
     pub wait: Duration,
     /// Whether confirming needs a typed reason.
     pub reason_required: bool,
+    /// When the running session started, if one is running. The wait never counts time from
+    /// before it, so a request left pending while idle can't shorten a session's wait.
+    pub since: Option<Timestamp>,
 }
 
 impl StopPolicy {
@@ -28,16 +31,25 @@ impl StopPolicy {
 
     /// The policy while `running` is the running session (if any).
     pub fn for_session(running: Option<&RunningSession>) -> Self {
+        let since = running.map(RunningSession::started_at);
         match running.map(|running| running.spec().strictness) {
             Some(Strictness::Locked) => Self {
                 wait: Self::LOCKED_WAIT,
                 reason_required: true,
+                since,
             },
             _ => Self {
                 wait: Self::WAIT,
                 reason_required: false,
+                since,
             },
         }
+    }
+
+    /// When a request made at `requested` may be confirmed.
+    fn allowed_at(&self, requested: Timestamp) -> Timestamp {
+        let counts_from = self.since.map_or(requested, |since| since.max(requested));
+        counts_from.saturating_add(self.wait)
     }
 }
 
@@ -69,9 +81,7 @@ impl KillSwitch {
     /// Asks to stop at `now` and returns when it may be confirmed. Asking again keeps the first
     /// request's time.
     pub fn request(&mut self, now: Timestamp, policy: StopPolicy) -> Timestamp {
-        self.requested_at
-            .get_or_insert(now)
-            .saturating_add(policy.wait)
+        policy.allowed_at(*self.requested_at.get_or_insert(now))
     }
 
     /// Withdraws the request; the next one waits from the start.
@@ -82,11 +92,11 @@ impl KillSwitch {
     /// When a pending request may be confirmed under `policy`, if there is one.
     pub fn allowed_at(&self, policy: StopPolicy) -> Option<Timestamp> {
         self.requested_at
-            .map(|requested| requested.saturating_add(policy.wait))
+            .map(|requested| policy.allowed_at(requested))
     }
 
-    /// Checks that stopping is allowed at `now`. `policy` is the one in force now, so a Locked
-    /// session that started during the wait makes it longer.
+    /// Checks that stopping is allowed at `now`. `policy` is the one in force now, so a session
+    /// that started during the wait restarts it (with a Locked session's longer wait).
     pub fn confirm(
         &self,
         now: Timestamp,
@@ -172,6 +182,28 @@ mod tests {
             switch.confirm(clock.now(), "the build is on fire", policy),
             Ok(())
         );
+    }
+
+    #[test]
+    fn a_request_from_before_a_session_doesnt_shorten_its_wait() {
+        let clock = FakeClock::default();
+        let mut switch = KillSwitch::default();
+        switch.request(clock.now(), StopPolicy::for_session(None));
+        clock.advance(Duration::from_secs(3600));
+        let locked = session(Strictness::Locked, clock.now());
+        let policy = StopPolicy::for_session(locked.running());
+        assert_eq!(
+            switch.allowed_at(policy),
+            Some(clock.now().saturating_add(StopPolicy::LOCKED_WAIT))
+        );
+        assert_eq!(
+            switch.confirm(clock.now(), "a reason", policy),
+            Err(StopError::StillWaiting {
+                remaining: StopPolicy::LOCKED_WAIT
+            })
+        );
+        clock.advance(StopPolicy::LOCKED_WAIT);
+        assert_eq!(switch.confirm(clock.now(), "a reason", policy), Ok(()));
     }
 
     #[test]

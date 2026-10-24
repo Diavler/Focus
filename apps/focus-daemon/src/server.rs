@@ -112,12 +112,19 @@ async fn handle(shared: &Shared, request: Request) -> (Response, bool) {
     let shutting_down = || Response::Error {
         error: DaemonError::ShuttingDown,
     };
-    tokio::task::spawn_blocking(move || match lock(&shared).as_mut() {
-        Some(service) => {
-            let response = service.handle(request);
-            (response, service.take_stop())
+    tokio::task::spawn_blocking(move || {
+        let mut held = lock(&shared);
+        let Some(service) = held.as_mut() else {
+            return (shutting_down(), false);
+        };
+        let response = service.handle(request);
+        let stopping = service.take_stop();
+        if stopping {
+            // Take the service out under the same lock, so no tick or sync can start a session
+            // or save state between the stop and `serve` shutting down.
+            held.take();
         }
-        None => (shutting_down(), false),
+        (response, stopping)
     })
     .await
     .unwrap_or_else(|error| {

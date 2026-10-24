@@ -2,7 +2,7 @@
 //! general settings with the kill switch. Edits are kept in a draft until Save sends them to the
 //! daemon, which writes `settings.toml`.
 
-use focus_core::EditableSettings;
+use focus_core::{AutoStartRule, EditableSettings};
 use iced::widget::{Column, button, column, row, space, text, text_input, toggler};
 use iced::{Alignment, Element, Length};
 use ipc_proto::StatusReport;
@@ -43,6 +43,8 @@ pub struct Draft {
     pub lists: configs::Editor,
     /// Why the last save failed, if it did.
     pub error: Option<String>,
+    /// What the save on its way sent, until the settings are read back.
+    pub sent: Option<EditableSettings>,
 }
 
 impl Draft {
@@ -60,7 +62,31 @@ impl Draft {
             configs: configs::Editor::default(),
             lists: configs::Editor::default(),
             error: None,
+            sent: None,
         }
+    }
+
+    /// Takes in `settings` just read from the daemon without losing edits. The editors keep their
+    /// place.
+    pub fn reload(&mut self, settings: EditableSettings) {
+        let saved_by_us = self
+            .sent
+            .take()
+            .is_some_and(|sent| same_content(&sent, &sent.auto_start, &settings));
+        if !self.dirty() || same_content(&self.edited, self.edited_rules(), &settings) {
+            // Nothing edited would be lost.
+            let configs = std::mem::take(&mut self.configs);
+            let lists = std::mem::take(&mut self.lists);
+            *self = Self::new(settings);
+            self.configs = configs;
+            self.lists = lists;
+        } else if saved_by_us {
+            // Our save landed and more was edited meanwhile: keep those edits on top of it.
+            self.edited.revision.clone_from(&settings.revision);
+            self.saved = settings;
+        }
+        // Otherwise the file was changed elsewhere: the edits stay, and saving them is refused
+        // with "Reload from file".
     }
 
     /// Throws the edits away, back to what was last read.
@@ -71,13 +97,17 @@ impl Draft {
     /// What Save sends.
     pub fn to_save(&self) -> EditableSettings {
         let mut settings = self.edited.clone();
-        settings.auto_start = self.rules.iter().map(|draft| draft.rule.clone()).collect();
+        settings.auto_start = self.edited_rules().cloned().collect();
         settings
     }
 
-    /// Whether anything was edited.
+    /// Whether anything was edited. Called on every redraw, so it compares in place.
     pub fn dirty(&self) -> bool {
-        self.to_save() != self.saved
+        !same_content(&self.edited, self.edited_rules(), &self.saved)
+    }
+
+    fn edited_rules(&self) -> impl Iterator<Item = &AutoStartRule> {
+        self.rules.iter().map(|draft| &draft.rule)
     }
 
     /// The configuration names as edited, for the rule editor.
@@ -88,6 +118,27 @@ impl Draft {
             .map(|config| config.name.clone())
             .collect()
     }
+}
+
+/// Whether `settings`, with `auto_start` as its automatic starts, says the same as `other`. The
+/// revision is left out: it only names the text the settings were read from.
+fn same_content<'a>(
+    settings: &EditableSettings,
+    auto_start: impl IntoIterator<Item = &'a AutoStartRule>,
+    other: &EditableSettings,
+) -> bool {
+    // Destructured so a new field can't be forgotten here.
+    let EditableSettings {
+        start_at_login,
+        lists,
+        configs,
+        auto_start: _,
+        revision: _,
+    } = settings;
+    *start_at_login == other.start_at_login
+        && *lists == other.lists
+        && *configs == other.configs
+        && auto_start.into_iter().eq(&other.auto_start)
 }
 
 /// One thing done on the Settings page.
@@ -149,7 +200,12 @@ impl App {
             ));
         }
         let Some(draft) = &self.settings else {
-            return page.push(caption("Loading the settings…")).into();
+            page = page.push(self.settings_unavailable());
+            // The kill switch doesn't need the settings, so it's there even if they can't be read.
+            if self.settings_tab == Tab::General {
+                page = page.push(self.kill_switch_card(status));
+            }
+            return page.into();
         };
         let body: Element<'a, Message> = match self.settings_tab {
             Tab::Rules => rules::view(&draft.rules, &self.rule_configs),
@@ -160,6 +216,28 @@ impl App {
             Tab::General => self.general_tab(draft, status),
         };
         page.push(body).push(self.save_bar(draft)).into()
+    }
+
+    /// Why there are no settings to edit: still loading, or the file can't be read.
+    fn settings_unavailable<'a>(&'a self) -> Element<'a, Message> {
+        let Some(problem) = &self.settings_problem else {
+            return caption("Loading the settings…").into();
+        };
+        card(
+            column![
+                toned(
+                    format!("Focus can't read settings.toml: {problem}"),
+                    Tone::Bad
+                )
+                .size(14),
+                caption("Fix the file by hand (Stop Focus under General still works), then:"),
+                button("Try again")
+                    .style(button::secondary)
+                    .on_press(Message::Settings(Msg::Reload)),
+            ]
+            .spacing(10),
+        )
+        .into()
     }
 
     /// Save, Discard and the result of the last save.
@@ -315,5 +393,103 @@ impl App {
             }
         };
         card(column![header, body].spacing(12).width(Length::Fill)).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use focus_core::Strictness;
+
+    use super::*;
+
+    fn settings(revision: &str) -> EditableSettings {
+        EditableSettings {
+            start_at_login: true,
+            lists: Vec::new(),
+            configs: Vec::new(),
+            auto_start: Vec::new(),
+            revision: revision.into(),
+        }
+    }
+
+    fn rule(config: &str) -> AutoStartRule {
+        AutoStartRule {
+            config: config.into(),
+            strictness: Strictness::Deep,
+            calendar_keywords: vec!["#deep".into()],
+            task_labels: Vec::new(),
+            task_duration: Duration::from_secs(3000),
+        }
+    }
+
+    #[test]
+    fn dirty_follows_edits_and_rules() {
+        let mut draft = Draft::new(settings("1"));
+        assert!(!draft.dirty());
+        draft.edited.start_at_login = false;
+        assert!(draft.dirty());
+        draft.discard();
+        draft.rules.push(rules::Draft::from_rule(rule("coding")));
+        assert!(draft.dirty());
+    }
+
+    #[test]
+    fn reopening_keeps_unsaved_edits() {
+        let mut draft = Draft::new(settings("1"));
+        draft.edited.start_at_login = false;
+        draft.reload(settings("1"));
+        assert!(!draft.edited.start_at_login, "the edit is still there");
+        assert!(draft.dirty());
+    }
+
+    #[test]
+    fn a_clean_draft_follows_the_file() {
+        let mut draft = Draft::new(settings("1"));
+        let mut changed = settings("2");
+        changed.start_at_login = false;
+        draft.reload(changed.clone());
+        assert_eq!(draft.to_save(), changed);
+        assert!(!draft.dirty());
+    }
+
+    #[test]
+    fn edits_made_while_saving_stay_on_top_of_the_save() {
+        let mut draft = Draft::new(settings("1"));
+        draft.edited.start_at_login = false;
+        draft.sent = Some(draft.to_save());
+        // Typed while the save was on its way.
+        draft.rules.push(rules::Draft::from_rule(rule("coding")));
+
+        let mut stored = settings("2");
+        stored.start_at_login = false;
+        draft.reload(stored);
+        let next = draft.to_save();
+        assert_eq!(
+            next.revision, "2",
+            "the next save won't be refused as stale"
+        );
+        assert!(!next.start_at_login);
+        assert_eq!(next.auto_start, [rule("coding")]);
+        assert!(draft.dirty(), "the rule is still unsaved");
+    }
+
+    #[test]
+    fn edits_survive_a_change_made_elsewhere() {
+        let mut draft = Draft::new(settings("1"));
+        draft.edited.start_at_login = false;
+        let mut elsewhere = settings("2");
+        elsewhere.lists.push(focus_core::ListEntry {
+            name: "social".into(),
+            patterns: focus_core::RulePatterns::default(),
+        });
+        draft.reload(elsewhere);
+        assert_eq!(
+            draft.to_save().revision,
+            "1",
+            "so saving is refused as stale"
+        );
+        assert!(!draft.edited.start_at_login);
     }
 }
