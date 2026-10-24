@@ -41,7 +41,9 @@ pub struct BrowserPolicy {
 impl Default for BrowserPolicy {
     fn default() -> Self {
         Self {
-            heartbeat_timeout: Duration::from_secs(15),
+            // Longer than the extension's 30 s wake-up alarm, its only heartbeat while the
+            // service worker is suspended.
+            heartbeat_timeout: Duration::from_secs(45),
             grace: Duration::from_secs(20),
         }
     }
@@ -113,7 +115,20 @@ pub fn same_app(a: &str, b: &str) -> bool {
     app_key(a) == app_key(b)
 }
 
-fn app_key(name: &str) -> String {
+/// The names in `requested` for which `is_present` holds, each app once, in the order given.
+/// Shared by every `ProcessList` and `Enforcer` so they agree on matching.
+pub fn select_apps(requested: &[String], is_present: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut selected: Vec<String> = Vec::new();
+    for app in requested {
+        if is_present(app) && !selected.iter().any(|seen| same_app(seen, app)) {
+            selected.push(app.clone());
+        }
+    }
+    selected
+}
+
+/// The normalised form of an app name: trimmed, lower-cased, without `.exe`.
+pub fn app_key(name: &str) -> String {
     let lower = name.trim().to_lowercase();
     lower.strip_suffix(".exe").unwrap_or(&lower).to_owned()
 }
@@ -223,5 +238,17 @@ mod tests {
         );
         assert!(same_app("CHROME.EXE", "chrome"));
         assert!(!same_app("chrome", "chromium"));
+        assert_eq!(app_key(" Discord.EXE "), "discord");
+        let present = ["discord", "steam"];
+        let requested = [
+            "Discord.exe".to_owned(),
+            "DISCORD".to_owned(),
+            "slack".to_owned(),
+            "steam".to_owned(),
+        ];
+        assert_eq!(
+            select_apps(&requested, |app| present.iter().any(|p| same_app(p, app))),
+            ["Discord.exe", "steam"]
+        );
     }
 }

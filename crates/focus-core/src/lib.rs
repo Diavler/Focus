@@ -18,7 +18,8 @@ pub mod testing;
 pub use config::{BlockConfig, Mode, SharedList};
 pub use cooling::{ConfigState, PendingChange, SyncReport};
 pub use enforcement::{
-    BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, apps_to_close, same_app,
+    BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, app_key, apps_to_close, same_app,
+    select_apps,
 };
 pub use matcher::evaluate;
 pub use pattern::{PatternError, UrlPattern};

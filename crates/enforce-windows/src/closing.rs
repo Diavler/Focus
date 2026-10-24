@@ -1,5 +1,6 @@
 //! Closing a process: politely through its windows, or by terminating it.
 
+use std::collections::HashMap;
 use std::io;
 
 use win_user::OwnedHandle;
@@ -11,11 +12,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::BOOL;
 
-/// The process's visible top-level windows, the ones a user would close.
-pub(crate) fn top_level_windows(pid: u32) -> Vec<HWND> {
+/// Every visible top-level window (the ones a user would close), grouped by owning process.
+/// One walk over all windows, however many processes are being closed.
+pub(crate) fn windows_by_process() -> HashMap<u32, Vec<HWND>> {
     struct Search {
-        pid: u32,
-        found: Vec<HWND>,
+        found: HashMap<u32, Vec<HWND>>,
     }
 
     unsafe extern "system" fn visit(window: HWND, state: LPARAM) -> BOOL {
@@ -27,15 +28,14 @@ pub(crate) fn top_level_windows(pid: u32) -> Vec<HWND> {
         // SAFETY: plain queries on a window handle EnumWindows just gave us.
         let user_window =
             unsafe { IsWindowVisible(window) != 0 && GetWindow(window, GW_OWNER).is_null() };
-        if owner_pid == search.pid && user_window {
-            search.found.push(window);
+        if owner_pid != 0 && user_window {
+            search.found.entry(owner_pid).or_default().push(window);
         }
         1
     }
 
     let mut search = Search {
-        pid,
-        found: Vec::new(),
+        found: HashMap::new(),
     };
     // SAFETY: `visit` matches WNDENUMPROC and only uses `search` during this call.
     unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };

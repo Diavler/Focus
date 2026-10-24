@@ -265,14 +265,6 @@ impl Service {
         };
         let blocked = running.spec().config.apps.clone();
         let browser_apps: Vec<String> = self.ports.browsers.iter().map(|b| b.app.clone()).collect();
-        let running_browsers = self
-            .ports
-            .processes
-            .running_apps(&browser_apps)
-            .unwrap_or_else(|error| {
-                tracing::warn!("couldn't list browsers: {error}");
-                Vec::new()
-            });
         let heartbeats: Vec<Heartbeat> = self
             .browsers
             .values()
@@ -282,13 +274,21 @@ impl Service {
                 incognito_allowed: status.incognito_allowed,
             })
             .collect();
-        let browsers = self.watch.browsers_to_close(
-            &running_browsers,
-            &self.ports.browsers,
-            &heartbeats,
-            now,
-            self.browser_policy,
-        );
+        // If listing fails, skip browsers this time rather than treating them all as closed,
+        // which would reset their grace periods.
+        let browsers = match self.ports.processes.running_apps(&browser_apps) {
+            Ok(running_browsers) => self.watch.browsers_to_close(
+                &running_browsers,
+                &self.ports.browsers,
+                &heartbeats,
+                now,
+                self.browser_policy,
+            ),
+            Err(error) => {
+                tracing::warn!("couldn't list browsers: {error}");
+                Vec::new()
+            }
+        };
         let close = apps_to_close(&blocked, browsers);
         if close.is_empty() {
             return;
@@ -880,6 +880,43 @@ mod tests {
         assert!(
             !harness.apps.running().iter().any(|app| app == "chrome"),
             "went quiet"
+        );
+    }
+
+    /// A process list that always fails. It injects a failure on purpose, so it's exempt from the
+    /// contract suite (see CLAUDE.md).
+    struct BrokenProcessList;
+
+    impl ProcessList for BrokenProcessList {
+        fn running_apps(
+            &self,
+            _apps: &[String],
+        ) -> Result<Vec<String>, focus_core::ports::EnforceError> {
+            Err(focus_core::ports::EnforceError::Failed {
+                reason: "snapshot failed".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_failed_listing_skips_browsers_but_still_closes_blocked_apps() {
+        let harness = Harness::new();
+        let ports = Ports {
+            processes: Arc::new(BrokenProcessList),
+            ..harness.ports()
+        };
+        let mut service = Service::open(ports, Duration::from_secs(60)).unwrap();
+        start(&mut service, "coding", Strictness::Light);
+        harness.clock.advance(Duration::from_secs(120));
+        service.enforce();
+        let running = harness.apps.running();
+        assert!(
+            running.iter().any(|app| app == "chrome"),
+            "browsers skipped"
+        );
+        assert!(
+            !running.iter().any(|app| app == "Discord.exe"),
+            "blocked apps still closed"
         );
     }
 

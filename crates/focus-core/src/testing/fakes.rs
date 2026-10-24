@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::config::BlockConfig;
-use crate::enforcement::same_app;
+use crate::enforcement::{same_app, select_apps};
 use crate::ports::{
     Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer, ForegroundApp, History,
     HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState, ProcessList, StateStore,
@@ -142,14 +142,9 @@ impl Enforcer for FakeEnforcer {
 impl ProcessList for FakeEnforcer {
     fn running_apps(&self, apps: &[String]) -> Result<Vec<String>, EnforceError> {
         let running = lock(&self.running);
-        let mut found: Vec<String> = Vec::new();
-        for app in apps {
-            let is_running = running.iter().any(|name| same_app(name, app));
-            if is_running && !found.iter().any(|name| same_app(name, app)) {
-                found.push(app.clone());
-            }
-        }
-        Ok(found)
+        Ok(select_apps(apps, |app| {
+            running.iter().any(|name| same_app(name, app))
+        }))
     }
 }
 

@@ -85,8 +85,10 @@ pub(crate) fn app_name(executable: &str) -> String {
         || executable.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
-    match file.len().checked_sub(4) {
-        Some(stem) if file[stem..].eq_ignore_ascii_case(".exe") => file[..stem].to_owned(),
+    // `get` returns None instead of panicking when the cut would split a multi-byte character.
+    let stem = file.len().saturating_sub(4);
+    match (file.get(..stem), file.get(stem..)) {
+        (Some(name), Some(extension)) if extension.eq_ignore_ascii_case(".exe") => name.to_owned(),
         _ => file,
     }
 }
@@ -106,6 +108,10 @@ mod tests {
         assert_eq!(app_name(r"C:\Program Files\Google\Chrome.EXE"), "Chrome");
         assert_eq!(app_name("discord.exe"), "discord");
         assert_eq!(app_name("noext"), "noext");
+        assert_eq!(app_name("日本語"), "日本語", "no panic on multi-byte names");
+        assert_eq!(app_name("日本語.EXE"), "日本語");
+        assert_eq!(app_name("éé"), "éé");
+        assert_eq!(app_name(""), "");
     }
 
     #[test]

@@ -5,10 +5,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use focus_core::ports::{EnforceError, Enforcer, ProcessList};
-use focus_core::same_app;
+use focus_core::{app_key, same_app, select_apps};
+use windows_sys::Win32::Foundation::HWND;
 
 use crate::Mode;
-use crate::closing::{ask_to_close, terminate, top_level_windows};
+use crate::browsers::known_browsers;
+use crate::closing::{ask_to_close, terminate, windows_by_process};
 use crate::processes::{Process, own_matching};
 
 /// How long an app gets to close its windows before it's terminated.
@@ -16,14 +18,26 @@ const CLOSE_GRACE: Duration = Duration::from_secs(4);
 
 /// Closes the current user's blocked apps.
 ///
-/// The first call for an app posts `WM_CLOSE` to its windows, so it can save state (browsers
-/// restore tabs). A later call, once [`CLOSE_GRACE`] has passed, terminates whatever is left.
-/// An app with no windows at all is terminated straight away.
+/// An ordinary app is first asked to close (`WM_CLOSE` to its windows, as clicking ✕ would), so it
+/// can save or ask about unsaved work; a later call, once [`CLOSE_GRACE`] has passed, terminates
+/// whatever is left. An app with no windows is terminated straight away.
+///
+/// Browsers are terminated straight away too: closing their windows one by one makes them forget
+/// all but the last window, while after termination they offer to restore every window.
 #[derive(Debug)]
 pub struct WindowsEnforcer {
     mode: Mode,
-    /// When each app (by lower-cased name) was first asked to close.
+    /// When each app (by [`app_key`]) was first asked to close. Tracked in dry runs too, so the
+    /// log shows the same steps a live run would take.
     asked: Mutex<HashMap<String, Instant>>,
+}
+
+/// What to do with one app this time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    AskToClose,
+    Wait,
+    Terminate,
 }
 
 impl WindowsEnforcer {
@@ -39,34 +53,61 @@ impl WindowsEnforcer {
         self.asked.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Closes one app's processes, politely first.
-    fn close_app(&self, app: &str, processes: &[&Process]) {
-        let key = app.to_lowercase();
-        let asked_at = self.asked().get(&key).copied();
-        let windows: Vec<_> = processes
+    /// The next step for `app`, given its windows, and records a polite request.
+    fn next_step(&self, app: &str, has_windows: bool) -> Step {
+        let key = app_key(app);
+        let is_browser = known_browsers()
             .iter()
-            .flat_map(|process| top_level_windows(process.pid))
+            .any(|browser| same_app(&browser.app, app));
+        let mut asked = self.asked();
+        let step = match asked.get(&key) {
+            _ if is_browser || !has_windows => Step::Terminate,
+            Some(at) if at.elapsed() >= CLOSE_GRACE => Step::Terminate,
+            Some(_) => Step::Wait,
+            None => Step::AskToClose,
+        };
+        match step {
+            Step::AskToClose => {
+                asked.insert(key, Instant::now());
+            }
+            Step::Terminate => {
+                asked.remove(&key);
+            }
+            Step::Wait => {}
+        }
+        step
+    }
+
+    /// Closes one app's processes, politely first unless it's a browser.
+    fn close_app(&self, app: &str, processes: &[&Process], windows: &HashMap<u32, Vec<HWND>>) {
+        let own_windows: Vec<HWND> = processes
+            .iter()
+            .filter_map(|process| windows.get(&process.pid))
+            .flatten()
+            .copied()
             .collect();
-        let overdue = asked_at.is_some_and(|at| at.elapsed() >= CLOSE_GRACE);
+        let step = self.next_step(app, !own_windows.is_empty());
         if self.mode == Mode::DryRun {
-            let how = if windows.is_empty() || overdue {
-                "terminate"
-            } else {
-                "ask to close"
-            };
-            tracing::info!("dry run: would {how} {app} ({} processes)", processes.len());
+            if step != Step::Wait {
+                let how = if step == Step::Terminate {
+                    "terminate"
+                } else {
+                    "ask to close"
+                };
+                tracing::info!("dry run: would {how} {app} ({} processes)", processes.len());
+            }
             return;
         }
-        if windows.is_empty() || overdue {
-            for process in processes {
-                if let Err(error) = terminate(process.pid) {
-                    tracing::warn!("couldn't end {app} ({}): {error}", process.pid);
+        match step {
+            Step::AskToClose => ask_to_close(&own_windows),
+            Step::Wait => {}
+            Step::Terminate => {
+                for process in processes {
+                    if let Err(error) = terminate(process.pid) {
+                        tracing::warn!("couldn't end {app} ({}): {error}", process.pid);
+                    }
                 }
             }
-            self.asked().remove(&key);
-        } else if asked_at.is_none() {
-            ask_to_close(&windows);
-            self.asked().insert(key, Instant::now());
         }
     }
 }
@@ -77,22 +118,23 @@ impl Enforcer for WindowsEnforcer {
             return Ok(Vec::new());
         }
         let processes = own_matching(apps).map_err(failed)?;
-        let mut closed: Vec<String> = Vec::new();
-        for app in apps {
-            let mine: Vec<&Process> = processes
-                .iter()
-                .filter(|process| same_app(app, &process.app))
-                .collect();
-            if mine.is_empty() || closed.iter().any(|done| same_app(done, app)) {
-                continue;
+        let closing = select_apps(apps, |app| {
+            processes.iter().any(|process| same_app(app, &process.app))
+        });
+        if !closing.is_empty() {
+            let windows = windows_by_process();
+            for app in &closing {
+                let mine: Vec<&Process> = processes
+                    .iter()
+                    .filter(|process| same_app(app, &process.app))
+                    .collect();
+                self.close_app(app, &mine, &windows);
             }
-            self.close_app(app, &mine);
-            closed.push(app.clone());
         }
         // Forget apps that are gone, so a relaunch is asked politely again.
         self.asked()
             .retain(|key, _| processes.iter().any(|process| same_app(key, &process.app)));
-        Ok(closed)
+        Ok(closing)
     }
 }
 
@@ -102,14 +144,9 @@ impl ProcessList for WindowsEnforcer {
             return Ok(Vec::new());
         }
         let processes = own_matching(apps).map_err(failed)?;
-        let mut running: Vec<String> = Vec::new();
-        for app in apps {
-            let found = processes.iter().any(|process| same_app(app, &process.app));
-            if found && !running.iter().any(|seen| same_app(seen, app)) {
-                running.push(app.clone());
-            }
-        }
-        Ok(running)
+        Ok(select_apps(apps, |app| {
+            processes.iter().any(|process| same_app(app, &process.app))
+        }))
     }
 }
 
@@ -205,6 +242,34 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn escalates_from_asking_to_terminating() {
+        let enforcer = WindowsEnforcer::new(Mode::DryRun);
+        assert_eq!(enforcer.next_step("notepad", true), Step::AskToClose);
+        assert_eq!(
+            enforcer.next_step("Notepad.exe", true),
+            Step::Wait,
+            "same app, any spelling"
+        );
+        enforcer
+            .asked()
+            .insert(app_key("notepad"), Instant::now() - CLOSE_GRACE);
+        assert_eq!(enforcer.next_step("notepad", true), Step::Terminate);
+        assert_eq!(
+            enforcer.next_step("notepad", true),
+            Step::AskToClose,
+            "starts over"
+        );
+    }
+
+    #[test]
+    fn browsers_and_windowless_apps_are_ended_at_once() {
+        let enforcer = WindowsEnforcer::new(Mode::DryRun);
+        assert_eq!(enforcer.next_step("chrome", true), Step::Terminate);
+        assert_eq!(enforcer.next_step("MSEDGE.exe", true), Step::Terminate);
+        assert_eq!(enforcer.next_step("some-tool", false), Step::Terminate);
     }
 
     #[test]

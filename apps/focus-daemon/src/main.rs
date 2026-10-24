@@ -113,10 +113,15 @@ mod platform {
 
     /// One adapter per enforcement port, plus the browsers to watch.
     pub struct Enforcement {
+        /// Closes blocked apps.
         pub enforcer: Arc<dyn Enforcer>,
+        /// Tells which apps are running.
         pub processes: Arc<dyn ProcessList>,
+        /// Tells which app is in front.
         pub foreground: Arc<dyn ForegroundApp>,
+        /// Silences notifications during sessions.
         pub notifier: Arc<dyn Notifier>,
+        /// The browsers to watch.
         pub browsers: Vec<KnownBrowser>,
     }
 
