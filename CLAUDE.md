@@ -30,7 +30,7 @@ Offline-first focus app (Rust, Iced) for Windows and KDE Plasma on Wayland. It b
 - Time comes from the `Clock` port, never `SystemTime::now()` in the core, so session logic is testable.
 - Persisted files (state JSON) are written atomically: temp file, then rename.
 - Public items get a one-line doc comment. Keep functions small; prefer pure functions in the core.
-- Platform code uses `#[cfg(windows)]` / `#[cfg(target_os = "linux")]` only inside the `enforce-*` crates, `win-user` (Windows user/SID helpers), the daemon's wiring and `ipc-transport`'s endpoint security (`windows_security.rs` and the endpoint code that calls it).
+- Platform code uses `#[cfg(windows)]` / `#[cfg(target_os = "linux")]` only inside the `enforce-*` crates, `win-user` (Windows user/SID helpers), `focus-install` (starting sibling processes without a console window), the daemon's wiring and `ipc-transport`'s endpoint security (`windows_security.rs` and the endpoint code that calls it).
 - Don't add a dependency without saying why in your summary; prefer well-maintained crates already in `docs/DESIGN.md`.
 
 ## Testing

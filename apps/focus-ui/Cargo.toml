@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 focus-core.workspace = true
+focus-install.workspace = true
 ipc-proto.workspace = true
 ipc-transport.workspace = true
 # `tokio` runs the async IPC calls and provides `iced::time::every` for polling.

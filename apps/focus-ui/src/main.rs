@@ -2,12 +2,13 @@
 
 mod daemon;
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use focus_core::{
     BlockConfig, EndEarlyPolicy, EndReason, EndedSession, RunningSession, Strictness,
 };
+use focus_install::{InstanceLock, Paths};
 use iced::widget::{
     Column, button, column, container, pick_list, radio, row, slider, text, text_input,
 };
@@ -16,12 +17,36 @@ use ipc_proto::{Request, StatusReport};
 use ipc_transport::Endpoint;
 
 fn main() -> iced::Result {
-    iced::application(App::new, App::update, App::view)
-        .title("Focus")
-        .subscription(App::subscription)
-        .window_size((520.0, 720.0))
-        .centered()
-        .run()
+    let install = focus_install::install_folder().unwrap_or_default();
+    let paths = Paths::portable(&install);
+    // One UI per install. The daemon checks this lock to see whether a UI is up, and starts one
+    // during a session if not (ADR 0008).
+    let _ = std::fs::create_dir_all(&paths.data);
+    let _ui_lock = match InstanceLock::acquire(&paths.ui_lock) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => {
+            eprintln!("Focus is already open.");
+            return Ok(());
+        }
+        Err(error) => {
+            eprintln!("couldn't take {}: {error}", paths.ui_lock.display());
+            None
+        }
+    };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let minimized = args.iter().any(|arg| arg == "--minimized");
+    // Started by a dry-run daemon: restart it as a dry run too.
+    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    iced::application(
+        move || App::new(install.clone(), minimized, dry_run),
+        App::update,
+        App::view,
+    )
+    .title("Focus")
+    .subscription(App::subscription)
+    .window_size((520.0, 720.0))
+    .centered()
+    .run()
 }
 
 /// Shortest and longest session the duration slider offers, in minutes.
@@ -33,9 +58,22 @@ const POLL: Duration = Duration::from_secs(1);
 /// Configurations are re-fetched every this many polls, to pick up settings edits.
 const CONFIGS_EVERY_POLLS: u32 = 10;
 
+/// After this many failed status polls in a row, the UI starts the daemon (ADR 0008).
+const RESTART_DAEMON_AFTER: u32 = 3;
+
+/// A heartbeat older than this means the browser's extension isn't checking in. Matches the
+/// daemon's policy (`BrowserPolicy::default`).
+const HEARTBEAT_STALE: Duration = Duration::from_secs(45);
+
 /// Everything the window shows.
 struct App {
+    /// The folder holding the executables, for starting the daemon.
+    install: PathBuf,
     endpoint: Endpoint,
+    /// Failed status polls in a row.
+    failed_polls: u32,
+    /// Restart the daemon with `--dry-run`.
+    dry_run: bool,
     /// The last status the daemon sent; `None` until it first answers.
     status: Option<StatusReport>,
     /// Why the daemon can't be reached, if it can't.
@@ -93,14 +131,12 @@ enum Message {
 }
 
 impl App {
-    fn new() -> (Self, Task<Message>) {
-        // The daemon's endpoint depends on the install folder, which holds both executables.
-        let install = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .unwrap_or_default();
+    fn new(install: PathBuf, minimized: bool, dry_run: bool) -> (Self, Task<Message>) {
         let mut app = Self {
             endpoint: Endpoint::for_install(&install),
+            install,
+            failed_polls: 0,
+            dry_run,
             status: None,
             unreachable: None,
             configs: Vec::new(),
@@ -118,8 +154,11 @@ impl App {
             configs_pending: false,
             action_pending: false,
         };
-        let boot = Task::batch([app.fetch_status(), app.fetch_configs()]);
-        (app, boot)
+        let mut boot = vec![app.fetch_status(), app.fetch_configs()];
+        if minimized {
+            boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
+        }
+        (app, Task::batch(boot))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -143,8 +182,12 @@ impl App {
                     Ok(status) => {
                         self.status = Some(status);
                         self.unreachable = None;
+                        self.failed_polls = 0;
                     }
-                    Err(problem) => self.unreachable = Some(problem),
+                    Err(problem) => {
+                        self.unreachable = Some(problem);
+                        self.restart_daemon_if_gone();
+                    }
                 }
                 return self.check_probe();
             }
@@ -206,6 +249,20 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    /// Starts the daemon after [`RESTART_DAEMON_AFTER`] failed polls in a row. A daemon that's
+    /// already running (just slow) exits by itself, so this is always safe.
+    fn restart_daemon_if_gone(&mut self) {
+        self.failed_polls += 1;
+        if self.failed_polls < RESTART_DAEMON_AFTER {
+            return;
+        }
+        self.failed_polls = 0;
+        let args: &[&str] = if self.dry_run { &["--dry-run"] } else { &[] };
+        if let Err(error) = focus_install::spawn_sibling(&self.install, "focus-daemon", args) {
+            self.error = Some(format!("couldn't start the Focus daemon: {error}"));
+        }
     }
 
     fn set_configs(&mut self, configs: Vec<BlockConfig>) {
@@ -292,7 +349,7 @@ impl App {
                 page = page.push(
                     column![
                         text("Can't reach the Focus daemon.").size(20),
-                        text("Start focus-daemon from this folder (`cargo run -p focus-daemon` in development); this window reconnects by itself."),
+                        text("Starting it again; this window reconnects by itself."),
                         text(problem).size(13).style(text::secondary),
                     ]
                     .spacing(8),
@@ -317,6 +374,7 @@ impl App {
                     page = page.push(text(pending).size(13).style(text::secondary));
                 }
                 page = page.push(self.probe_view());
+                page = page.push(system_view(status));
             }
         }
         if let Some(error) = &self.error {
@@ -481,6 +539,84 @@ impl App {
     }
 }
 
+/// Browser protection and start-at-login, with warnings in red.
+fn system_view(status: &StatusReport) -> Column<'_, Message> {
+    let mut lines = column![].spacing(4);
+    for line in browser_lines(status) {
+        let label = text(line.text).size(13);
+        lines = lines.push(if line.warning {
+            label.style(text::danger)
+        } else {
+            label.style(text::secondary)
+        });
+    }
+    lines.push(text(login_line(status)).size(13).style(text::secondary))
+}
+
+/// One line of the system section.
+#[derive(Debug, PartialEq, Eq)]
+struct Line {
+    text: String,
+    warning: bool,
+}
+
+/// Which browsers are protected, and what to fix for the others.
+fn browser_lines(status: &StatusReport) -> Vec<Line> {
+    if status.browsers.is_empty() {
+        return vec![Line {
+            text: "No browser extension is connected, so browsers are closed during sessions."
+                .to_owned(),
+            warning: true,
+        }];
+    }
+    status
+        .browsers
+        .iter()
+        .map(|browser| {
+            let name = browser_name(&browser.browser);
+            let stale = status.now.saturating_duration_since(browser.last_seen) > HEARTBEAT_STALE;
+            let (text, warning) = if stale {
+                (format!("{name}: the extension stopped checking in."), true)
+            } else if !browser.incognito_allowed {
+                (
+                    format!(
+                        "{name}: turn on \"Allow in Incognito\" for Focus (Extensions → Focus → \
+                         Details), or {name} is closed during sessions."
+                    ),
+                    true,
+                )
+            } else {
+                (format!("{name}: protected."), false)
+            };
+            Line { text, warning }
+        })
+        .collect()
+}
+
+/// A browser's heartbeat name as people write it.
+fn browser_name(heartbeat: &str) -> String {
+    match heartbeat {
+        "chrome" => "Chrome".to_owned(),
+        "edge" => "Edge".to_owned(),
+        "brave" => "Brave".to_owned(),
+        "opera" => "Opera".to_owned(),
+        "chromium" => "Chromium".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// Whether Focus starts at login, and when a requested switch-off takes effect.
+fn login_line(status: &StatusReport) -> String {
+    match (status.start_at_login, status.start_at_login_off_after) {
+        (true, Some(off_after)) => format!(
+            "Starts at login; turning that off takes effect in {} (cooling off).",
+            format_duration(off_after.saturating_duration_since(status.now))
+        ),
+        (true, None) => "Starts at login.".to_owned(),
+        (false, _) => "Doesn't start at login (start_at_login in settings.toml).".to_owned(),
+    }
+}
+
 /// One line on what a strictness level allows, derived from its policy.
 fn describe(strictness: Strictness) -> String {
     match strictness.end_early_policy() {
@@ -570,6 +706,59 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(1)), "0:01");
         assert_eq!(format_duration(Duration::from_secs(25 * 60)), "25:00");
         assert_eq!(format_duration(Duration::from_secs(3600 + 62)), "1:01:02");
+    }
+
+    fn status_at(now: u64) -> StatusReport {
+        StatusReport {
+            now: Timestamp::from_millis(now),
+            session: SessionState::Idle,
+            pending_changes: Vec::new(),
+            settings_problem: None,
+            browsers: Vec::new(),
+            foreground_app: None,
+            start_at_login: true,
+            start_at_login_off_after: None,
+        }
+    }
+
+    fn beat(browser: &str, at: u64, incognito_allowed: bool) -> ipc_proto::BrowserStatus {
+        ipc_proto::BrowserStatus {
+            browser: browser.into(),
+            last_seen: Timestamp::from_millis(at),
+            incognito_allowed,
+        }
+    }
+
+    #[test]
+    fn warns_about_unprotected_browsers() {
+        let mut status = status_at(100_000);
+        assert!(browser_lines(&status)[0].warning, "no extension at all");
+
+        status.browsers = vec![
+            beat("chrome", 99_000, true),
+            beat("edge", 99_000, false),
+            beat("brave", 1_000, true),
+        ];
+        let lines = browser_lines(&status);
+        assert_eq!(
+            lines[0],
+            Line {
+                text: "Chrome: protected.".into(),
+                warning: false
+            }
+        );
+        assert!(lines[1].warning && lines[1].text.contains("Allow in Incognito"));
+        assert!(lines[2].warning && lines[2].text.contains("stopped checking in"));
+    }
+
+    #[test]
+    fn describes_start_at_login() {
+        let mut status = status_at(0);
+        assert_eq!(login_line(&status), "Starts at login.");
+        status.start_at_login_off_after = Some(Timestamp::from_millis(90_000));
+        assert!(login_line(&status).contains("in 1:30"));
+        status.start_at_login = false;
+        assert!(login_line(&status).starts_with("Doesn't start at login"));
     }
 
     #[test]

@@ -688,6 +688,7 @@ name = "focus-ui"
 version = "0.1.0"
 dependencies = [
  "focus-core",
+ "focus-install",
  "iced",
  "ipc-proto",
  "ipc-transport",

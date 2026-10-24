@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         ui: Arc::new(InstalledUi {
             install: install.to_path_buf(),
             lock: paths.ui_lock.clone(),
+            dry_run,
         }),
     };
     let mut service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
@@ -119,6 +120,8 @@ fn write_starter_settings(path: &Path) -> anyhow::Result<()> {
 struct InstalledUi {
     install: PathBuf,
     lock: PathBuf,
+    /// Passed on, so a daemon the UI restarts is a dry run too.
+    dry_run: bool,
 }
 
 impl UiWatch for InstalledUi {
@@ -128,7 +131,12 @@ impl UiWatch for InstalledUi {
     }
 
     fn launch(&self) -> std::io::Result<()> {
-        focus_install::spawn_sibling(&self.install, "focus-ui", &["--minimized"])
+        let args: &[&str] = if self.dry_run {
+            &["--minimized", "--dry-run"]
+        } else {
+            &["--minimized"]
+        };
+        focus_install::spawn_sibling(&self.install, "focus-ui", args)
     }
 }
 
