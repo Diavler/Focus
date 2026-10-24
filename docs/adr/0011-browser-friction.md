@@ -33,10 +33,13 @@ Step 8 was split in two (build plan): this ADR covers 8a. The Later button, park
 - The extension then adds a tab-scoped DNR allow until `until`. It covers the blocked page's *site* (host and subdomains, without `www.`), at the deciding rule's priority:
   - an allowlist's catch-all has no narrower rule to scope to, and scoping to it would open every site in the tab;
   - stricter, more specific rules on the same site still block.
+- The extension checks it can make the grant *before* asking, so a Deep unlock is never spent on a page it can't open.
+- Every grant (unlocks and Continue) records the session it was made in. Grants from another session are removed on the next refresh and never count, so an unlock can't carry over into a later (even Locked) session.
+- Grant ids are allocated, and the stored grant list changed, through one queue, so simultaneous grants can't collide.
 - In-page (SPA) navigations now honour grants for Block too.
 
 **Growing Delay.**
-- The daemon counts visits per site per session (`DelayLadder`, persisted): 10 s, +10 s per visit, at most 120 s. A new session starts again.
+- The daemon counts visits per site per session (`DelayLadder`, persisted): 10 s, +10 s per visit, at most 120 s. A new session starts again. Only pages behind a Delay rule are counted (and saved); anything else waits 0.
 - The extension asks with `DelayVisit { url }` and uses the longer of the daemon's wait and its own local count, which stays as the fallback when the daemon can't be asked (keep the constants in sync, as with the matcher in ADR 0006).
 
 **Drift prompt and tab cap stay in the extension.**
@@ -45,10 +48,10 @@ Step 8 was split in two (build plan): this ADR covers 8a. The Later button, park
 - They're pure TypeScript modules (`drift.ts`, `tabcap.ts`) with unit tests. The limits come from the daemon in `Status` (`friction`, `unlocks_left`, `friction_loosen_after`), and the last values seen are kept in `storage.local`.
 - How drift works:
   - Home sites are those visited in the first 5 minutes of the session, plus hosts the configuration allows.
-  - A hop is a top-level page load in a tab on a new site outside home. Coming home clears the tab's trail, and tabs opened from a tab inherit its trail.
+  - A hop is a top-level page load in a tab on a site outside home that isn't on the tab's trail yet, so bouncing between two sites isn't drift. Coming home clears the tab's trail, and tabs opened from a tab inherit its trail.
   - At `drift_hops`, the tab goes to the interstitial with the trail, "Back to <last home site>" and "Keep going". Keep going clears the trail, so the prompt comes back only after another full set of hops.
 - How the tab cap works:
-  - A tab opened during a session that makes more tabs than `tab_cap` goes to the interstitial. It lists the other tabs with Close buttons and opens the intended page once you're at the cap.
+  - A tab opened during a session that makes more tabs than `tab_cap` goes to the interstitial. It lists the other tabs with Close buttons and opens the intended page once you're at the cap (or the browser's new tab page, which comes from `platform/`).
   - Tabs created in the first 15 s after the browser starts are taken as restored, not opened.
 
 **Protocol.** `focus-nmh` now also relays `Unlock` and `DelayVisit` from the browser (ADR 0005). Both only work within the running session's limits. The UI shows the unlocks left in the session card, and a pending loosening under "Cooling off".

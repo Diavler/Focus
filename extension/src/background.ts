@@ -20,7 +20,16 @@ import {
 } from "./drift";
 import { FEED_MATCHES } from "./feeds";
 import { delaySeconds } from "./friction";
-import { type Grant, delayKey, delayOver, grantRule, isGranted, makeGrant, makeUnlockGrant } from "./grants";
+import {
+  type Grant,
+  delayKey,
+  delayOver,
+  grantRule,
+  isGranted,
+  makeGrant,
+  makeUnlockGrant,
+  staleGrants,
+} from "./grants";
 import { NativeClient, type PortLike } from "./native";
 import {
   DEFAULT_FRICTION,
@@ -34,7 +43,7 @@ import {
   type RunningSession,
   type Verdict,
 } from "./protocol";
-import { browserName } from "./platform/chromium";
+import { NEW_TAB_URL, browserName } from "./platform/chromium";
 import { siteOf } from "./sites";
 import { continueTarget, overCap } from "./tabcap";
 
@@ -94,7 +103,18 @@ async function refresh(): Promise<void> {
   } catch {
     session = await knownSession();
   }
+  await serially(() => dropStaleGrants(session));
   if (await syncRules(session)) await pushFeedVerdicts(session);
+}
+
+/** Ends grants from an earlier session, so an unlock or Continue never carries over. */
+async function dropStaleGrants(session: RunningSession | null): Promise<void> {
+  const { grants: stored } = (await browser.storage.session.get("grants")) as { grants?: Grant[] };
+  const stale = staleGrants(stored ?? [], session?.started_at ?? null);
+  if (stale.length === 0) return;
+  const ids = stale.map((grant) => grant.id);
+  await browser.declarativeNetRequest.updateSessionRules({ removeRuleIds: ids });
+  await browser.storage.session.set({ grants: (stored ?? []).filter((grant) => !ids.includes(grant.id)) });
 }
 
 /** Replaces the dynamic rules with the session's if they changed; true if they did. */
@@ -158,7 +178,9 @@ async function grants(): Promise<Grant[]> {
 
 async function isGrantedFor(tabId: number, url: string): Promise<boolean> {
   const session = await knownSession();
-  return session !== null && isGranted(await grants(), tabId, url, decide(session.spec.config, url), Date.now());
+  if (session === null) return false;
+  const decision = decide(session.spec.config, url);
+  return isGranted(await grants(), tabId, url, decision, Date.now(), session.started_at);
 }
 
 /**
@@ -202,6 +224,11 @@ async function unlockInfo(): Promise<{ strictness: string; unlocksLeft: number; 
 async function unlock(tabId: number, url: string, reason: string): Promise<string | null> {
   const session = await knownSession();
   if (!session) return "No session is running.";
+  const decision = decide(session.spec.config, url);
+  const grantUntil = (id: number, until: number) =>
+    makeUnlockGrant(id, tabId, session.started_at, decision, url, until);
+  // Checked before asking, so a Deep unlock is never spent on a page that can't be opened.
+  if (!grantUntil(0, 0)) return "This page can't be unlocked here; try reloading it.";
   let response;
   try {
     response = await client.request({ type: "unlock", url, reason });
@@ -209,20 +236,27 @@ async function unlock(tabId: number, url: string, reason: string): Promise<strin
     return "Unlocking needs the Focus app running.";
   }
   if (response.type !== "unlocked") return unlockRefusal(response);
-  const existing = await browser.declarativeNetRequest.getSessionRules();
-  const id = Math.max(0, ...existing.map((rule) => rule.id)) + 1;
-  const grant = makeUnlockGrant(id, tabId, decide(session.spec.config, url), url, response.until);
-  if (!grant) return "This page isn't blocked any more; try reloading.";
-  await addGrant(grant);
+  const until = response.until;
+  if (!(await addGrant((id) => grantUntil(id, until)))) return "Focus couldn't open this page.";
   await browser.tabs.update(tabId, { url });
   void tick();
   return null;
 }
 
-async function addGrant(grant: Grant): Promise<void> {
-  await browser.declarativeNetRequest.updateSessionRules({ addRules: [grantRule(grant)] as never });
-  await browser.storage.session.set({ grants: [...(await grants()), grant] });
-  browser.alarms.create(`grant:${grant.id}`, { when: grant.expires });
+/**
+ * Adds the grant `make` builds with a free rule id. Queued with every other change to grants, so
+ * two at once never share an id or overwrite each other's stored list. False if `make` gives null.
+ */
+function addGrant(make: (id: number) => Grant | null): Promise<boolean> {
+  return serially(async () => {
+    const existing = await browser.declarativeNetRequest.getSessionRules();
+    const grant = make(Math.max(0, ...existing.map((rule) => rule.id)) + 1);
+    if (!grant) return false;
+    await browser.declarativeNetRequest.updateSessionRules({ addRules: [grantRule(grant)] as never });
+    await browser.storage.session.set({ grants: [...(await grants()), grant] });
+    browser.alarms.create(`grant:${grant.id}`, { when: grant.expires });
+    return true;
+  });
 }
 
 /** Grants Continue for the rule that stopped `url` and navigates there. Block, or a Delay whose
@@ -237,10 +271,7 @@ async function grantAndGo(tabId: number, url: string): Promise<boolean> {
     const readyAt = ((await browser.storage.session.get(key)) as Record<string, number>)[key];
     if (!delayOver(readyAt, now)) return false;
   }
-  const existing = await browser.declarativeNetRequest.getSessionRules();
-  const grant = makeGrant(Math.max(0, ...existing.map((rule) => rule.id)) + 1, tabId, decision, now);
-  if (!grant) return false;
-  await addGrant(grant);
+  if (!(await addGrant((id) => makeGrant(id, tabId, session.started_at, decision, now)))) return false;
   await browser.tabs.update(tabId, { url });
   return true;
 }
@@ -301,9 +332,11 @@ async function otherTabs(tabId: number): Promise<{ id: number; title: string; ur
     .map((tab) => ({ id: tab.id as number, title: tab.title ?? "", url: tab.url ?? "" }));
 }
 
-async function endGrant(id: number): Promise<void> {
-  await browser.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] });
-  await browser.storage.session.set({ grants: (await grants()).filter((grant) => grant.id !== id) });
+function endGrant(id: number): Promise<void> {
+  return serially(async () => {
+    await browser.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] });
+    await browser.storage.session.set({ grants: (await grants()).filter((grant) => grant.id !== id) });
+  });
 }
 
 type Message =
@@ -351,7 +384,7 @@ browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.Message
     case "tab-continue":
       if (tabId === undefined) return undefined;
       return browser.tabs
-        .update(tabId, { url: continueTarget(request.url) })
+        .update(tabId, { url: continueTarget(request.url, NEW_TAB_URL) })
         .catch(() => browser.tabs.update(tabId, { url: "about:blank" }))
         .then(() => true);
     default:

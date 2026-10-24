@@ -268,25 +268,17 @@ mod tests {
 
     #[test]
     fn friction_limits_are_read_and_checked() {
-        let settings = parse_settings(
-            "[friction]
-unlocks_per_day = 0
-tab_cap = 0
-unlock_minutes = 5
-",
-        )
-        .unwrap();
+        let settings =
+            parse_settings("[friction]\nunlocks_per_day = 0\ntab_cap = 0\nunlock_minutes = 5\n")
+                .unwrap();
         assert_eq!(settings.friction.unlocks_per_day, 0);
         assert_eq!(settings.friction.tab_cap, 0);
         assert_eq!(settings.friction.unlock_minutes, 5);
         assert_eq!(settings.friction.drift_hops, 4, "a default");
 
-        let Err(SettingsError::Invalid { problems }) = parse_settings(
-            "[friction]
-tab_cap = -3
-unlock_minutes = 9000
-",
-        ) else {
+        let Err(SettingsError::Invalid { problems }) =
+            parse_settings("[friction]\ntab_cap = -3\nunlock_minutes = 9000\n")
+        else {
             panic!("out-of-range limits are refused");
         };
         let messages: Vec<String> = problems.iter().map(ToString::to_string).collect();
@@ -298,11 +290,7 @@ unlock_minutes = 9000
             ]
         );
         assert!(matches!(
-            parse_settings(
-                "[friction]
-tabs = 4
-"
-            ),
+            parse_settings("[friction]\ntabs = 4\n"),
             Err(SettingsError::Syntax { .. })
         ));
     }

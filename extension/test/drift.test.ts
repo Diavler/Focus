@@ -54,6 +54,14 @@ describe("drift", () => {
     expect(recordVisit(state, TAB, "https://c.example/", LATER, 2, allowed)).toEqual(["b.example", "c.example"]);
   });
 
+  it("doesn't count going back to a site already on the trail", () => {
+    const state = freshDrift(START);
+    for (const url of ["https://so.example/", "https://docs.example/", "https://so.example/q", "https://docs.example/b"]) {
+      expect(recordVisit(state, TAB, url, LATER, 3, [])).toBeNull();
+    }
+    expect(state.tabs[TAB]?.trail).toEqual(["so.example", "docs.example"]);
+  });
+
   it("keeps going after an acknowledgement, and 0 hops never prompts", () => {
     const state = freshDrift(START);
     recordVisit(state, TAB, "https://a.example/", LATER, 2, []);
@@ -100,8 +108,8 @@ describe("tab cap", () => {
   });
 
   it("continues to the page, or a new tab page", () => {
-    expect(continueTarget("https://docs.rs/")).toBe("https://docs.rs/");
-    expect(continueTarget("")).toBe("chrome://newtab/");
-    expect(continueTarget("chrome://newtab/")).toBe("chrome://newtab/");
+    expect(continueTarget("https://docs.rs/", "about:newtab")).toBe("https://docs.rs/");
+    expect(continueTarget("", "about:newtab")).toBe("about:newtab");
+    expect(continueTarget("chrome://newtab/", "about:newtab")).toBe("about:newtab");
   });
 });

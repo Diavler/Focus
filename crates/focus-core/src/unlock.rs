@@ -72,16 +72,32 @@ impl UnlockLedger {
                 }
                 self.spent.retain(|&at| counts(at, now));
                 if self.left(now, friction) == 0 {
-                    let next_at = (friction.unlocks_per_day > 0)
-                        .then(|| self.spent.iter().min())
-                        .flatten()
-                        .map(|&oldest| oldest.saturating_add(UNLOCK_WINDOW));
-                    return Err(UnlockError::BudgetSpent { next_at });
+                    return Err(UnlockError::BudgetSpent {
+                        next_at: self.next_at(friction),
+                    });
                 }
                 self.spent.push(now);
                 Ok(until)
             }
         }
+    }
+}
+
+impl UnlockLedger {
+    /// When enough spent unlocks have aged out that one is free again, or `None` for a budget
+    /// of 0. After the budget was tightened more may count than it allows, so it's not always the
+    /// oldest that matters.
+    fn next_at(&self, friction: Friction) -> Option<Timestamp> {
+        let budget = usize::from(friction.unlocks_per_day);
+        if budget == 0 {
+            return None;
+        }
+        let mut spent = self.spent.clone();
+        spent.sort_unstable();
+        let freeing = spent.len().checked_sub(budget)?;
+        spent
+            .get(freeing)
+            .map(|&at| at.saturating_add(UNLOCK_WINDOW))
     }
 }
 
@@ -169,6 +185,32 @@ mod tests {
             ledger.unlock(OverridePolicy::SpendUnlock, "why", clock.now(), friction),
             Err(UnlockError::BudgetSpent { next_at: None }),
             "a budget of 0 never comes back"
+        );
+    }
+
+    #[test]
+    fn after_tightening_the_next_unlock_waits_for_enough_to_age_out() {
+        let clock = FakeClock::default();
+        let mut ledger = UnlockLedger::default();
+        let deep = OverridePolicy::SpendUnlock;
+        let three = Friction {
+            unlocks_per_day: 3,
+            ..Friction::default()
+        };
+        for _ in 0..3 {
+            ledger.unlock(deep, "why", clock.now(), three).unwrap();
+            clock.advance(MINUTE);
+        }
+        let last = clock.now().saturating_sub(MINUTE);
+        let one = Friction {
+            unlocks_per_day: 1,
+            ..Friction::default()
+        };
+        assert_eq!(
+            ledger.unlock(deep, "why", clock.now(), one),
+            Err(UnlockError::BudgetSpent {
+                next_at: Some(last.saturating_add(UNLOCK_WINDOW))
+            })
         );
     }
 

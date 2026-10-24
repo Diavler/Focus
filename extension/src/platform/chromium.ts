@@ -1,5 +1,8 @@
 // Chromium-only details. Other browsers get their own module here; nothing else changes.
 
+/** The browser's own new tab page. */
+export const NEW_TAB_URL = "chrome://newtab/";
+
 interface Brand {
   brand: string;
 }

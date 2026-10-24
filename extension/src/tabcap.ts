@@ -9,7 +9,7 @@ export function overCap(openTabs: number, cap: number, browserStartedAt: number,
   return cap > 0 && openTabs > cap && now - browserStartedAt >= STARTUP_GRACE_MS;
 }
 
-/** Where Continue takes the capped tab: the page it was opening, or a new tab page. */
-export function continueTarget(intended: string): string {
-  return /^https?:\/\//i.test(intended) ? intended : "chrome://newtab/";
+/** Where Continue takes the capped tab: the page it was opening, or `newTab` (the platform's). */
+export function continueTarget(intended: string, newTab: string): string {
+  return /^https?:\/\//i.test(intended) ? intended : newTab;
 }

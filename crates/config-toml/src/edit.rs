@@ -441,9 +441,7 @@ allow = ["docs.google.com"]
 
     #[test]
     fn friction_round_trips_and_keeps_comments() {
-        let text = "[friction]
-tab_cap = 6  # tabs are my weakness
-";
+        let text = "[friction]\ntab_cap = 6  # tabs are my weakness\n";
         let mut settings = editable(text).unwrap();
         assert_eq!(settings.friction.tab_cap, 6);
         assert_eq!(settings.friction.unlocks_per_day, 3, "a default");

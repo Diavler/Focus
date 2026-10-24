@@ -1,7 +1,7 @@
 // The drift prompt: after several hops away from the session's starting sites, the tab shows
 // the trail and offers a way back. The starting ("home") sites are the ones visited in the first
 // minutes of the session, plus those the configuration allows. A hop is a page load in a tab on
-// a new site outside home; coming back home clears the tab's trail.
+// a site outside home that the tab's trail doesn't have yet; coming back home clears the trail.
 
 import { parsePattern } from "./dnr";
 import type { BlockConfig } from "./protocol";
@@ -64,7 +64,8 @@ export function recordVisit(
     tab.back = url;
     return null;
   }
-  if (tab.trail.at(-1) === site) return null;
+  // Going back to a site already on the trail isn't another hop.
+  if (tab.trail.includes(site)) return null;
   tab.trail.push(site);
   return hops > 0 && tab.trail.length >= hops ? [...tab.trail] : null;
 }

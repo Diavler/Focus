@@ -572,11 +572,16 @@ impl Service {
         Ok(until)
     }
 
-    /// Counts a visit to a page behind a Delay rule and returns its wait (none without a session).
+    /// Counts a visit to a page behind a Delay rule and returns its wait. Pages that aren't
+    /// delayed (or no session) wait nothing and aren't counted or saved.
     fn delay_visit(&mut self, url: &str) -> Result<Duration, DaemonError> {
-        let Some(started_at) = self.state.session.running().map(|r| r.started_at()) else {
+        let Some(running) = self.state.session.running() else {
             return Ok(Duration::ZERO);
         };
+        if running.spec().config.verdict(url) != Verdict::Restrict(RuleAction::Delay) {
+            return Ok(Duration::ZERO);
+        }
+        let started_at = running.started_at();
         self.update(|state| Ok(state.delays.visit(started_at, url)))
     }
 
@@ -1936,11 +1941,7 @@ mod tests {
     #[test]
     fn deep_unlocks_spend_the_budget_and_survive_a_restart() {
         let harness = Harness::new();
-        harness.write_settings(&format!(
-            "[friction]
-unlocks_per_day = 1
-{SETTINGS}"
-        ));
+        harness.write_settings(&format!("[friction]\nunlocks_per_day = 1\n{SETTINGS}"));
         let mut service = harness.open();
         assert_eq!(
             unlock_error(unlock(&mut service, "https://x.com/", "docs")),
@@ -2002,6 +2003,9 @@ unlocks_per_day = 1
     #[test]
     fn delays_grow_per_site_through_a_restart_and_reset_with_the_session() {
         let harness = Harness::new();
+        harness.write_settings(&format!(
+            "[configs.reading]\ndelay = [\"x.com\"]\n{SETTINGS}"
+        ));
         let mut service = harness.open();
         let visit = |service: &mut Service, url: &str| match service
             .handle(Request::DelayVisit { url: url.into() })
@@ -2014,14 +2018,19 @@ unlocks_per_day = 1
             0,
             "no session, no wait"
         );
-        start(&mut service, "coding", Strictness::Light);
+        start(&mut service, "reading", Strictness::Light);
+        assert_eq!(
+            visit(&mut service, "https://docs.rs/"),
+            0,
+            "pages without a Delay rule aren't counted"
+        );
         assert_eq!(visit(&mut service, "https://x.com/"), 10);
         assert_eq!(visit(&mut service, "https://x.com/a"), 20);
         let mut restarted = harness.open();
         assert_eq!(visit(&mut restarted, "https://www.x.com/"), 30);
         restarted.handle(Request::EndSession);
         harness.clock.advance(MINUTE);
-        start(&mut restarted, "coding", Strictness::Light);
+        start(&mut restarted, "reading", Strictness::Light);
         assert_eq!(visit(&mut restarted, "https://x.com/"), 10, "a new session");
     }
 
@@ -2030,10 +2039,7 @@ unlocks_per_day = 1
         let harness = Harness::new();
         let mut service = harness.open();
         harness.write_settings(&format!(
-            "[friction]
-unlocks_per_day = 1
-tab_cap = 0
-{SETTINGS}"
+            "[friction]\nunlocks_per_day = 1\ntab_cap = 0\n{SETTINGS}"
         ));
         service.reload_settings();
         let report = status(&mut service);
