@@ -560,10 +560,21 @@ checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
 [[package]]
 name = "enforce-linux-kde"
 version = "0.1.0"
+dependencies = [
+ "focus-core",
+ "tracing",
+]
 
 [[package]]
 name = "enforce-windows"
 version = "0.1.0"
+dependencies = [
+ "focus-core",
+ "tempfile",
+ "tracing",
+ "win-user",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "equivalent"
@@ -634,6 +645,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "config-toml",
+ "enforce-linux-kde",
+ "enforce-windows",
  "focus-core",
  "ipc-proto",
  "ipc-transport",
@@ -1266,7 +1279,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "widestring",
- "windows-sys 0.61.2",
+ "win-user",
 ]
 
 [[package]]
@@ -3381,6 +3394,14 @@ name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
+name = "win-user"
+version = "0.1.0"
+dependencies = [
+ "widestring",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "winapi-util"

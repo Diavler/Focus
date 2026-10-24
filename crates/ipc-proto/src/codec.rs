@@ -144,7 +144,7 @@ mod tests {
         };
         session.start(spec, Timestamp::from_millis(5)).unwrap();
         for response in [
-            Response::Status(StatusReport {
+            Response::Status(Box::new(StatusReport {
                 now: Timestamp::from_millis(10),
                 session,
                 pending_changes: vec![PendingSummary {
@@ -158,7 +158,8 @@ mod tests {
                     last_seen: Timestamp::from_millis(9),
                     incognito_allowed: true,
                 }],
-            }),
+                foreground_app: Some("code".into()),
+            })),
             Response::Configs {
                 configs: vec![BlockConfig::new("writing", Mode::Allowlist)],
             },

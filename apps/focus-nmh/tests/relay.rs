@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
-use focus_core::testing::{FakeClock, MemoryStateStore};
+use focus_core::testing::{
+    FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
+};
 use focus_daemon::{Ports, Service, serve};
 use focus_nmh::framing::{Frame, read_message};
 use ipc_transport::{Endpoint, bind};
@@ -42,6 +44,11 @@ impl Daemon {
             configs: Arc::new(TomlConfigSource::new(&settings)),
             store: Arc::new(MemoryStateStore::default()),
             history: Arc::new(NoopHistory),
+            enforcer: Arc::new(FakeEnforcer::default()),
+            processes: Arc::new(FakeEnforcer::default()),
+            foreground: Arc::new(FakeForegroundApp::default()),
+            notifier: Arc::new(FakeNotifier::default()),
+            browsers: Vec::new(),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let listener = bind(endpoint).await.unwrap();

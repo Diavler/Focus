@@ -66,7 +66,7 @@ impl Client {
     /// The daemon's status.
     pub async fn status(&mut self) -> Result<StatusReport, ClientError> {
         match self.request(&Request::Status).await? {
-            Response::Status(status) => Ok(status),
+            Response::Status(status) => Ok(*status),
             other => Err(unexpected(&other)),
         }
     }

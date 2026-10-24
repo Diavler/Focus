@@ -13,6 +13,7 @@ export function browserName(): string {
   if (nav.brave) return "brave";
   const brands = nav.userAgentData?.brands.map(({ brand }) => brand) ?? [];
   if (brands.includes("Microsoft Edge")) return "edge";
+  if (brands.some((brand) => brand.startsWith("Opera"))) return "opera"; // Opera, Opera GX
   if (brands.includes("Google Chrome")) return "chrome";
   return "chromium";
 }

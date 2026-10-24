@@ -9,3 +9,20 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+focus-core.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+win-user.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+focus-core = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

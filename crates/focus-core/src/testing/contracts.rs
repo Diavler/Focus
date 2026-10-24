@@ -7,7 +7,8 @@ use std::time::Duration;
 use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
 use crate::ports::{
-    Clock, ConfigSource, Enforcer, History, HistoryEvent, Notifier, PersistedState, StateStore,
+    Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier, PersistedState,
+    ProcessList, StateStore,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -95,6 +96,29 @@ pub fn enforcer_contract(enforcer: &dyn Enforcer) {
         Ok(Vec::new()),
         "closing an app that isn't running reported a close"
     );
+}
+
+/// Listing nothing, or an app that isn't running, finds nothing.
+pub fn process_list_contract(processes: &dyn ProcessList) {
+    assert_eq!(
+        processes.running_apps(&[]),
+        Ok(Vec::new()),
+        "listing nothing found something"
+    );
+    assert_eq!(
+        processes.running_apps(&[MISSING_APP.to_owned()]),
+        Ok(Vec::new()),
+        "an app that isn't running was reported"
+    );
+}
+
+/// Asking for the foreground app succeeds, and a reported name is never blank.
+pub fn foreground_app_contract(foreground: &dyn ForegroundApp) {
+    match foreground.foreground_app() {
+        Ok(Some(app)) => assert!(!app.trim().is_empty(), "a blank foreground app name"),
+        Ok(None) => {}
+        Err(error) => panic!("foreground_app failed: {error}"),
+    }
 }
 
 /// Silencing and restoring both succeed, including repeated calls in either order.

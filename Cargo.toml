@@ -23,6 +23,9 @@ ipc-proto = { path = "crates/ipc-proto" }
 ipc-transport = { path = "crates/ipc-transport" }
 config-toml = { path = "crates/config-toml" }
 state-json = { path = "crates/state-json" }
+win-user = { path = "crates/win-user" }
+enforce-windows = { path = "crates/enforce-windows" }
+enforce-linux-kde = { path = "crates/enforce-linux-kde" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"

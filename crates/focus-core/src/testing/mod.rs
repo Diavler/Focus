@@ -8,11 +8,12 @@ mod contracts;
 mod fakes;
 
 pub use contracts::{
-    clock_contract, config_source_contract, enforcer_contract, history_contract, notifier_contract,
-    state_store_contract,
+    clock_contract, config_source_contract, enforcer_contract, foreground_app_contract,
+    history_contract, notifier_contract, process_list_contract, state_store_contract,
 };
 pub use fakes::{
-    FakeClock, FakeConfigSource, FakeEnforcer, FakeNotifier, MemoryStateStore, RecordingHistory,
+    FakeClock, FakeConfigSource, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
+    RecordingHistory,
 };
 
 #[cfg(test)]
@@ -34,6 +35,11 @@ mod tests {
         state_store_contract(MemoryStateStore::default);
         enforcer_contract(&FakeEnforcer::default());
         enforcer_contract(&FakeEnforcer::with_running(["discord", "Steam"]));
+        process_list_contract(&FakeEnforcer::with_running(["discord", "Steam"]));
+        let foreground = FakeForegroundApp::default();
+        foreground_app_contract(&foreground);
+        foreground.set(Some("chrome"));
+        foreground_app_contract(&foreground);
         notifier_contract(&FakeNotifier::default());
         history_contract(&RecordingHistory::default());
         history_contract(&NoopHistory);

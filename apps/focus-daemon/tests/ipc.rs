@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use config_toml::TomlConfigSource;
 use focus_core::ports::{Clock, NoopHistory};
-use focus_core::testing::FakeClock;
+use focus_core::testing::{FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier};
 use focus_core::{ConfigState, EndReason, SessionError, Strictness};
 use focus_daemon::{Ports, Service, serve};
 use ipc_proto::{DaemonError, PROTOCOL_VERSION, Request, Response, decode, encode};
@@ -63,6 +63,11 @@ impl Home {
             configs: Arc::new(TomlConfigSource::new(&self.settings)),
             store: Arc::new(JsonStateStore::new(&self.state)),
             history: Arc::new(NoopHistory),
+            enforcer: Arc::new(FakeEnforcer::default()),
+            processes: Arc::new(FakeEnforcer::default()),
+            foreground: Arc::new(FakeForegroundApp::default()),
+            notifier: Arc::new(FakeNotifier::default()),
+            browsers: Vec::new(),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let (stop, stopped) = oneshot::channel::<()>();

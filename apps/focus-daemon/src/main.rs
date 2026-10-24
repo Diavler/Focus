@@ -1,5 +1,8 @@
 //! Per-user daemon that owns sessions and enforcement; the composition root that wires adapters
 //! into `focus-core`.
+//!
+//! `focus-daemon --dry-run` logs which apps it would close (and the Do Not Disturb prompt it would
+//! show) instead of acting, for trying enforcement safely on a real machine.
 
 use std::io::Write;
 use std::path::Path;
@@ -51,11 +54,21 @@ async fn main() -> anyhow::Result<()> {
     };
 
     write_starter_settings(&paths.settings)?;
+    let dry_run = std::env::args().skip(1).any(|arg| arg == "--dry-run");
+    if dry_run {
+        tracing::info!("dry run: apps won't be closed, only logged");
+    }
+    let enforcement = platform::enforcement(dry_run);
     let ports = Ports {
         clock: Arc::new(SystemClock),
         configs: Arc::new(TomlConfigSource::new(&paths.settings)),
         store: Arc::new(JsonStateStore::new(&paths.state)),
         history: Arc::new(NoopHistory),
+        enforcer: enforcement.enforcer,
+        processes: enforcement.processes,
+        foreground: enforcement.foreground,
+        notifier: enforcement.notifier,
+        browsers: enforcement.browsers,
     };
     let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
     tracing::info!("data: {}", paths.data.display());
@@ -89,4 +102,55 @@ fn write_starter_settings(path: &Path) -> anyhow::Result<()> {
     std::fs::rename(&temp, path).with_context(|| format!("creating {}", path.display()))?;
     tracing::info!("created starter settings at {}", path.display());
     Ok(())
+}
+
+/// The platform's enforcement adapters. The only `#[cfg]` in the daemon (CLAUDE.md).
+mod platform {
+    use std::sync::Arc;
+
+    use focus_core::KnownBrowser;
+    use focus_core::ports::{Enforcer, ForegroundApp, Notifier, ProcessList};
+
+    /// One adapter per enforcement port, plus the browsers to watch.
+    pub struct Enforcement {
+        /// Closes blocked apps.
+        pub enforcer: Arc<dyn Enforcer>,
+        /// Tells which apps are running.
+        pub processes: Arc<dyn ProcessList>,
+        /// Tells which app is in front.
+        pub foreground: Arc<dyn ForegroundApp>,
+        /// Silences notifications during sessions.
+        pub notifier: Arc<dyn Notifier>,
+        /// The browsers to watch.
+        pub browsers: Vec<KnownBrowser>,
+    }
+
+    /// Windows: the real adapters, acting or (`dry_run`) only logging.
+    #[cfg(windows)]
+    pub fn enforcement(dry_run: bool) -> Enforcement {
+        use enforce_windows::{Mode, WindowsEnforcer, WindowsForeground, WindowsNotifier};
+        let mode = if dry_run { Mode::DryRun } else { Mode::Live };
+        // One enforcer serves both ports; `Arc` lets it be shared.
+        let enforcer = Arc::new(WindowsEnforcer::new(mode));
+        Enforcement {
+            enforcer: enforcer.clone(),
+            processes: enforcer,
+            foreground: Arc::new(WindowsForeground),
+            notifier: Arc::new(WindowsNotifier::new(mode)),
+            browsers: enforce_windows::known_browsers(),
+        }
+    }
+
+    /// Elsewhere: placeholders until the KDE Plasma adapters (build step 9).
+    #[cfg(not(windows))]
+    pub fn enforcement(_dry_run: bool) -> Enforcement {
+        let pending = Arc::new(enforce_linux_kde::PendingEnforcer::default());
+        Enforcement {
+            enforcer: pending.clone(),
+            processes: pending.clone(),
+            foreground: pending.clone(),
+            notifier: pending,
+            browsers: enforce_linux_kde::known_browsers(),
+        }
+    }
 }

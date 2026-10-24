@@ -5,9 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use focus_core::ports::{
-    Clock, ConfigSource, History, HistoryEvent, PersistedState, StateStore, StateStoreError,
+    Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent, Notifier, PersistedState,
+    ProcessList, StateStore, StateStoreError,
 };
-use focus_core::{SessionError, SessionSpec, SessionState, Strictness, Timestamp, Verdict};
+use focus_core::{
+    BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, SessionError, SessionSpec, SessionState,
+    Strictness, Timestamp, Verdict, apps_to_close,
+};
 use ipc_proto::{BrowserStatus, DaemonError, PendingSummary, Request, Response, StatusReport};
 use thiserror::Error;
 
@@ -22,6 +26,16 @@ pub struct Ports {
     pub store: Arc<dyn StateStore>,
     /// Where events are recorded.
     pub history: Arc<dyn History>,
+    /// Closes blocked apps.
+    pub enforcer: Arc<dyn Enforcer>,
+    /// Tells which apps are running.
+    pub processes: Arc<dyn ProcessList>,
+    /// Tells which app is in front.
+    pub foreground: Arc<dyn ForegroundApp>,
+    /// Silences notifications during sessions.
+    pub notifier: Arc<dyn Notifier>,
+    /// The browsers this platform knows, closed during a session unless their extension checks in.
+    pub browsers: Vec<KnownBrowser>,
 }
 
 /// Why the daemon couldn't start.
@@ -42,6 +56,8 @@ pub struct Service {
     settings_problem: Option<String>,
     browsers: BTreeMap<String, BrowserStatus>,
     cooling_off: Duration,
+    watch: BrowserWatch,
+    browser_policy: BrowserPolicy,
 }
 
 impl Service {
@@ -63,6 +79,8 @@ impl Service {
             settings_problem: None,
             browsers: BTreeMap::new(),
             cooling_off,
+            watch: BrowserWatch::default(),
+            browser_policy: BrowserPolicy::default(),
         };
         service.reload_settings();
         Ok(service)
@@ -78,7 +96,7 @@ impl Service {
         self.tick();
         let now = self.now();
         let result = match request {
-            Request::Status => Ok(Response::Status(self.status())),
+            Request::Status => Ok(Response::Status(Box::new(self.status()))),
             Request::ListConfigs => {
                 self.reload_settings();
                 Ok(Response::Configs {
@@ -237,6 +255,51 @@ impl Service {
         })
     }
 
+    /// During a session, closes the config's blocked apps and any browser whose extension isn't
+    /// checking in (after a grace period). Outside a session, does nothing.
+    pub fn enforce(&mut self) {
+        let now = self.now();
+        let Some(running) = self.state.session.running() else {
+            self.watch.clear();
+            return;
+        };
+        let blocked = running.spec().config.apps.clone();
+        let browser_apps: Vec<String> = self.ports.browsers.iter().map(|b| b.app.clone()).collect();
+        let heartbeats: Vec<Heartbeat> = self
+            .browsers
+            .values()
+            .map(|status| Heartbeat {
+                browser: status.browser.clone(),
+                last_seen: status.last_seen,
+                incognito_allowed: status.incognito_allowed,
+            })
+            .collect();
+        // If listing fails, skip browsers this time rather than treating them all as closed,
+        // which would reset their grace periods.
+        let browsers = match self.ports.processes.running_apps(&browser_apps) {
+            Ok(running_browsers) => self.watch.browsers_to_close(
+                &running_browsers,
+                &self.ports.browsers,
+                &heartbeats,
+                now,
+                self.browser_policy,
+            ),
+            Err(error) => {
+                tracing::warn!("couldn't list browsers: {error}");
+                Vec::new()
+            }
+        };
+        let close = apps_to_close(&blocked, browsers);
+        if close.is_empty() {
+            return;
+        }
+        match self.ports.enforcer.close_apps(&close) {
+            Ok(closed) if !closed.is_empty() => tracing::info!("closing {closed:?}"),
+            Ok(_) => {}
+            Err(error) => tracing::warn!("couldn't close apps: {error}"),
+        }
+    }
+
     fn status(&self) -> StatusReport {
         StatusReport {
             now: self.now(),
@@ -254,6 +317,7 @@ impl Service {
                 .collect(),
             settings_problem: self.settings_problem.clone(),
             browsers: self.browsers.values().cloned().collect(),
+            foreground_app: self.ports.foreground.foreground_app().ok().flatten(),
         }
     }
 
@@ -274,6 +338,7 @@ impl Service {
                 })?;
             let previous = std::mem::replace(&mut self.state, next);
             self.record_history(&previous.session);
+            self.silence_while_running(&previous.session);
         }
         Ok(value)
     }
@@ -307,6 +372,22 @@ impl Service {
         }
     }
 
+    /// Silences notifications when a session starts and restores them when it ends.
+    fn silence_while_running(&self, before: &SessionState) {
+        let (was, is) = (
+            before.running().is_some(),
+            self.state.session.running().is_some(),
+        );
+        let result = match (was, is) {
+            (false, true) => self.ports.notifier.silence(),
+            (true, false) => self.ports.notifier.restore(),
+            _ => return,
+        };
+        if let Err(error) = result {
+            tracing::warn!("{error}");
+        }
+    }
+
     fn now(&self) -> Timestamp {
         self.ports.clock.now()
     }
@@ -324,7 +405,8 @@ mod tests {
     use config_toml::TomlConfigSource;
     use focus_core::ports::NoopHistory;
     use focus_core::testing::{
-        FakeClock, MemoryStateStore, RecordingHistory, state_store_contract,
+        FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
+        RecordingHistory, state_store_contract,
     };
     use focus_core::{EndEarlyResponse, EndReason, RuleAction};
     use tempfile::TempDir;
@@ -350,6 +432,9 @@ mod tests {
         clock: Arc<FakeClock>,
         store: Arc<MemoryStateStore>,
         history: Arc<RecordingHistory>,
+        apps: Arc<FakeEnforcer>,
+        notifier: Arc<FakeNotifier>,
+        foreground: Arc<FakeForegroundApp>,
     }
 
     impl Harness {
@@ -363,6 +448,13 @@ mod tests {
                 clock: Arc::new(FakeClock::default()),
                 store: Arc::new(MemoryStateStore::default()),
                 history: Arc::new(RecordingHistory::default()),
+                apps: Arc::new(FakeEnforcer::with_running([
+                    "Discord.exe",
+                    "chrome",
+                    "notepad",
+                ])),
+                notifier: Arc::new(FakeNotifier::default()),
+                foreground: Arc::new(FakeForegroundApp::default()),
             }
         }
 
@@ -372,6 +464,14 @@ mod tests {
                 configs: Arc::new(TomlConfigSource::new(&self.settings)),
                 store: self.store.clone(),
                 history: self.history.clone(),
+                enforcer: self.apps.clone(),
+                processes: self.apps.clone(),
+                foreground: self.foreground.clone(),
+                notifier: self.notifier.clone(),
+                browsers: vec![KnownBrowser {
+                    heartbeat_names: vec!["chrome".into()],
+                    app: "chrome".into(),
+                }],
             }
         }
 
@@ -399,7 +499,7 @@ mod tests {
 
     fn status(service: &mut Service) -> StatusReport {
         match service.handle(Request::Status) {
-            Response::Status(status) => status,
+            Response::Status(status) => *status,
             other => panic!("expected status, got {other:?}"),
         }
     }
@@ -728,5 +828,122 @@ mod tests {
             Service::open(ports, Duration::ZERO),
             Err(StartupError::State(_))
         ));
+    }
+
+    #[test]
+    fn closes_blocked_apps_only_during_a_session() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        service.enforce();
+        assert_eq!(
+            harness.apps.running().len(),
+            3,
+            "nothing closed without a session"
+        );
+
+        start(&mut service, "coding", Strictness::Light);
+        service.enforce();
+        assert!(
+            !harness
+                .apps
+                .running()
+                .iter()
+                .any(|app| app == "Discord.exe")
+        );
+        assert!(harness.apps.running().iter().any(|app| app == "notepad"));
+    }
+
+    #[test]
+    fn closes_a_browser_without_a_live_heartbeat_after_the_grace_period() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "writing", Strictness::Light);
+        service.enforce();
+        assert!(
+            harness.apps.running().iter().any(|app| app == "chrome"),
+            "grace period"
+        );
+
+        harness.clock.advance(Duration::from_secs(30));
+        service.handle(Request::Heartbeat {
+            browser: "chrome".into(),
+            incognito_allowed: true,
+        });
+        service.enforce();
+        assert!(
+            harness.apps.running().iter().any(|app| app == "chrome"),
+            "checked in"
+        );
+
+        harness.clock.advance(Duration::from_secs(60));
+        service.enforce();
+        assert!(
+            !harness.apps.running().iter().any(|app| app == "chrome"),
+            "went quiet"
+        );
+    }
+
+    /// A process list that always fails. It injects a failure on purpose, so it's exempt from the
+    /// contract suite (see CLAUDE.md).
+    struct BrokenProcessList;
+
+    impl ProcessList for BrokenProcessList {
+        fn running_apps(
+            &self,
+            _apps: &[String],
+        ) -> Result<Vec<String>, focus_core::ports::EnforceError> {
+            Err(focus_core::ports::EnforceError::Failed {
+                reason: "snapshot failed".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_failed_listing_skips_browsers_but_still_closes_blocked_apps() {
+        let harness = Harness::new();
+        let ports = Ports {
+            processes: Arc::new(BrokenProcessList),
+            ..harness.ports()
+        };
+        let mut service = Service::open(ports, Duration::from_secs(60)).unwrap();
+        start(&mut service, "coding", Strictness::Light);
+        harness.clock.advance(Duration::from_secs(120));
+        service.enforce();
+        let running = harness.apps.running();
+        assert!(
+            running.iter().any(|app| app == "chrome"),
+            "browsers skipped"
+        );
+        assert!(
+            !running.iter().any(|app| app == "Discord.exe"),
+            "blocked apps still closed"
+        );
+    }
+
+    #[test]
+    fn silences_notifications_while_a_session_runs() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        start(&mut service, "coding", Strictness::Light);
+        assert!(harness.notifier.is_silenced());
+        service.handle(Request::EndSession);
+        assert!(!harness.notifier.is_silenced());
+
+        start(&mut service, "coding", Strictness::Locked);
+        harness.clock.advance(30 * MINUTE);
+        service.tick();
+        assert!(
+            !harness.notifier.is_silenced(),
+            "restored when the timer ends it"
+        );
+    }
+
+    #[test]
+    fn status_reports_the_foreground_app() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(status(&mut service).foreground_app, None);
+        harness.foreground.set(Some("code"));
+        assert_eq!(status(&mut service).foreground_app.as_deref(), Some("code"));
     }
 }
