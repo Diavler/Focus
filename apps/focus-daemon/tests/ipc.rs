@@ -78,6 +78,7 @@ impl Home {
             calendar: self.calendar.clone(),
             tasks: Arc::new(FakeTasks::default()),
             secrets: Arc::new(MemorySecrets::default()),
+            settings: Arc::new(TomlConfigSource::new(&self.settings)),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let (stop, stopped) = oneshot::channel::<()>();
@@ -277,13 +278,20 @@ async fn a_tagged_calendar_event_starts_its_config_even_offline() {
         title: "Deep work #focus".into(),
         start,
         end: start.saturating_add(60 * MINUTE),
+        all_day: false,
     }]));
     let endpoint = unique_endpoint();
     let daemon = home.start_daemon(&endpoint).await;
     let mut client = Client::connect(&endpoint).await.unwrap();
-    let synced = wait_for(&mut client, |status| status.plan.upcoming.len() == 1).await;
-    assert_eq!(synced.plan.calendar.state, ipc_proto::SourceState::Ok);
+    let synced = wait_for(&mut client, |status| {
+        status.plan.calendar.state == ipc_proto::SourceState::Ok
+    })
+    .await;
     assert!(synced.session.running().is_none(), "not before the event");
+    let Response::Plan(view) = client.request(&Request::Plan).await.unwrap() else {
+        panic!("expected the plan");
+    };
+    assert_eq!(view.upcoming.len(), 1, "the event is planned");
     drop(client);
     daemon.stop().await;
 

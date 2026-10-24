@@ -6,12 +6,12 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{CalendarEvent, PlanCache, Task};
-use crate::session::SessionState;
+use crate::session::{EndReason, EndedSession, SessionState};
 use crate::strictness::Strictness;
 use crate::time::Timestamp;
 
 /// Maps calendar keywords and task labels to a configuration and strictness.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoStartRule {
     /// The configuration to run.
     pub config: String,
@@ -100,6 +100,9 @@ pub fn scheduled_configs(planned: &[PlannedStart], now: Timestamp, horizon: Dura
 }
 
 fn from_event(rules: &[AutoStartRule], event: &CalendarEvent) -> Option<PlannedStart> {
+    if event.all_day {
+        return None;
+    }
     let title = event.title.to_lowercase();
     let rule = rules.iter().find(|rule| {
         rule.calendar_keywords
@@ -137,10 +140,9 @@ fn from_task(rules: &[AutoStartRule], task: &Task) -> Option<PlannedStart> {
     })
 }
 
-/// Labels match ignoring case and a leading `@`.
+/// Labels match ignoring case (in any script) and a leading `@`.
 fn label_eq(a: &str, b: &str) -> bool {
-    a.trim_start_matches('@')
-        .eq_ignore_ascii_case(b.trim_start_matches('@'))
+    a.trim_start_matches('@').to_lowercase() == b.trim_start_matches('@').to_lowercase()
 }
 
 /// Planned sessions that have already started, so ending one early doesn't start it again.
@@ -155,6 +157,8 @@ pub struct AutoStartLog {
 struct StartedEntry {
     key: String,
     until: Timestamp,
+    /// When it was started (or given up on).
+    at: Timestamp,
 }
 
 impl AutoStartLog {
@@ -163,21 +167,59 @@ impl AutoStartLog {
 
     /// The first planned session that should be running at `now` and hasn't started yet.
     pub fn due<'a>(&self, planned: &'a [PlannedStart], now: Timestamp) -> Option<&'a PlannedStart> {
-        planned.iter().find(|start| {
-            start.starts_at <= now
-                && start.ends_at.saturating_duration_since(now) >= Self::MIN_REMAINING
-                && !self.has_started(&start.key)
-        })
+        self.upcoming(planned, now)
+            .into_iter()
+            .find(|start| start.starts_at <= now)
     }
 
-    /// Remembers that `start` has started (or been given up on).
-    pub fn mark(&mut self, start: &PlannedStart) {
+    /// Planned sessions that haven't started and still have time left to run, soonest first.
+    pub fn upcoming<'a>(
+        &self,
+        planned: &'a [PlannedStart],
+        now: Timestamp,
+    ) -> Vec<&'a PlannedStart> {
+        planned
+            .iter()
+            .filter(|start| {
+                start.ends_at.saturating_duration_since(now) >= Self::MIN_REMAINING
+                    && !self.has_started(&start.key)
+            })
+            .collect()
+    }
+
+    /// Remembers that `start` started (or was given up on) at `now`.
+    pub fn mark(&mut self, start: &PlannedStart, now: Timestamp) {
         if !self.has_started(&start.key) {
             self.started.push(StartedEntry {
                 key: start.key.clone(),
                 until: start.ends_at,
+                at: now,
             });
         }
+    }
+
+    /// After an automatic session is ended early, gives up on every other planned session that
+    /// was already under way at that moment (say, a calendar event and a task for the same
+    /// block), so ending early sticks. Planned sessions starting later still start. A session
+    /// started by hand doesn't count. Returns whether anything changed.
+    pub fn end_overlapping(&mut self, planned: &[PlannedStart], ended: &EndedSession) -> bool {
+        let early = matches!(ended.reason(), EndReason::EndedEarly { .. });
+        let automatic = self
+            .started
+            .iter()
+            .any(|entry| entry.at == ended.started_at());
+        if !early || !automatic {
+            return false;
+        }
+        let at = ended.ended_at();
+        let mut changed = false;
+        for start in planned {
+            if start.starts_at <= at && at < start.ends_at && !self.has_started(&start.key) {
+                self.mark(start, at);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Forgets planned sessions that have ended by `now`. Returns whether anything was forgotten.
@@ -218,6 +260,7 @@ mod tests {
             title: title.into(),
             start,
             end: start.saturating_add(MINUTE * u32::try_from(minutes).unwrap()),
+            all_day: false,
         }
     }
 
@@ -226,6 +269,7 @@ mod tests {
             id: id.into(),
             title: format!("task {id}"),
             labels: labels.iter().map(|l| (*l).into()).collect(),
+            due_date: None,
             due_at,
             duration: None,
         }
@@ -340,7 +384,7 @@ mod tests {
             MINUTE * 40,
             "runs only what's left"
         );
-        log.mark(due);
+        log.mark(due, clock.now());
         assert_eq!(
             log.due(&planned, clock.now()),
             None,
@@ -403,12 +447,90 @@ mod tests {
     }
 
     #[test]
+    fn labels_ignore_case_in_any_script() {
+        assert!(label_eq("@Глубоко", "глубоко"));
+        assert!(label_eq("Über", "über"));
+        assert!(!label_eq("deep", "deeper"));
+    }
+
+    #[test]
+    fn all_day_events_never_start_sessions() {
+        let now = FakeClock::default().now();
+        let rules = [rule("coding", &["focus"], &[])];
+        let mut day = event("a", "focus day", now, 24 * 60);
+        day.all_day = true;
+        assert_eq!(planned_starts(&rules, &plan(vec![day], vec![])), []);
+    }
+
+    #[test]
+    fn ending_an_automatic_session_early_gives_up_overlapping_ones() {
+        let clock = FakeClock::default();
+        let rules = [rule("coding", &["focus"], &["deep"])];
+        let now = clock.now();
+        let later = now.saturating_add(MINUTE * 120);
+        let cache = plan(
+            vec![event("a", "focus", now, 60), event("b", "focus", later, 60)],
+            vec![task("t", &["deep"], Some(now.saturating_add(MINUTE * 5)))],
+        );
+        let planned = planned_starts(&rules, &cache);
+        let mut log = AutoStartLog::default();
+        let first = log.due(&planned, now).unwrap().clone();
+        log.mark(&first, now);
+        let mut session = SessionState::default();
+        let spec = crate::session::SessionSpec {
+            config: crate::config::BlockConfig::new("coding", crate::config::Mode::Blocklist),
+            strictness: Strictness::Light,
+            duration: first.duration_from(now),
+        };
+        session.start(spec, now).unwrap();
+
+        clock.advance(MINUTE * 10);
+        session.request_end_early(clock.now()).unwrap();
+        assert!(log.end_overlapping(&planned, session.ended().unwrap()));
+        assert_eq!(
+            log.due(&planned, clock.now()),
+            None,
+            "the overlapping task is given up"
+        );
+        assert!(
+            !log.end_overlapping(&planned, session.ended().unwrap()),
+            "only once"
+        );
+        let upcoming: Vec<&str> = log
+            .upcoming(&planned, clock.now())
+            .iter()
+            .map(|start| start.key.as_str())
+            .collect();
+        assert_eq!(upcoming, ["calendar:b"], "later blocks still start");
+    }
+
+    #[test]
+    fn ending_a_manual_session_early_gives_up_nothing() {
+        let clock = FakeClock::default();
+        let rules = [rule("coding", &["focus"], &[])];
+        let cache = plan(vec![event("a", "focus", clock.now(), 60)], vec![]);
+        let planned = planned_starts(&rules, &cache);
+        let mut log = AutoStartLog::default();
+        let mut session = SessionState::default();
+        let spec = crate::session::SessionSpec {
+            config: crate::config::BlockConfig::new("writing", crate::config::Mode::Blocklist),
+            strictness: Strictness::Light,
+            duration: MINUTE * 30,
+        };
+        session.start(spec, clock.now()).unwrap();
+        clock.advance(MINUTE);
+        session.request_end_early(clock.now()).unwrap();
+        assert!(!log.end_overlapping(&planned, session.ended().unwrap()));
+        assert!(log.due(&planned, clock.now()).is_some());
+    }
+
+    #[test]
     fn the_log_survives_a_json_round_trip() {
         let now = FakeClock::default().now();
         let rules = [rule("coding", &["focus"], &[])];
         let cache = plan(vec![event("a", "focus", now, 60)], vec![]);
         let mut log = AutoStartLog::default();
-        log.mark(&planned_starts(&rules, &cache)[0]);
+        log.mark(&planned_starts(&rules, &cache)[0], now);
         let json = serde_json::to_string(&log).unwrap();
         assert_eq!(serde_json::from_str::<AutoStartLog>(&json).unwrap(), log);
     }

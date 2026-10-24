@@ -10,6 +10,6 @@ mod time;
 mod todoist;
 
 pub use http::{HttpError, HttpGet, UreqHttp};
-pub use ical::{IcalCalendar, parse_events};
+pub use ical::IcalCalendar;
 pub use rrule::Tz;
 pub use todoist::TodoistTasks;

@@ -14,6 +14,8 @@ Step 7 lets sessions start from the plan: a Google Calendar event whose title ha
 - `AutoStartRule` from `[[auto_start]]` in `settings.toml`. Each rule names a config and a strictness (default Light), plus `calendar_keywords` (matched in the title, ignoring case) and/or `task_labels` (ignoring case and a leading `@`). `task_minutes` (default 50) is the length for tasks without a duration.
 - `planned_starts` turns the cached plan into `PlannedStart`s, sorted by start. The first matching rule wins.
 - `AutoStartLog`, persisted, remembers which planned sessions already started until they end. So ending an automatic Light session early doesn't start it again.
+- Ending an *automatic* session early also gives up every other planned session already under way at that moment, say a calendar event and a Todoist task for the same block. So ending early sticks, while later blocks still start. A session started by hand doesn't do this.
+- All-day events are kept, for the agenda, but never start sessions. Labels match ignoring case in any script.
 - A planned session starts when it's due, no session is running and at least a minute is left. It runs until the event ends (capped at 12 h). If a manual session is running, the planned one starts when it ends, for whatever time is left. A rule naming a config that isn't in effect is logged and marked, so it isn't retried every second.
 - Edits to a config with a planned session inside the cooling-off window (24 h) now cool off too, as ADR 0003 planned for this step. A daily recurring event therefore keeps its config protected all the time.
 - New ports, each with a fake and a contract suite:
@@ -21,6 +23,13 @@ Step 7 lets sessions start from the plan: a Google Calendar event whose title ha
   - `TaskSource::tasks()`;
   - `Secrets` (`load` / `store`, keyed by the closed `SecretKey` enum: `CalendarUrl`, `TodoistToken`).
 - `SourceError` tells *not set up*, *unreachable* (keep the cache) and *rejected* (bad token or address, or unreadable data) apart.
+
+**Settings from the window:** a new `SettingsEditor` port (`set_auto_start`) is implemented by the TOML adapter with `toml_edit`.
+- It replaces only the `[[auto_start]]` tables, keeping the user's comments and layout.
+- It checks the result with the normal parser before writing; an invalid edit is refused and nothing is written.
+- It writes atomically (temp file, then rename).
+- The daemon then re-reads the file as for a hand edit, so cooling-off is unchanged.
+- `settings.toml` stays the single source of truth, still editable by hand.
 
 **Cache:** `PersistedState.plan` holds the last successful fetch of each source, with its time. A failed fetch keeps the cache, so automatic starts keep working offline for up to 7 days ahead. A source that's no longer set up (credential removed) clears its cache, so stale events don't keep starting sessions.
 
@@ -55,13 +64,35 @@ Step 7 lets sessions start from the plan: a Google Calendar event whose title ha
 - The UI sends credentials with a new `SetSecret` request. A blank value removes one. Status never contains secrets, only whether each source works.
 - The native messaging host doesn't relay `SetSecret`, so a web page can't swap the calendar.
 
-**UI:** a Plan section shows each source's state, which is one of:
-- synced N min ago;
-- offline, using cached data from N h ago;
-- not set up;
-- a problem to fix, in red.
+**IPC:**
+- `Status` carries only each source's state, with no titles, because the browser extension reads `Status` too.
+- A new `Plan` request returns the cached events and tasks, the rules and the upcoming planned sessions.
+- `SetAutoStart` saves rules.
+- The native messaging host relays neither `Plan` nor `SetAutoStart`.
 
-It also lists the next planned sessions and has hidden inputs (Save / Remove) for the iCal address and the Todoist token. The page now scrolls.
+**UI** (the page scrolls):
+- **Today:** today's events (all-day ones first), overdue and due-today tasks with their labels, and tomorrow's events, in local time. Events and tasks that will start a session are marked "Starts coding (Deep)".
+- **Automatic starts:** a card per rule:
+  - the configuration and strictness are picked from lists;
+  - keywords and labels are add/remove chips;
+  - a slider sets the task length.
+  - Save is enabled only when every rule has a configuration and a keyword or label.
+  - Unsaved edits aren't overwritten by polling.
+- **Connections:** each source's state, which is one of:
+  - synced N min ago;
+  - offline, using N events from N h ago;
+  - not set up;
+  - a problem to fix, in red.
+
+  Each source also has a hidden input with Save / Remove. Text typed into an input is kept if saving fails.
+- **Hover help:** a "(?)" next to each control explains it, including where to find the secret iCal address and the Todoist token.
+
+**Robustness** (from review):
+- Durations use checked arithmetic, and event length is capped at 366 days, so a hostile invite can't panic the parser.
+- Each source's fetch runs under `catch_unwind`, so a bug in one source doesn't lose the other's result.
+- Todoist fails rather than returning a partial list past 20 pages.
+- If the keychain can't be opened, only the integrations report it; the daemon still starts.
+- Shutdown waits at most 2 s for a fetch still on the network.
 
 ## Consequences
 
@@ -72,4 +103,4 @@ It also lists the next planned sessions and has hidden inputs (Save / Remove) fo
   - The keychain adapter passes its contract against the real Credential Manager (an ignored test, run locally).
 - Triggers themselves don't cool off. Removing an `[[auto_start]]` rule applies at once, but deleting the event from the calendar is just as easy, so a delay would add nothing.
 - The Todoist fixtures were written from Todoist's API reference and SDK models, not captured from a live account. The first run against a real token is a manual check.
-- Not yet: starting a session from a task by hand, showing today's tasks, the Later button and parking lot (step 8), and calendar write-back (later, per the design).
+- Not yet: starting a session from a task or event by hand, the Later button and parking lot (step 8), and calendar write-back (later, per the design). Editing block configurations, shared lists and start-at-login in the window is step 7b.

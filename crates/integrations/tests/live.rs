@@ -35,9 +35,11 @@ fn reads_a_real_google_calendar() {
         now(),
         now().saturating_add(Duration::from_secs(400 * 24 * 3600)),
     );
-    // Holidays are all-day events, which are skipped, so success here means TLS, the download
-    // and the parse all worked on Google's real output.
-    assert_eq!(calendar.events(from, to).map(|events| events.len()), Ok(0));
+    // Holidays are all-day events: success shows TLS, the download and the parse all worked on
+    // Google's real output.
+    let events = calendar.events(from, to).unwrap();
+    assert!(!events.is_empty(), "a year has holidays");
+    assert!(events.iter().all(|event| event.all_day));
     calendar_source_contract(&calendar, from, to);
 }
 

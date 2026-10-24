@@ -3,22 +3,27 @@
 
 //! Iced desktop UI. Talks only to `focus-daemon` over IPC, so closing the window never ends a session.
 
+mod agenda;
 mod daemon;
+mod help;
+mod rules;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use focus_core::ports::SecretKey;
 use focus_core::{
-    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, PlannedStart,
-    RunningSession, Strictness, Timestamp,
+    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, RunningSession,
+    Strictness, Timestamp,
 };
 use focus_install::{InstanceLock, Paths};
 use iced::widget::{
     Column, button, column, container, pick_list, radio, row, scrollable, slider, text, text_input,
 };
 use iced::{Element, Length, Subscription, Task};
-use ipc_proto::{Request, SourceState, SourceStatus, StatusReport};
+use ipc_proto::{PlanView, Request, SourceState, SourceStatus, StatusReport};
+
+use crate::help::{info, tip};
 use ipc_transport::Endpoint;
 
 fn main() -> iced::Result {
@@ -65,6 +70,9 @@ const POLL: Duration = Duration::from_secs(1);
 /// Configurations are re-fetched every this many polls, to pick up settings edits.
 const CONFIGS_EVERY_POLLS: u32 = 10;
 
+/// The calendar, tasks and rules are re-fetched every this many polls.
+const PLAN_EVERY_POLLS: u32 = 5;
+
 /// After this many failed status polls in a row, the UI starts the daemon (ADR 0008).
 const RESTART_DAEMON_AFTER: u32 = 3;
 
@@ -97,6 +105,17 @@ struct App {
     calendar_input: String,
     /// A Todoist token being typed or pasted.
     token_input: String,
+    /// The calendar, tasks and rules, from the daemon; `None` until it first answers.
+    plan: Option<PlanView>,
+    /// A plan request is on its way.
+    plan_pending: bool,
+    /// The automatic-start rules as edited in the window.
+    rules: Vec<rules::Draft>,
+    /// The rules were edited and not yet saved, so new answers from the daemon don't overwrite
+    /// them.
+    rules_dirty: bool,
+    /// What the action on its way saves, so a failure keeps what was typed.
+    saving: Option<Saving>,
     error: Option<String>,
     polls: u32,
     /// A status request is on its way, so polls don't pile up if the daemon is slow.
@@ -105,6 +124,13 @@ struct App {
     configs_pending: bool,
     /// An action (start, end, ...) is on its way; its buttons are disabled until it answers.
     action_pending: bool,
+}
+
+/// Something being saved through the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Saving {
+    Secret(SecretKey),
+    Rules,
 }
 
 /// One URL check: the URL and what it was checked against.
@@ -141,6 +167,11 @@ enum Message {
     SecretInput(SecretKey, String),
     SaveSecret(SecretKey),
     RemoveSecret(SecretKey),
+    /// Boxed: the plan is much larger than the other messages.
+    PlanLoaded(Box<Result<PlanView, String>>),
+    Rule(rules::Edit),
+    SaveRules,
+    DiscardRules,
 }
 
 impl App {
@@ -164,13 +195,18 @@ impl App {
             probe_asked: None,
             calendar_input: String::new(),
             token_input: String::new(),
+            plan: None,
+            plan_pending: false,
+            rules: Vec::new(),
+            rules_dirty: false,
+            saving: None,
             error: None,
             polls: 0,
             status_pending: false,
             configs_pending: false,
             action_pending: false,
         };
-        let mut boot = vec![app.fetch_status(), app.fetch_configs()];
+        let mut boot = vec![app.fetch_status(), app.fetch_configs(), app.fetch_plan()];
         if minimized {
             boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
         }
@@ -197,6 +233,10 @@ impl App {
                     self.polls.is_multiple_of(CONFIGS_EVERY_POLLS) || self.configs.is_empty();
                 if configs_due && !self.configs_pending {
                     tasks.push(self.fetch_configs());
+                }
+                let plan_due = self.polls.is_multiple_of(PLAN_EVERY_POLLS) || self.plan.is_none();
+                if plan_due && !self.plan_pending {
+                    tasks.push(self.fetch_plan());
                 }
                 return Task::batch(tasks);
             }
@@ -261,9 +301,15 @@ impl App {
             }
             Message::ActionDone(result) => {
                 self.action_pending = false;
+                // A failed save keeps what was typed, so it can be fixed and tried again.
+                match (self.saving.take(), result.is_ok()) {
+                    (Some(Saving::Secret(key)), true) => self.secret_input(key).clear(),
+                    (Some(Saving::Rules), true) => self.rules_dirty = false,
+                    _ => {}
+                }
                 self.error = result.err();
                 // The URL check follows once the new status arrives.
-                return self.fetch_status();
+                return Task::batch([self.fetch_status(), self.fetch_plan()]);
             }
             Message::ProbeChanged(probe) => {
                 self.probe = probe;
@@ -277,12 +323,47 @@ impl App {
             }
             Message::SecretInput(key, value) => *self.secret_input(key) = value,
             Message::SaveSecret(key) => {
-                // Taken out of the window's state right away: the daemon keeps it in the keychain.
-                let value = std::mem::take(self.secret_input(key));
+                // Cleared once the daemon has it in the keychain.
+                let value = self.secret_input(key).clone();
+                self.saving = Some(Saving::Secret(key));
                 return self.act(Request::SetSecret {
                     key,
                     value: Some(value),
                 });
+            }
+            Message::PlanLoaded(result) => {
+                self.plan_pending = false;
+                if let Ok(plan) = *result {
+                    if !self.rules_dirty {
+                        self.rules = plan
+                            .rules
+                            .iter()
+                            .cloned()
+                            .map(rules::Draft::from_rule)
+                            .collect();
+                    }
+                    self.plan = Some(plan);
+                }
+            }
+            Message::Rule(change) => {
+                rules::apply(&mut self.rules, change, &self.config_names);
+                self.rules_dirty = true;
+            }
+            Message::SaveRules => {
+                let rules = self.rules.iter().map(|draft| draft.rule.clone()).collect();
+                self.saving = Some(Saving::Rules);
+                return self.act(Request::SetAutoStart { rules });
+            }
+            Message::DiscardRules => {
+                self.rules_dirty = false;
+                if let Some(plan) = &self.plan {
+                    self.rules = plan
+                        .rules
+                        .iter()
+                        .cloned()
+                        .map(rules::Draft::from_rule)
+                        .collect();
+                }
             }
             Message::RemoveSecret(key) => {
                 self.secret_input(key).clear();
@@ -329,6 +410,13 @@ impl App {
         self.status_pending = true;
         Task::perform(daemon::status(self.endpoint.clone()), |result| {
             Message::StatusLoaded(Box::new(result))
+        })
+    }
+
+    fn fetch_plan(&mut self) -> Task<Message> {
+        self.plan_pending = true;
+        Task::perform(daemon::plan(self.endpoint.clone()), |result| {
+            Message::PlanLoaded(Box::new(result))
         })
     }
 
@@ -423,7 +511,17 @@ impl App {
                 if let Some(pending) = pending_summary(status) {
                     page = page.push(text(pending).size(13).style(text::secondary));
                 }
-                page = page.push(self.plan_view(status));
+                if let Some(plan) = &self.plan {
+                    let agenda = agenda::build(plan, &chrono::Local);
+                    page = page.push(agenda::view_owned(agenda, &status.plan));
+                }
+                page = page.push(rules::view(
+                    &self.rules,
+                    &self.config_names,
+                    self.rules_dirty,
+                    self.action_pending,
+                ));
+                page = page.push(self.connections_view(status));
                 page = page.push(self.probe_view());
                 page = page.push(system_view(status));
             }
@@ -432,7 +530,7 @@ impl App {
             page = page.push(text(error).style(text::danger));
         }
         page = page.push(
-            text("Sessions run in the background daemon; closing this window doesn't end them. Nothing is blocked yet.")
+            text("Sessions run in the background daemon; closing this window doesn't end them.")
                 .size(12)
                 .style(text::secondary),
         );
@@ -450,21 +548,36 @@ impl App {
                 Message::ConfigPicked
             )
             .placeholder("no configurations"),
+            info(
+                "A named set of rules: which sites are blocked, delayed, asked about or have                  their feeds hidden, and which apps are closed. Defined in settings.toml for                  now; editing them here comes next."
+            ),
         ]
-        .spacing(12);
-        let strictness = Strictness::ALL.iter().fold(
-            column![text("Strictness")].spacing(8),
-            |levels, &level| {
-                levels.push(radio(
-                    format!("{level}: {}", describe(level)),
-                    level,
-                    Some(self.strictness),
-                    Message::StrictnessPicked,
-                ))
-            },
-        );
+        .spacing(12)
+        .align_y(iced::Alignment::Center);
+        let strictness_title = row![
+            text("Strictness"),
+            info(
+                "How hard the session is to get out of. Pick Deep or Locked when you know                  you'll be tempted: the extra friction is the point."
+            ),
+        ]
+        .spacing(8);
+        let strictness =
+            Strictness::ALL
+                .iter()
+                .fold(column![strictness_title].spacing(8), |levels, &level| {
+                    levels.push(radio(
+                        format!("{level}: {}", describe(level)),
+                        level,
+                        Some(self.strictness),
+                        Message::StrictnessPicked,
+                    ))
+                });
         let duration = column![
-            text(format!("Duration: {} min", self.minutes)),
+            row![
+                text(format!("Duration: {} min", self.minutes)),
+                info("How long the session runs. It ends by itself when the time is up."),
+            ]
+            .spacing(8),
             slider(MINUTES, self.minutes, Message::MinutesChanged),
         ]
         .spacing(8);
@@ -562,38 +675,51 @@ impl App {
     }
 
     /// The calendar and task sources, the sessions they'll start, and where to set them up.
-    fn plan_view<'a>(&'a self, status: &'a StatusReport) -> Column<'a, Message> {
-        let mut plan = column![text("Plan")].spacing(8);
-        for line in [
-            source_line("Calendar", "events", &status.plan.calendar, status.now),
-            source_line("Todoist", "tasks", &status.plan.tasks, status.now),
-        ] {
-            plan = plan.push(styled(line));
-        }
-        let upcoming = upcoming_lines(&status.plan.upcoming, status.now);
-        if upcoming.is_empty() {
-            plan = plan.push(
-                text(
-                    "Nothing planned starts a session. Add [[auto_start]] rules to settings.toml \
-                     to start one from a calendar keyword or a Todoist label.",
-                )
-                .size(13)
-                .style(text::secondary),
-            );
-        }
-        for line in upcoming {
-            plan = plan.push(text(line).size(13));
-        }
-        plan.push(self.secret_row(
-            SecretKey::CalendarUrl,
-            "Google Calendar: Settings → your calendar → Secret address in iCal format",
-            &self.calendar_input,
-        ))
-        .push(self.secret_row(
-            SecretKey::TodoistToken,
-            "Todoist: Settings → Integrations → Developer → API token",
-            &self.token_input,
-        ))
+    /// Where the calendar and tasks come from: how each is doing, and where to paste the
+    /// address or token.
+    fn connections_view<'a>(&'a self, status: &'a StatusReport) -> Column<'a, Message> {
+        let header = row![
+            text("Connections").size(20),
+            info(
+                "Focus reads your calendar and tasks; it never changes them. The address and \
+                 token are kept in Windows Credential Manager, not in settings.toml, and are \
+                 never shown again after saving."
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        column![
+            header,
+            styled(source_line(
+                "Calendar",
+                "events",
+                &status.plan.calendar,
+                status.now
+            )),
+            self.secret_row(
+                SecretKey::CalendarUrl,
+                "Paste your calendar's secret iCal address",
+                "In Google Calendar on the web: Settings → click your calendar under \
+                 \"Settings for my calendars\" → Integrate calendar → \"Secret address in \
+                 iCal format\" → copy. Anyone with this address can read your calendar, so \
+                 Focus keeps it in the keychain.",
+                &self.calendar_input,
+            ),
+            styled(source_line(
+                "Todoist",
+                "tasks",
+                &status.plan.tasks,
+                status.now
+            )),
+            self.secret_row(
+                SecretKey::TodoistToken,
+                "Paste your Todoist API token",
+                "In Todoist: Settings → Integrations → Developer → copy the API token. It lets \
+                 Focus read your tasks.",
+                &self.token_input,
+            ),
+        ]
+        .spacing(8)
     }
 
     /// A hidden input that sends its credential to the daemon, plus a button to remove it.
@@ -601,6 +727,7 @@ impl App {
         &'a self,
         key: SecretKey,
         placeholder: &'a str,
+        how_to: &'a str,
         value: &'a str,
     ) -> Element<'a, Message> {
         let save = (!value.trim().is_empty())
@@ -612,11 +739,16 @@ impl App {
                 .on_input(move |value| Message::SecretInput(key, value))
                 .on_submit_maybe(save.clone()),
             button("Save").on_press_maybe(save),
-            button("Remove")
-                .style(button::secondary)
-                .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
+            tip(
+                button("Remove")
+                    .style(button::secondary)
+                    .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
+                "Deletes the saved address or token, and the events or tasks kept from it."
+            ),
+            info(how_to),
         ]
         .spacing(8)
+        .align_y(iced::Alignment::Center)
         .into()
     }
 
@@ -627,7 +759,14 @@ impl App {
             _ => "Type a URL to see what the configuration would do with it.".to_owned(),
         };
         column![
-            text("Check a URL"),
+            row![
+                text("Check a URL"),
+                info(
+                    "Type an address to see what the running session (or the configuration \
+                     picked above) would do with it. Nothing is opened."
+                ),
+            ]
+            .spacing(8),
             text_input("reddit.com/r/rust/comments/abc", &self.probe)
                 .on_input(Message::ProbeChanged),
             text(result),
@@ -698,34 +837,6 @@ fn source_line(name: &str, noun: &str, source: &SourceStatus, now: Timestamp) ->
         (SourceState::Failing { problem, .. }, None) => (format!("{name}: {problem}."), true),
     };
     Line { text, warning }
-}
-
-/// Planned sessions, soonest first, e.g. `In 1:30:00: "Deep work" → coding (Deep) for 1:00:00.`
-fn upcoming_lines(upcoming: &[PlannedStart], now: Timestamp) -> Vec<String> {
-    upcoming
-        .iter()
-        .take(4)
-        .map(|start| {
-            let when = if start.starts_at <= now {
-                "Now".to_owned()
-            } else {
-                format!(
-                    "In {}",
-                    format_duration(start.starts_at.saturating_duration_since(now))
-                )
-            };
-            let length = start
-                .ends_at
-                .saturating_duration_since(start.starts_at.max(now));
-            format!(
-                "{when}: \"{}\" → {} ({}) for {}.",
-                start.title,
-                start.config,
-                start.strictness,
-                format_duration(length)
-            )
-        })
-        .collect()
 }
 
 /// `just now`, `5 min ago`, `3 h ago` or `2 days ago`.
@@ -825,7 +936,7 @@ fn config_summary(config: &BlockConfig) -> String {
     let apps = if config.apps.is_empty() {
         "no apps".to_owned()
     } else {
-        format!("closes {} (not yet enforced)", config.apps.join(", "))
+        format!("closes {}", config.apps.join(", "))
     };
     format!("{} · {} rules · {apps}", config.mode, config.rules.len())
 }
@@ -993,28 +1104,6 @@ mod tests {
         let refused = source_line("Todoist", "tasks", &source, now);
         assert_eq!(refused.text, "Todoist: Todoist refused the token.");
         assert!(refused.warning);
-    }
-
-    #[test]
-    fn lists_upcoming_sessions() {
-        let start = |at: u64, until: u64| PlannedStart {
-            key: format!("calendar:{at}"),
-            source: focus_core::PlanSource::Calendar,
-            title: "Deep work".into(),
-            config: "coding".into(),
-            strictness: Strictness::Deep,
-            starts_at: Timestamp::from_millis(at),
-            ends_at: Timestamp::from_millis(until),
-        };
-        let now = Timestamp::from_millis(600_000);
-        let lines = upcoming_lines(&[start(0, 3_600_000), start(4_200_000, 7_800_000)], now);
-        assert_eq!(
-            lines,
-            [
-                "Now: \"Deep work\" → coding (Deep) for 50:00.",
-                "In 1:00:00: \"Deep work\" → coding (Deep) for 1:00:00.",
-            ]
-        );
     }
 
     #[test]

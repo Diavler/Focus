@@ -10,8 +10,8 @@ mod fakes;
 pub use contracts::{
     autostart_contract, calendar_source_contract, clock_contract, config_source_contract,
     enforcer_contract, foreground_app_contract, history_contract, notifier_contract,
-    process_list_contract, secrets_contract, state_store_contract, task_source_contract,
-    ui_watch_contract,
+    process_list_contract, secrets_contract, settings_editor_contract, state_store_contract,
+    task_source_contract, ui_watch_contract,
 };
 pub use fakes::{
     FakeAutostart, FakeCalendar, FakeClock, FakeConfigSource, FakeEnforcer, FakeForegroundApp,
@@ -51,6 +51,8 @@ mod tests {
         ui_watch_contract(&FakeUi::default());
         ui_watch_contract(&FakeUi::running());
         secrets_contract(&MemorySecrets::default());
+        let settings = FakeConfigSource::new(vec![BlockConfig::new("coding", Mode::Blocklist)]);
+        settings_editor_contract(&settings, &settings);
     }
 
     #[test]
@@ -61,6 +63,7 @@ mod tests {
             id: "1".into(),
             title: "Write".into(),
             labels: vec!["deep".into()],
+            due_date: None,
             due_at: None,
             duration: None,
         }]));
@@ -77,6 +80,7 @@ mod tests {
             title: id.into(),
             start: start.saturating_add(from),
             end: start.saturating_add(to),
+            all_day: false,
         };
         let calendar = FakeCalendar::default();
         calendar_source_contract(&calendar, start, start.saturating_add(hour));

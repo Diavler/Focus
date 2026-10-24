@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc};
 use focus_core::ports::{CalendarSource, SecretKey, Secrets, SourceError};
 use focus_core::{CalendarEvent, Timestamp};
 use icalendar::parser::{Component, Property, read_calendar, unfold};
@@ -17,6 +17,10 @@ use crate::time::{from_timestamp, local, to_timestamp};
 /// still fit; a broken rule can't run away).
 const OCCURRENCE_LIMIT: u16 = 2_000;
 
+/// The longest an event is taken to last; longer ones (typos, or hostile invites) are cut here,
+/// which also keeps all date arithmetic far from overflowing.
+const MAX_EVENT_DAYS: i64 = 366;
+
 /// Reads events from the iCal address stored as [`SecretKey::CalendarUrl`].
 pub struct IcalCalendar<H = UreqHttp> {
     secrets: Arc<dyn Secrets>,
@@ -25,14 +29,15 @@ pub struct IcalCalendar<H = UreqHttp> {
 }
 
 impl IcalCalendar {
-    /// Reads over HTTPS; times without a time zone are taken as the computer's local time.
+    /// Reads over HTTPS; times without a time zone, and all-day events, are taken in the
+    /// computer's local time.
     pub fn new(secrets: Arc<dyn Secrets>) -> Self {
         Self::with_http(secrets, UreqHttp::default(), Tz::LOCAL)
     }
 }
 
 impl<H: HttpGet> IcalCalendar<H> {
-    /// Reads with `http`, taking times without a time zone to be in `zone`.
+    /// Reads with `http`, taking times without a time zone (and all-day events) to be in `zone`.
     pub fn with_http(secrets: Arc<dyn Secrets>, http: H, zone: Tz) -> Self {
         Self {
             secrets,
@@ -90,10 +95,9 @@ fn https_address(address: &str) -> Result<String, SourceError> {
 }
 
 /// Events in `text` overlapping `from..to`, with recurring events expanded, sorted by start.
-///
-/// All-day events are skipped: they mark days, not times to focus. Cancelled events and
-/// occurrences removed by `EXDATE` are skipped too.
-pub fn parse_events(
+/// Cancelled events and occurrences removed by `EXDATE` are skipped. The error says, for the
+/// user, why the text isn't a calendar.
+fn parse_events(
     text: &str,
     from: Timestamp,
     to: Timestamp,
@@ -101,10 +105,11 @@ pub fn parse_events(
 ) -> Result<Vec<CalendarEvent>, String> {
     let unfolded = unfold(text);
     let calendar = read_calendar(&unfolded)?;
-    let vevents: Vec<&Component<'_>> = calendar
+    let vevents: Vec<Vevent<'_>> = calendar
         .components
         .iter()
         .filter(|component| component.name.as_str().eq_ignore_ascii_case("VEVENT"))
+        .filter_map(|component| Vevent::parse(component, zone))
         .collect();
     if vevents.is_empty() && !text.contains("BEGIN:VCALENDAR") {
         return Err("it isn't an iCal file".into());
@@ -115,32 +120,26 @@ pub fn parse_events(
     // Occurrences changed or cancelled individually (`RECURRENCE-ID`), by UID and original start.
     let mut overridden: HashMap<&str, HashSet<i64>> = HashMap::new();
     for vevent in &vevents {
-        let Some(parsed) = Vevent::parse(vevent, zone) else {
-            continue;
-        };
-        if let Some(original) = parsed.recurrence_id {
+        if let Some(original) = vevent.recurrence_id {
             overridden
-                .entry(parsed.uid)
+                .entry(vevent.uid)
                 .or_default()
                 .insert(original.timestamp());
-            if !parsed.cancelled {
-                events.push(parsed.occurrence(parsed.start, original));
+            if !vevent.cancelled {
+                events.push(vevent.occurrence(vevent.start, original));
             }
         }
     }
     for vevent in &vevents {
-        let Some(parsed) = Vevent::parse(vevent, zone) else {
-            continue;
-        };
-        if parsed.recurrence_id.is_some() || parsed.cancelled {
+        if vevent.recurrence_id.is_some() || vevent.cancelled {
             continue;
         }
-        let skip = overridden.get(parsed.uid);
-        for start in parsed.starts(window_from, window_to) {
+        let skip = overridden.get(vevent.uid);
+        for start in vevent.starts(window_from, window_to) {
             if skip.is_some_and(|skip| skip.contains(&start.timestamp())) {
                 continue;
             }
-            events.push(parsed.occurrence(start, start));
+            events.push(vevent.occurrence(start, start));
         }
     }
 
@@ -155,7 +154,8 @@ struct Vevent<'a> {
     uid: &'a str,
     title: String,
     start: DateTime<Tz>,
-    length: ChronoDuration,
+    length: TimeDelta,
+    all_day: bool,
     rrule: Option<&'a str>,
     exdates: Vec<DateTime<Tz>>,
     recurrence_id: Option<DateTime<Tz>>,
@@ -163,31 +163,23 @@ struct Vevent<'a> {
 }
 
 impl<'a> Vevent<'a> {
-    /// Reads a timed event; `None` for all-day events or ones without a usable start.
+    /// Reads an event; `None` if it has no usable start.
     fn parse(vevent: &'a Component<'a>, zone: Tz) -> Option<Self> {
-        let start = match when(find(vevent, "DTSTART")?, zone)? {
-            When::Time(start) => start,
-            When::Date => return None,
-        };
+        let (start, all_day) = when(find(vevent, "DTSTART")?, zone)?;
         let length = match (find(vevent, "DTEND"), find(vevent, "DURATION")) {
-            (Some(end), _) => match when(end, zone)? {
-                When::Time(end) => end.signed_duration_since(start),
-                When::Date => return None,
-            },
-            (None, Some(duration)) => parse_duration(duration.val.as_str())?,
-            (None, None) => ChronoDuration::zero(),
-        }
-        .max(ChronoDuration::zero());
+            (Some(end), _) => when(end, zone).map(|(end, _)| end.signed_duration_since(start)),
+            (None, Some(duration)) => parse_duration(duration.val.as_str()),
+            // RFC 5545: a date-only event without an end lasts one day, a timed one no time.
+            (None, None) if all_day => Some(TimeDelta::days(1)),
+            (None, None) => Some(TimeDelta::zero()),
+        }?;
+        let length = length.clamp(TimeDelta::zero(), TimeDelta::days(MAX_EVENT_DAYS));
         let exdates = vevent
             .properties
             .iter()
             .filter(|property| property.name.as_str().eq_ignore_ascii_case("EXDATE"))
             .flat_map(|property| exdates(property, zone))
             .collect();
-        let recurrence_id = match find(vevent, "RECURRENCE-ID").and_then(|id| when(id, zone)) {
-            Some(When::Time(original)) => Some(original),
-            _ => None,
-        };
         Some(Self {
             uid: find(vevent, "UID").map_or("", |uid| uid.val.as_str()),
             title: find(vevent, "SUMMARY")
@@ -195,9 +187,12 @@ impl<'a> Vevent<'a> {
                 .unwrap_or_default(),
             start,
             length,
+            all_day,
             rrule: find(vevent, "RRULE").map(|rule| rule.val.as_str()),
             exdates,
-            recurrence_id,
+            recurrence_id: find(vevent, "RECURRENCE-ID")
+                .and_then(|id| when(id, zone))
+                .map(|(original, _)| original),
             cancelled: find(vevent, "STATUS")
                 .is_some_and(|status| status.val.as_str().eq_ignore_ascii_case("CANCELLED")),
         })
@@ -215,8 +210,9 @@ impl<'a> Vevent<'a> {
         let Ok(rule) = rule.validate(self.start) else {
             return vec![self.start];
         };
-        // Start early enough to include occurrences already running at `from`.
-        let after = (from - self.length - ChronoDuration::seconds(1)).with_timezone(&Tz::UTC);
+        // Start early enough to include occurrences already running at `from`. The length is
+        // capped, so this can't overflow.
+        let after = (from - self.length - TimeDelta::seconds(1)).with_timezone(&Tz::UTC);
         let mut set = RRuleSet::new(self.start)
             .rrule(rule)
             .after(after)
@@ -230,6 +226,9 @@ impl<'a> Vevent<'a> {
     /// The occurrence starting at `start`, identified by its UID and `original` start.
     fn occurrence(&self, start: DateTime<Tz>, original: DateTime<Tz>) -> CalendarEvent {
         let start_at = to_timestamp(start);
+        let end_at = start
+            .checked_add_signed(self.length)
+            .map_or(start_at, to_timestamp);
         let uid = if self.uid.is_empty() {
             self.title.as_str()
         } else {
@@ -239,66 +238,66 @@ impl<'a> Vevent<'a> {
             id: format!("{uid}@{}", to_timestamp(original).as_millis()),
             title: self.title.clone(),
             start: start_at,
-            end: to_timestamp(start + self.length).max(start_at),
+            end: end_at.max(start_at),
+            all_day: self.all_day,
         }
     }
 }
 
-/// A `DATE` or a `DATE-TIME` value.
-enum When {
-    Date,
-    Time(DateTime<Tz>),
-}
-
 /// Reads a date or date-time property: UTC (`...Z`), with a `TZID`, or floating (in `zone`).
-/// A `TZID` that isn't an IANA name (e.g. Outlook's Windows names) is also read in `zone`.
-fn when(property: &Property<'_>, zone: Tz) -> Option<When> {
+/// A `TZID` that isn't an IANA name (e.g. Outlook's Windows names) is also read in `zone`. A
+/// date (all day) is midnight in `zone`. The flag says whether it was a date.
+fn when(property: &Property<'_>, zone: Tz) -> Option<(DateTime<Tz>, bool)> {
     let tzid = param(property, "TZID");
     let is_date = param(property, "VALUE").is_some_and(|value| value.eq_ignore_ascii_case("DATE"));
     parse_when(property.val.as_str(), tzid, is_date, zone)
 }
 
-fn parse_when(value: &str, tzid: Option<&str>, is_date: bool, zone: Tz) -> Option<When> {
+fn parse_when(
+    value: &str,
+    tzid: Option<&str>,
+    is_date: bool,
+    zone: Tz,
+) -> Option<(DateTime<Tz>, bool)> {
     let value = value.trim();
     if is_date || value.len() == 8 {
-        return NaiveDate::parse_from_str(value, "%Y%m%d")
-            .ok()
-            .map(|_| When::Date);
+        let date = NaiveDate::parse_from_str(value, "%Y%m%d").ok()?;
+        return Some((local(zone, date.and_time(NaiveTime::MIN))?, true));
     }
     if let Some(utc) = value.strip_suffix('Z') {
         let naive = NaiveDateTime::parse_from_str(utc, "%Y%m%dT%H%M%S").ok()?;
-        return Some(When::Time(Tz::UTC.from_utc_datetime(&naive)));
+        return Some((Tz::UTC.from_utc_datetime(&naive), false));
     }
     let naive = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S").ok()?;
     let tz = tzid
         .and_then(|id| id.trim_matches('"').parse::<chrono_tz::Tz>().ok())
         .map_or(zone, Tz::Tz);
-    Some(When::Time(local(tz, naive)?))
+    Some((local(tz, naive)?, false))
 }
 
-/// The date-times in one `EXDATE` line (comma-separated, sharing its `TZID`).
+/// The dates or date-times in one `EXDATE` line (comma-separated, sharing its parameters).
 fn exdates(property: &Property<'_>, zone: Tz) -> Vec<DateTime<Tz>> {
     let tzid = param(property, "TZID");
+    let is_date = param(property, "VALUE").is_some_and(|value| value.eq_ignore_ascii_case("DATE"));
     property
         .val
         .as_str()
         .split(',')
-        .filter_map(|value| match parse_when(value, tzid, false, zone)? {
-            When::Time(time) => Some(time),
-            When::Date => None,
-        })
+        .filter_map(|value| parse_when(value, tzid, is_date, zone))
+        .map(|(time, _)| time)
         .collect()
 }
 
-/// Parses an iCal `DURATION` such as `PT1H30M` or `P1D`.
-fn parse_duration(value: &str) -> Option<ChronoDuration> {
+/// Parses an iCal `DURATION` such as `PT1H30M` or `P1D`; `None` if it's malformed or too large
+/// to represent.
+fn parse_duration(value: &str) -> Option<TimeDelta> {
     let value = value.trim();
     let (negative, value) = match value.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, value.strip_prefix('+').unwrap_or(value)),
     };
     let mut rest = value.strip_prefix('P')?;
-    let mut total = ChronoDuration::zero();
+    let mut total = TimeDelta::zero();
     let mut in_time = false;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix('T') {
@@ -309,14 +308,15 @@ fn parse_duration(value: &str) -> Option<ChronoDuration> {
         let digits = rest.find(|c: char| !c.is_ascii_digit())?;
         let amount: i64 = rest[..digits].parse().ok()?;
         let unit = rest[digits..].chars().next()?;
-        total += match (unit, in_time) {
-            ('W', false) => ChronoDuration::weeks(amount),
-            ('D', false) => ChronoDuration::days(amount),
-            ('H', true) => ChronoDuration::hours(amount),
-            ('M', true) => ChronoDuration::minutes(amount),
-            ('S', true) => ChronoDuration::seconds(amount),
-            _ => return None,
-        };
+        let part = match (unit, in_time) {
+            ('W', false) => TimeDelta::try_weeks(amount),
+            ('D', false) => TimeDelta::try_days(amount),
+            ('H', true) => TimeDelta::try_hours(amount),
+            ('M', true) => TimeDelta::try_minutes(amount),
+            ('S', true) => TimeDelta::try_seconds(amount),
+            _ => None,
+        }?;
+        total = total.checked_add(&part)?;
         rest = &rest[digits + unit.len_utf8()..];
     }
     Some(if negative { -total } else { total })
@@ -377,11 +377,7 @@ mod tests {
 
     /// Milliseconds for a UTC date and time.
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> Timestamp {
-        to_timestamp(
-            Utc.with_ymd_and_hms(y, mo, d, h, mi, 0)
-                .unwrap()
-                .with_timezone(&Tz::UTC),
-        )
+        to_timestamp(Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap())
     }
 
     fn calendar(response: Result<&str, HttpError>) -> (Arc<MemorySecrets>, IcalCalendar<Recorded>) {
@@ -407,41 +403,52 @@ mod tests {
         let (from, to) = week();
         let (_secrets, source) = calendar(Ok(GOOGLE));
         let events = source.events(from, to).unwrap();
-        let summary: Vec<(String, Timestamp, Timestamp)> = events
+        let summary: Vec<(&str, Timestamp, Timestamp, bool)> = events
             .iter()
-            .map(|event| (event.title.clone(), event.start, event.end))
+            .map(|event| (event.title.as_str(), event.start, event.end, event.all_day))
             .collect();
         assert_eq!(
             summary,
             [
                 // Mon 09:00–11:00 PDT, weekly.
                 (
-                    "Deep work #focus".into(),
+                    "Deep work #focus",
                     utc(2026, 10, 19, 16, 0),
-                    utc(2026, 10, 19, 18, 0)
+                    utc(2026, 10, 19, 18, 0),
+                    false
+                ),
+                // All of Tuesday in Los Angeles.
+                (
+                    "Focus day #focus",
+                    utc(2026, 10, 20, 7, 0),
+                    utc(2026, 10, 21, 7, 0),
+                    true
                 ),
                 // Tue 14:00 UTC one-off, 30 minutes from DURATION.
                 (
-                    "Standup, team".into(),
+                    "Standup, team",
                     utc(2026, 10, 20, 14, 0),
-                    utc(2026, 10, 20, 14, 30)
+                    utc(2026, 10, 20, 14, 30),
+                    false
                 ),
                 // Wed occurrence moved from 09:00 to 13:00 PDT.
                 (
-                    "Deep work #focus (moved)".into(),
+                    "Deep work #focus (moved)",
                     utc(2026, 10, 21, 20, 0),
-                    utc(2026, 10, 21, 22, 0)
+                    utc(2026, 10, 21, 22, 0),
+                    false
                 ),
                 // Fri 09:00 PDT; Thursday's was cancelled with EXDATE.
                 (
-                    "Deep work #focus".into(),
+                    "Deep work #focus",
                     utc(2026, 10, 23, 16, 0),
-                    utc(2026, 10, 23, 18, 0)
+                    utc(2026, 10, 23, 18, 0),
+                    false
                 ),
             ]
         );
         assert_eq!(
-            events[2].id,
+            events[3].id,
             format!(
                 "focus-block@google.com@{}",
                 utc(2026, 10, 21, 16, 0).as_millis()
@@ -504,24 +511,63 @@ mod tests {
         ));
     }
 
+    /// A calendar with one event, whose lines go between BEGIN:VEVENT and END:VEVENT.
+    fn one_event(lines: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:a\nSUMMARY:Focus\n{lines}\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+    }
+
     #[test]
     fn floating_times_use_the_given_zone() {
-        let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nSUMMARY:Focus\r\n\
-                    DTSTART:20261020T090000\r\nDTEND:20261020T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let text = one_event("DTSTART:20261020T090000\nDTEND:20261020T100000");
         let (from, to) = week();
-        let events = parse_events(text, from, to, los_angeles()).unwrap();
+        let events = parse_events(&text, from, to, los_angeles()).unwrap();
         assert_eq!(events[0].start, utc(2026, 10, 20, 16, 0));
     }
 
     #[test]
+    fn huge_or_endless_events_are_cut_instead_of_crashing() {
+        let (from, to) = week();
+        for lines in [
+            "DTSTART:20261020T090000Z\nDURATION:P99999999999999W",
+            "DTSTART:20261020T090000Z\nDURATION:P999999999999W",
+            "DTSTART:20261020T090000Z\nDTEND:99991231T235959Z",
+            "DTSTART:20261020T090000Z\nDURATION:P999999999999W\nRRULE:FREQ=DAILY",
+        ] {
+            let events = parse_events(&one_event(lines), from, to, los_angeles()).unwrap();
+            for event in events {
+                let days = event.end.saturating_duration_since(event.start).as_secs() / 86_400;
+                assert!(days <= 366, "{lines:?} lasted {days} days");
+            }
+        }
+    }
+
+    #[test]
+    fn yearly_all_day_events_repeat_on_their_date() {
+        let text = one_event("DTSTART;VALUE=DATE:20000505\nRRULE:FREQ=YEARLY");
+        let from = utc(2026, 5, 1, 0, 0);
+        let events = parse_events(&text, from, utc(2026, 6, 1, 0, 0), los_angeles()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].all_day);
+        assert_eq!(
+            events[0].start,
+            utc(2026, 5, 5, 7, 0),
+            "midnight in Los Angeles"
+        );
+        assert_eq!(events[0].end, utc(2026, 5, 6, 7, 0), "one day long");
+    }
+
+    #[test]
     fn parses_durations() {
-        assert_eq!(parse_duration("PT1H30M"), Some(ChronoDuration::minutes(90)));
-        assert_eq!(parse_duration("P1DT2H"), Some(ChronoDuration::hours(26)));
-        assert_eq!(parse_duration("P2W"), Some(ChronoDuration::weeks(2)));
-        assert_eq!(parse_duration("-PT15M"), Some(ChronoDuration::minutes(-15)));
-        assert_eq!(parse_duration("PT"), Some(ChronoDuration::zero()));
+        assert_eq!(parse_duration("PT1H30M"), Some(TimeDelta::minutes(90)));
+        assert_eq!(parse_duration("P1DT2H"), Some(TimeDelta::hours(26)));
+        assert_eq!(parse_duration("P2W"), Some(TimeDelta::weeks(2)));
+        assert_eq!(parse_duration("-PT15M"), Some(TimeDelta::minutes(-15)));
+        assert_eq!(parse_duration("PT"), Some(TimeDelta::zero()));
         assert_eq!(parse_duration("1H"), None);
         assert_eq!(parse_duration("PT5X"), None);
+        assert_eq!(parse_duration("P99999999999999W"), None, "too large");
     }
 
     #[test]

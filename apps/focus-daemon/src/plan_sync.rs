@@ -48,13 +48,26 @@ impl PlanFetch {
         }
     }
 
-    /// Reads both sources. Blocks on the network.
+    /// Reads both sources. Blocks on the network. A source that panics (a parser bug on odd data)
+    /// counts as rejected, so the other source's result is still kept.
     pub fn run(self) -> PlanFetched {
+        let (calendar, tasks) = (&self.calendar, &self.tasks);
         PlanFetched {
-            calendar: self.calendar.events(self.from, self.to),
-            tasks: self.tasks.tasks(),
+            calendar: guarded(|| calendar.events(self.from, self.to)),
+            tasks: guarded(|| tasks.tasks()),
         }
     }
+}
+
+/// Runs one source's read, turning a panic into an error.
+fn guarded<T>(read: impl FnOnce() -> Result<T, SourceError>) -> Result<T, SourceError> {
+    // `AssertUnwindSafe`: nothing the closure touches is used again after a panic except the
+    // adapter, which holds no state a half-finished read could corrupt.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|_| {
+        Err(SourceError::Rejected {
+            reason: "reading it failed unexpectedly (see daemon.log)".into(),
+        })
+    })
 }
 
 /// When the next fetch is due.
@@ -154,6 +167,21 @@ mod tests {
             schedule.take_due(clock.now()),
             "a clock that went back doesn't stall it"
         );
+    }
+
+    #[test]
+    fn a_panicking_source_doesnt_lose_the_other() {
+        struct Broken;
+        impl TaskSource for Broken {
+            fn tasks(&self) -> Result<Vec<Task>, SourceError> {
+                panic!("parser bug");
+            }
+        }
+        let now = FakeClock::default().now();
+        let calendar = Arc::new(focus_core::testing::FakeCalendar::new(Vec::new()));
+        let fetched = PlanFetch::new(calendar, Arc::new(Broken), now).run();
+        assert_eq!(fetched.calendar, Ok(Vec::new()));
+        assert!(matches!(fetched.tasks, Err(SourceError::Rejected { .. })));
     }
 
     #[test]

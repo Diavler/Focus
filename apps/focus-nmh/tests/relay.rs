@@ -55,6 +55,7 @@ impl Daemon {
             calendar: Arc::new(FakeCalendar::default()),
             tasks: Arc::new(FakeTasks::default()),
             secrets: Arc::new(MemorySecrets::default()),
+            settings: Arc::new(TomlConfigSource::new(&settings)),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let listener = bind(endpoint).await.unwrap();

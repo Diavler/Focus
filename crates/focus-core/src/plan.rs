@@ -14,10 +14,14 @@ pub struct CalendarEvent {
     pub id: String,
     /// The event's title.
     pub title: String,
-    /// When it starts.
+    /// When it starts (local midnight for an all-day event).
     pub start: Timestamp,
     /// When it ends; never before `start`.
     pub end: Timestamp,
+    /// Whether it marks whole days rather than a time. All-day events are shown but never start
+    /// sessions.
+    #[serde(default)]
+    pub all_day: bool,
 }
 
 impl CalendarEvent {
@@ -36,6 +40,9 @@ pub struct Task {
     pub title: String,
     /// Its labels, without a leading `@`.
     pub labels: Vec<String>,
+    /// The day it's due, as `YYYY-MM-DD` in the user's time zone, if it has a due date.
+    #[serde(default)]
+    pub due_date: Option<String>,
     /// When it's due, if it's due at a time of day (not just on a day).
     pub due_at: Option<Timestamp>,
     /// How long it's planned to take, if set.

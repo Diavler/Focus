@@ -9,6 +9,6 @@ mod messages;
 
 pub use codec::{DecodeError, PROTOCOL_VERSION, decode, encode};
 pub use messages::{
-    BrowserStatus, DaemonError, PendingSummary, PlanStatus, Request, Response, SourceState,
-    SourceStatus, StatusReport,
+    BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
+    SourceState, SourceStatus, StatusReport,
 };

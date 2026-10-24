@@ -1,9 +1,10 @@
 //! The `TaskSource` adapter for Todoist's API (v1), using a personal API token.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use focus_core::Task;
 use focus_core::ports::{SecretKey, Secrets, SourceError, TaskSource};
 use rrule::Tz;
@@ -88,20 +89,24 @@ impl<H: HttpGet> TaskSource for TodoistTasks<H> {
             .ok_or(SourceError::NotConfigured)?;
         let token = token.trim();
         let mut tasks: Vec<Task> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let page = self.page(token, cursor.as_deref())?;
             for raw in page.results {
-                if !tasks.iter().any(|task| task.id == raw.id) {
+                if seen.insert(raw.id.clone()) {
                     tasks.push(raw.into_task(self.zone));
                 }
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
-                break;
+                return Ok(tasks);
             }
         }
-        Ok(tasks)
+        // A partial list would replace the cache as if it were complete, so refuse it.
+        Err(SourceError::Rejected {
+            reason: format!("Todoist returned more than {MAX_PAGES} pages of tasks"),
+        })
     }
 }
 
@@ -139,6 +144,7 @@ struct RawDuration {
 impl RawTask {
     fn into_task(self, zone: Tz) -> Task {
         Task {
+            due_date: self.due.as_ref().and_then(|due| due_day(&due.date, zone)),
             due_at: self.due.and_then(|due| due_time(&due.date, zone)),
             duration: self.duration.and_then(|duration| {
                 let unit = match duration.unit.as_str() {
@@ -158,6 +164,17 @@ impl RawTask {
             title: self.content,
         }
     }
+}
+
+/// The due day as `YYYY-MM-DD` in `zone` (a fixed UTC time is moved into `zone` first).
+fn due_day(date: &str, zone: Tz) -> Option<String> {
+    if date.ends_with('Z') {
+        let time = DateTime::parse_from_rfc3339(date).ok()?;
+        return Some(time.with_timezone(&zone).format("%Y-%m-%d").to_string());
+    }
+    let day = date.get(..10)?;
+    NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    Some(day.to_owned())
 }
 
 /// The due time, or `None` for a task due on a day without a time.
@@ -233,6 +250,12 @@ mod tests {
         );
         assert_eq!(floating.duration, None);
         assert_eq!(day.due_at, None, "due on a day, not at a time");
+        let days: Vec<Option<&str>> = tasks.iter().map(|task| task.due_date.as_deref()).collect();
+        assert_eq!(
+            days,
+            [Some("2026-10-23"), Some("2026-10-24"), Some("2026-10-25")],
+            "17:00 Berlin time is still the 23rd"
+        );
         assert_eq!(
             source.http.tokens(),
             [Some(TOKEN.to_owned()), Some(TOKEN.to_owned())],
@@ -279,9 +302,28 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_list_cut_short_by_the_page_limit() {
+        let mut http = Recorded::default();
+        let endless = r#"{"results": [], "next_cursor": "again"}"#;
+        http = http.with(FILTER_URL, &first_page(), Ok(endless));
+        let again = [("query", QUERY), ("limit", PAGE_SIZE), ("cursor", "again")];
+        http = http.with(FILTER_URL, &again, Ok(endless));
+        assert!(matches!(
+            source(http).tasks(),
+            Err(SourceError::Rejected { .. })
+        ));
+    }
+
+    #[test]
     fn parses_due_dates() {
         let berlin = Tz::Tz(chrono_tz::Europe::Berlin);
         assert_eq!(due_time("2026-10-23", berlin), None);
+        assert_eq!(due_day("2026-10-23", berlin).as_deref(), Some("2026-10-23"));
+        assert_eq!(
+            due_day("2026-10-23T23:30:00Z", berlin).as_deref(),
+            Some("2026-10-24")
+        );
+        assert_eq!(due_day("soon", berlin), None);
         assert_eq!(
             due_time("2026-10-23T17:00:00Z", berlin),
             Some(utc(2026, 10, 23, 17, 0))

@@ -4,13 +4,14 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::auto_start::{AutoStartLog, PlanSource, PlannedStart};
+use crate::auto_start::{AutoStartLog, AutoStartRule, PlanSource, PlannedStart};
 use crate::config::{BlockConfig, Mode};
 use crate::cooling::ConfigState;
 use crate::plan::{CalendarEvent, Fetched, PlanCache, Task};
 use crate::ports::{
     Autostart, CalendarSource, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent,
-    Notifier, PersistedState, ProcessList, SecretKey, Secrets, StateStore, TaskSource, UiWatch,
+    Notifier, PersistedState, ProcessList, SecretKey, Secrets, SettingsEditor, StateStore,
+    TaskSource, UiWatch,
 };
 use crate::session::{EndReason, SessionSpec, SessionState};
 use crate::strictness::Strictness;
@@ -250,6 +251,63 @@ pub fn secrets_contract(secrets: &dyn Secrets) {
     }
 }
 
+/// Rules set through the editor are what the source then loads, the rest of the settings stay,
+/// a rule for a missing configuration is refused without changing anything, and the original
+/// rules can be put back. `editor` and `source` must be the same settings. Skipped if the
+/// settings can't be loaded.
+pub fn settings_editor_contract(editor: &dyn SettingsEditor, source: &dyn ConfigSource) {
+    let Ok(before) = source.load() else { return };
+    let missing = AutoStartRule {
+        config: "focus-contract-no-such-config".into(),
+        strictness: Strictness::Light,
+        calendar_keywords: vec!["#contract".into()],
+        task_labels: Vec::new(),
+        task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
+    };
+    assert!(
+        editor
+            .set_auto_start(std::slice::from_ref(&missing))
+            .is_err(),
+        "a rule for a missing config was accepted"
+    );
+    assert_eq!(
+        source.load(),
+        Ok(before.clone()),
+        "a refused edit changed the settings"
+    );
+    if let Some(config) = before.configs.first() {
+        let rule = AutoStartRule {
+            config: config.name.clone(),
+            strictness: Strictness::Deep,
+            calendar_keywords: vec!["#contract".into()],
+            task_labels: vec!["contract".into()],
+            task_duration: Duration::from_secs(25 * 60),
+        };
+        assert_eq!(editor.set_auto_start(std::slice::from_ref(&rule)), Ok(()));
+        let after = source.load();
+        assert_eq!(
+            after.as_ref().map(|settings| settings.auto_start.clone()),
+            Ok(vec![rule]),
+            "the rule didn't read back"
+        );
+        assert_eq!(
+            after.map(|settings| (settings.configs, settings.start_at_login)),
+            Ok((before.configs.clone(), before.start_at_login)),
+            "other settings changed"
+        );
+    }
+    assert_eq!(
+        editor.set_auto_start(&before.auto_start),
+        Ok(()),
+        "restoring failed"
+    );
+    assert_eq!(
+        source.load(),
+        Ok(before),
+        "restoring didn't bring the settings back"
+    );
+}
+
 /// Every kind of event can be recorded.
 pub fn history_contract(history: &dyn History) {
     let at = SANE_EPOCH;
@@ -321,7 +379,7 @@ fn running_state() -> PersistedState {
         ends_at: SANE_EPOCH.saturating_add(Duration::from_secs(15 * 60)),
     };
     let mut auto_started = AutoStartLog::default();
-    auto_started.mark(&planned);
+    auto_started.mark(&planned, SANE_EPOCH);
     let plan = PlanCache {
         calendar: Some(Fetched {
             at: SANE_EPOCH,
@@ -330,6 +388,7 @@ fn running_state() -> PersistedState {
                 title: planned.title.clone(),
                 start: planned.starts_at,
                 end: planned.ends_at,
+                all_day: false,
             }],
         }),
         tasks: Some(Fetched {
@@ -338,6 +397,7 @@ fn running_state() -> PersistedState {
                 id: "1".into(),
                 title: "Write the report".into(),
                 labels: vec!["deep".into()],
+                due_date: Some("2020-01-01".into()),
                 due_at: Some(SANE_EPOCH),
                 duration: Some(Duration::from_secs(25 * 60)),
             }],

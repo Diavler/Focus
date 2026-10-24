@@ -7,11 +7,14 @@
 use focus_core::ports::{SecretKey, Secrets, SecretsError};
 
 /// Keeps credentials in the OS keychain under one service name, one entry per [`SecretKey`].
+///
+/// Opening the keychain can't stop Focus from starting: if it fails, every read and write
+/// reports why, and only the integrations that need it show a problem.
 #[derive(Debug)]
 pub struct KeyringSecrets {
     service: String,
     #[cfg(windows)]
-    store: std::sync::Arc<windows_native_keyring_store::Store>,
+    store: Result<std::sync::Arc<windows_native_keyring_store::Store>, String>,
 }
 
 impl KeyringSecrets {
@@ -19,17 +22,23 @@ impl KeyringSecrets {
     pub const SERVICE: &str = "Focus";
 
     /// The keychain entries Focus uses.
-    pub fn new() -> Result<Self, SecretsError> {
+    pub fn new() -> Self {
         Self::with_service(Self::SERVICE)
     }
 
     /// Entries under another service name, so tests never touch the real credentials.
-    pub fn with_service(service: &str) -> Result<Self, SecretsError> {
-        Ok(Self {
+    pub fn with_service(service: &str) -> Self {
+        Self {
             service: service.to_owned(),
             #[cfg(windows)]
-            store: windows_native_keyring_store::Store::new().map_err(unavailable)?,
-        })
+            store: windows_native_keyring_store::Store::new().map_err(|error| error.to_string()),
+        }
+    }
+}
+
+impl Default for KeyringSecrets {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -60,7 +69,13 @@ impl Secrets for KeyringSecrets {
 impl KeyringSecrets {
     fn entry(&self, key: SecretKey) -> Result<keyring_core::Entry, SecretsError> {
         use keyring_core::api::CredentialStoreApi;
-        self.store
+        let store = self
+            .store
+            .as_ref()
+            .map_err(|reason| SecretsError::Unavailable {
+                reason: reason.clone(),
+            })?;
+        store
             .build(&self.service, key.name(), None)
             .map_err(unavailable)
     }
@@ -104,13 +119,13 @@ mod tests {
     #[test]
     #[ignore = "uses the real OS keychain"]
     fn passes_the_contract_in_the_real_keychain() {
-        let secrets = KeyringSecrets::with_service("Focus contract test").unwrap();
+        let secrets = KeyringSecrets::with_service("Focus contract test");
         secrets_contract(&secrets);
     }
 
     #[cfg(not(windows))]
     #[test]
     fn the_linux_placeholder_passes_the_contract() {
-        secrets_contract(&KeyringSecrets::new().unwrap());
+        secrets_contract(&KeyringSecrets::new());
     }
 }

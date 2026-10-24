@@ -6,16 +6,17 @@ use std::time::Duration;
 
 use focus_core::ports::{
     Autostart, CalendarSource, Clock, ConfigSource, Enforcer, ForegroundApp, History, HistoryEvent,
-    Notifier, PersistedState, ProcessList, SecretKey, Secrets, StateStore, StateStoreError,
-    TaskSource, UiWatch,
+    Notifier, PersistedState, ProcessList, SecretKey, Secrets, SettingsEditor, StateStore,
+    StateStoreError, TaskSource, UiWatch,
 };
 use focus_core::{
-    AutoStartRule, BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, SessionError, SessionSpec,
-    SessionState, Strictness, Timestamp, Verdict, apps_to_close, planned_starts, scheduled_configs,
+    AutoStartRule, BrowserPolicy, BrowserWatch, Heartbeat, KnownBrowser, PlannedStart,
+    SessionError, SessionSpec, SessionState, Strictness, Timestamp, Verdict, apps_to_close,
+    planned_starts, scheduled_configs,
 };
 use ipc_proto::{
-    BrowserStatus, DaemonError, PendingSummary, PlanStatus, Request, Response, SourceState,
-    StatusReport,
+    BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
+    SourceState, StatusReport,
 };
 use thiserror::Error;
 
@@ -52,6 +53,8 @@ pub struct Ports {
     pub tasks: Arc<dyn TaskSource>,
     /// The OS keychain, holding the calendar address and task token.
     pub secrets: Arc<dyn Secrets>,
+    /// Writes the window's settings changes into the settings file.
+    pub settings: Arc<dyn SettingsEditor>,
 }
 
 /// Why the daemon couldn't start.
@@ -83,6 +86,8 @@ pub struct Service {
     autostart_problem: Option<String>,
     /// The `[[auto_start]]` rules from the last good settings.
     auto_rules: Vec<AutoStartRule>,
+    /// What those rules start from the cached plan; rebuilt when either changes.
+    planned: Vec<PlannedStart>,
     /// When the plan is fetched next.
     sync: SyncSchedule,
     /// How the last calendar sync went.
@@ -119,6 +124,7 @@ impl Service {
             autostart_applied: None,
             autostart_problem: None,
             auto_rules: Vec::new(),
+            planned: Vec::new(),
             sync: SyncSchedule::default(),
             calendar_state: SourceState::Unknown,
             tasks_state: SourceState::Unknown,
@@ -182,6 +188,8 @@ impl Service {
             Request::SetSecret { key, value } => self
                 .set_secret(key, value.as_deref())
                 .map(|()| Response::Done),
+            Request::Plan => Ok(Response::Plan(Box::new(self.plan_view()))),
+            Request::SetAutoStart { rules } => self.set_auto_start(&rules).map(|()| Response::Done),
         };
         result.unwrap_or_else(|error| Response::Error { error })
     }
@@ -257,14 +265,47 @@ impl Service {
                 .sync(desired.start_at_login, now, cooling_off);
             Ok(report)
         });
-        self.auto_rules = desired.auto_start;
         match result {
             Ok(report) => {
                 for name in &report.queued {
                     tracing::info!("edit to \"{name}\" is cooling off");
                 }
+                // Only once the configs they name are in effect.
+                self.auto_rules = desired.auto_start;
+                self.planned = planned;
             }
             Err(error) => tracing::warn!("{error}"),
+        }
+    }
+
+    /// Replaces the automatic-start rules in the settings file for the window, then applies the
+    /// file as usual.
+    fn set_auto_start(&mut self, rules: &[AutoStartRule]) -> Result<(), DaemonError> {
+        self.ports
+            .settings
+            .set_auto_start(rules)
+            .map_err(|error| DaemonError::Settings {
+                message: error.to_string(),
+            })?;
+        self.reload_settings();
+        Ok(())
+    }
+
+    /// The cached plan for the window's agenda.
+    fn plan_view(&self) -> PlanView {
+        let now = self.now();
+        PlanView {
+            now,
+            events: self.state.plan.events().to_vec(),
+            tasks: self.state.plan.tasks().to_vec(),
+            rules: self.auto_rules.clone(),
+            upcoming: self
+                .state
+                .auto_started
+                .upcoming(&self.planned, now)
+                .into_iter()
+                .cloned()
+                .collect(),
         }
     }
 
@@ -347,6 +388,7 @@ impl Service {
         if let Err(error) = result {
             tracing::warn!("{error}");
         }
+        self.planned = planned_starts(&self.auto_rules, &self.state.plan);
     }
 
     /// Starts the session the plan asks for now, unless one is already running (it then starts
@@ -354,17 +396,20 @@ impl Service {
     /// so ending it early doesn't bring it back.
     pub fn auto_start(&mut self) {
         let now = self.now();
-        let planned = planned_starts(&self.auto_rules, &self.state.plan);
+        let planned = &self.planned;
         let mut log = self.state.auto_started.clone();
-        let pruned = log.prune(now);
-        let due = log.due(&planned, now).cloned();
+        let mut changed = log.prune(now);
+        if let Some(ended) = self.state.session.ended() {
+            changed |= log.end_overlapping(planned, ended);
+        }
+        let due = log.due(planned, now).cloned();
         let running = self.state.session.running().is_some();
         let Some(due) = due.filter(|_| !running) else {
             let forget = |state: &mut PersistedState| {
                 state.auto_started = log;
                 Ok(())
             };
-            if pruned && let Err(error) = self.update(forget) {
+            if changed && let Err(error) = self.update(forget) {
                 tracing::warn!("{error}");
             }
             return;
@@ -373,7 +418,7 @@ impl Service {
         // Marked even if it can't start, so a broken rule isn't retried every second.
         let result = self.update(|state| {
             state.auto_started = log;
-            state.auto_started.mark(&due);
+            state.auto_started.mark(&due, now);
             let Some(config) = config else {
                 return Ok(Err(format!("config \"{}\" isn't in effect", due.config)));
             };
@@ -491,13 +536,9 @@ impl Service {
     }
 
     fn plan_status(&self) -> PlanStatus {
-        let now = self.now();
-        let mut upcoming = planned_starts(&self.auto_rules, &self.state.plan);
-        upcoming.retain(|start| start.ends_at > now);
         PlanStatus {
             calendar: source_status(&self.calendar_state, self.state.plan.calendar.as_ref()),
             tasks: source_status(&self.tasks_state, self.state.plan.tasks.as_ref()),
-            upcoming,
         }
     }
 
@@ -718,6 +759,7 @@ mod tests {
                 calendar: self.calendar.clone(),
                 tasks: self.tasks.clone(),
                 secrets: self.secrets.clone(),
+                settings: Arc::new(TomlConfigSource::new(&self.settings)),
             }
         }
 
@@ -1305,6 +1347,14 @@ mod tests {
             title: "Deep work #focus".into(),
             start,
             end: start.saturating_add(MINUTE * minutes),
+            all_day: false,
+        }
+    }
+
+    fn plan(service: &mut Service) -> ipc_proto::PlanView {
+        match service.handle(Request::Plan) {
+            Response::Plan(view) => *view,
+            other => panic!("expected the plan, got {other:?}"),
         }
     }
 
@@ -1322,9 +1372,11 @@ mod tests {
             .set(Ok(vec![focus_event(&harness, 10, 60)]));
         let mut service = harness.open();
         sync(&mut service);
-        let plan = status(&mut service).plan;
-        assert_eq!(plan.calendar.state, SourceState::Ok);
-        assert_eq!(plan.upcoming.len(), 1, "shows the planned session");
+        assert_eq!(status(&mut service).plan.calendar.state, SourceState::Ok);
+        let view = plan(&mut service);
+        assert_eq!(view.events.len(), 1, "the agenda shows the event");
+        assert_eq!(view.upcoming.len(), 1, "shows the planned session");
+        assert_eq!(view.rules.len(), 1);
 
         service.auto_start();
         assert!(
@@ -1355,6 +1407,7 @@ mod tests {
             id: "1".into(),
             title: "Write the report".into(),
             labels: vec!["Deep".into()],
+            due_date: None,
             due_at: Some(harness.clock.now()),
             duration: Some(MINUTE * 25),
         }]));
@@ -1493,9 +1546,78 @@ mod tests {
 
         harness.calendar.set(Err(SourceError::NotConfigured));
         sync(&mut service);
-        let plan = status(&mut service).plan;
-        assert_eq!(plan.calendar.state, SourceState::NotConfigured);
-        assert_eq!((plan.calendar.items, plan.upcoming.len()), (0, 0));
+        let source = status(&mut service).plan;
+        assert_eq!(source.calendar.state, SourceState::NotConfigured);
+        let view = plan(&mut service);
+        assert_eq!(
+            (
+                source.calendar.items,
+                view.events.len(),
+                view.upcoming.len()
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn rules_set_from_the_window_are_written_and_take_effect() {
+        let harness = Harness::new();
+        harness.calendar.set(Ok(vec![focus_event(&harness, 0, 60)]));
+        let mut service = harness.open();
+        sync(&mut service);
+        let rule = AutoStartRule {
+            config: "coding".into(),
+            strictness: Strictness::Locked,
+            calendar_keywords: vec!["#focus".into()],
+            task_labels: Vec::new(),
+            task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
+        };
+        assert_eq!(
+            service.handle(Request::SetAutoStart {
+                rules: vec![rule.clone()]
+            }),
+            Response::Done
+        );
+        let text = std::fs::read_to_string(&harness.settings).unwrap();
+        assert!(text.contains("[[auto_start]]"), "{text}");
+        assert!(text.contains("[configs.writing]"), "the rest is kept");
+        assert_eq!(plan(&mut service).rules, std::slice::from_ref(&rule));
+        service.auto_start();
+        assert_eq!(
+            service.state().session.running().unwrap().spec().strictness,
+            Strictness::Locked
+        );
+
+        let unknown = AutoStartRule {
+            config: "gaming".into(),
+            ..rule
+        };
+        assert!(matches!(
+            error(service.handle(Request::SetAutoStart {
+                rules: vec![unknown]
+            })),
+            DaemonError::Settings { .. }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&harness.settings).unwrap(),
+            text,
+            "nothing written"
+        );
+    }
+
+    #[test]
+    fn upcoming_leaves_out_sessions_already_started() {
+        let harness = auto_harness();
+        harness.calendar.set(Ok(vec![focus_event(&harness, 0, 60)]));
+        let mut service = harness.open();
+        sync(&mut service);
+        service.auto_start();
+        service.handle(Request::EndSession);
+        assert_eq!(
+            plan(&mut service).upcoming,
+            [],
+            "ended early: won't start again"
+        );
     }
 
     #[test]

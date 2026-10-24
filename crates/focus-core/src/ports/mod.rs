@@ -14,6 +14,7 @@ mod notifier;
 mod plan_source;
 mod process_list;
 mod secrets;
+mod settings_editor;
 mod state_store;
 mod ui_watch;
 
@@ -27,5 +28,6 @@ pub use notifier::{Notifier, NotifyError};
 pub use plan_source::{CalendarSource, SourceError, TaskSource};
 pub use process_list::ProcessList;
 pub use secrets::{SecretKey, Secrets, SecretsError};
+pub use settings_editor::SettingsEditor;
 pub use state_store::{PersistedState, StateStore, StateStoreError};
 pub use ui_watch::{UiWatch, UiWatchError};

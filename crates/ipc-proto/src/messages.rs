@@ -2,8 +2,8 @@
 
 use focus_core::ports::SecretKey;
 use focus_core::{
-    BlockConfig, EndEarlyResponse, PlannedStart, SessionError, SessionState, Strictness, Timestamp,
-    Verdict,
+    AutoStartRule, BlockConfig, CalendarEvent, EndEarlyResponse, PlannedStart, SessionError,
+    SessionState, Strictness, Task, Timestamp, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -56,6 +56,15 @@ pub enum Request {
         /// The new value.
         value: Option<String>,
     },
+    /// The cached calendar events and tasks, the automatic-start rules and what they'll start.
+    /// Answered with [`Response::Plan`]. Not relayed from the browser.
+    Plan,
+    /// Replaces the automatic-start rules in the settings file (keeping the rest of it). Answered
+    /// with [`Response::Done`]. Not relayed from the browser.
+    SetAutoStart {
+        /// The new rules, in order.
+        rules: Vec<AutoStartRule>,
+    },
 }
 
 /// The daemon's answer to one [`Request`].
@@ -82,6 +91,8 @@ pub enum Response {
         /// The configuration that decided, or `None` if no session is running (everything is allowed).
         config: Option<String>,
     },
+    /// Answer to [`Request::Plan`]. Boxed because it's much larger than the other answers.
+    Plan(Box<PlanView>),
     /// The request succeeded and has nothing else to report.
     Done,
     /// The request failed; nothing changed.
@@ -128,7 +139,21 @@ pub struct PlanStatus {
     pub calendar: SourceStatus,
     /// The task list.
     pub tasks: SourceStatus,
-    /// Planned sessions that haven't ended yet, soonest first.
+}
+
+/// The plan itself, for the window's agenda. Kept out of [`StatusReport`], which the browser
+/// extension also reads, so event and task titles stay with the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanView {
+    /// The daemon's current time.
+    pub now: Timestamp,
+    /// Cached calendar events (about 12 h back to 7 days ahead), sorted by start.
+    pub events: Vec<CalendarEvent>,
+    /// Cached open tasks (overdue or due within 7 days).
+    pub tasks: Vec<Task>,
+    /// The automatic-start rules in effect, in order.
+    pub rules: Vec<AutoStartRule>,
+    /// Planned sessions that haven't started and still have time left, soonest first.
     pub upcoming: Vec<PlannedStart>,
 }
 
@@ -230,6 +255,12 @@ pub enum DaemonError {
     /// The daemon is stopping and no longer takes requests.
     #[error("the daemon is shutting down")]
     ShuttingDown,
+    /// The settings file couldn't be changed (it would be invalid, or can't be written).
+    #[error("couldn't change the settings: {message}")]
+    Settings {
+        /// What went wrong.
+        message: String,
+    },
     /// The OS keychain refused to store a credential.
     #[error("couldn't store the credential: {message}")]
     Credentials {
