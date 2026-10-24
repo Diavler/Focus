@@ -10,7 +10,7 @@ Step 5 makes sessions bite outside the browser on Windows. The build plan now do
 ## Decision
 
 **Policy in the core, effects in the adapter.**
-- `focus_core::BrowserWatch::browsers_to_close` decides which running browsers to close. A browser is kept if a heartbeat from its extension arrived within 45 s with incognito access allowed. That's longer than the extension's 30 s wake-up alarm, its only heartbeat while Chrome has suspended its service worker. If listing processes fails, browsers are skipped for that check rather than treated as gone, which would reset their grace periods. Otherwise it's kept only during a 20 s grace period after it's first seen, so a newly opened browser's extension can start. A browser that stops running is forgotten, so a relaunch gets a fresh grace period.
+- `focus_core::BrowserWatch::browsers_to_close` decides which running browsers to close. A browser is kept if a heartbeat from its extension arrived within 45 s with incognito access allowed. That's longer than the extension's 30 s wake-up alarm, its only heartbeat while Chrome has suspended its service worker. Otherwise it's kept only during a 20 s grace period after it's first seen, so a newly opened browser's extension can start. A browser that stops running is forgotten, so a relaunch gets a fresh grace period. If listing processes fails, browsers are skipped for that check rather than treated as gone, which would reset their grace periods.
 - `apps_to_close` merges these browsers with the config's `apps`. App names match case-insensitively, with or without `.exe`, through one shared helper (`select_apps`) that the real adapter and the fake both use.
 - Two small new ports keep `Enforcer` focused:
   - `ProcessList` ("which of these apps are running?");
