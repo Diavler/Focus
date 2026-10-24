@@ -2,10 +2,22 @@
   "name": "focus-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "Focus browser extension (MV3, Chromium first). Stub until build step 4.",
+  "description": "Focus browser extension (MV3, Chromium first)",
   "license": "MIT OR Apache-2.0",
+  "type": "module",
   "scripts": {
-    "test": "node -e \"console.log('extension: stub, tests arrive in build step 4')\"",
-    "build": "node -e \"console.log('extension: stub, build arrives in build step 4')\""
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/webextension-polyfill": "0.12.6",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "webextension-polyfill": "0.12.0"
   }
 }

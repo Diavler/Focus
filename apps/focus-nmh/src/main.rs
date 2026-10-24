@@ -1,7 +1,8 @@
 //! Native messaging host: bridges the browser extension (stdin/stdout JSON) to `focus-daemon` IPC.
 //!
 //! - `focus-nmh chrome-extension://<id>/`: started by the browser; relays messages until it closes.
-//! - `focus-nmh --register --extension-id <id> [--dry-run]`: tells Chromium browsers about the host.
+//! - `focus-nmh --register [--extension-id <id>] [--dry-run]`: tells Chromium browsers about the host
+//!   (the ID defaults to the Focus extension's).
 //! - `focus-nmh --unregister [--dry-run]`: undoes `--register`.
 //!
 //! In host mode stdout carries the protocol, so diagnostics only ever go to stderr.
@@ -13,7 +14,7 @@ use focus_nmh::register::{self, Action, Machine, Platform};
 use ipc_transport::Endpoint;
 
 const USAGE: &str = "usage:
-  focus-nmh --register --extension-id <id> [--dry-run]
+  focus-nmh --register [--extension-id <id>] [--dry-run]
   focus-nmh --unregister [--dry-run]
 (the browser starts focus-nmh itself once it's registered)";
 
@@ -44,11 +45,7 @@ async fn main() -> ExitCode {
             let id = args
                 .windows(2)
                 .find(|pair| pair[0] == "--extension-id")
-                .map(|pair| pair[1].as_str());
-            let Some(id) = id else {
-                eprintln!("{USAGE}");
-                return ExitCode::from(2);
-            };
+                .map_or(register::DEFAULT_EXTENSION_ID, |pair| pair[1].as_str());
             apply(register::register_plan(&machine(&install), id), dry_run)
         }
         Some("--unregister") => apply(register::unregister_plan(&machine(&install)), dry_run),
