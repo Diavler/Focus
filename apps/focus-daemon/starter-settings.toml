@@ -5,6 +5,9 @@
 # Patterns: "site.com" (whole site and subdomains), "site.com/" (front page only),
 # "site.com/path/*" (* matches anything).
 
+# Start Focus when you log in. Turning this off also waits 24 hours, like loosening a config.
+start_at_login = true
+
 [lists.social]
 block = ["x.com", "instagram.com", "tiktok.com"]
 

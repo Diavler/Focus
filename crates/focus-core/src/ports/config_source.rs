@@ -2,12 +2,13 @@
 
 use thiserror::Error;
 
-use crate::config::BlockConfig;
+use crate::login::Settings;
 
-/// Loads the user's block configurations, with shared lists already included.
+/// Loads the user's settings: block configurations (with shared lists already included) and
+/// app settings.
 pub trait ConfigSource: Send + Sync {
-    /// Every configuration, in a stable order with unique names.
-    fn load(&self) -> Result<Vec<BlockConfig>, ConfigSourceError>;
+    /// The settings; configurations come in a stable order with unique names.
+    fn load(&self) -> Result<Settings, ConfigSourceError>;
 }
 
 /// Why configurations couldn't be loaded.

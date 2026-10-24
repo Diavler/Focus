@@ -3,14 +3,40 @@
 //! A fresh connection each time means a restarted daemon is picked up without reconnect logic;
 //! local connections are cheap enough for a once-a-second poll.
 
+use std::io;
+
 use focus_core::{BlockConfig, Verdict};
 use ipc_proto::{Request, StatusReport};
-use ipc_transport::{Client, Endpoint};
+use ipc_transport::{Client, ClientError, Endpoint};
+
+/// Why the status couldn't be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusError {
+    /// What went wrong, for the window.
+    pub message: String,
+    /// Nothing is listening: the daemon isn't running, so starting it may help. False for a
+    /// daemon that's slow, busy, owned by another user or speaking another protocol version,
+    /// where starting another would do nothing.
+    pub not_running: bool,
+}
 
 /// The daemon's status.
-pub async fn status(endpoint: Endpoint) -> Result<StatusReport, String> {
-    let mut client = Client::connect(&endpoint).await.map_err(text)?;
-    client.status().await.map_err(text)
+pub async fn status(endpoint: Endpoint) -> Result<StatusReport, StatusError> {
+    let mut client = Client::connect(&endpoint)
+        .await
+        .map_err(|error| StatusError {
+            not_running: is_not_running(&error),
+            message: error.to_string(),
+        })?;
+    client.status().await.map_err(|error| StatusError {
+        message: error.to_string(),
+        not_running: false,
+    })
+}
+
+/// Whether a connect error means nothing is listening.
+fn is_not_running(error: &ClientError) -> bool {
+    matches!(error, ClientError::Io(io) if matches!(io.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused))
 }
 
 /// The configurations in effect.

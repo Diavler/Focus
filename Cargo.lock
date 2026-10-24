@@ -572,6 +572,7 @@ dependencies = [
  "focus-core",
  "tempfile",
  "tracing",
+ "widestring",
  "win-user",
  "windows-sys 0.61.2",
 ]
@@ -648,6 +649,7 @@ dependencies = [
  "enforce-linux-kde",
  "enforce-windows",
  "focus-core",
+ "focus-install",
  "ipc-proto",
  "ipc-transport",
  "state-json",
@@ -656,6 +658,13 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "focus-install"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -679,6 +688,7 @@ name = "focus-ui"
 version = "0.1.0"
 dependencies = [
  "focus-core",
+ "focus-install",
  "iced",
  "ipc-proto",
  "ipc-transport",

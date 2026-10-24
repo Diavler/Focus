@@ -10,7 +10,8 @@ use config_toml::TomlConfigSource;
 use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_core::testing::{
-    FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
+    FakeAutostart, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier, FakeUi,
+    MemoryStateStore,
 };
 use focus_daemon::{Ports, Service, serve};
 use focus_nmh::framing::{Frame, read_message};
@@ -49,6 +50,8 @@ impl Daemon {
             foreground: Arc::new(FakeForegroundApp::default()),
             notifier: Arc::new(FakeNotifier::default()),
             browsers: Vec::new(),
+            autostart: Arc::new(FakeAutostart::default()),
+            ui: Arc::new(FakeUi::running()),
         };
         let service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF).unwrap();
         let listener = bind(endpoint).await.unwrap();

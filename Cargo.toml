@@ -24,6 +24,7 @@ ipc-transport = { path = "crates/ipc-transport" }
 config-toml = { path = "crates/config-toml" }
 state-json = { path = "crates/state-json" }
 win-user = { path = "crates/win-user" }
+focus-install = { path = "crates/focus-install" }
 enforce-windows = { path = "crates/enforce-windows" }
 enforce-linux-kde = { path = "crates/enforce-linux-kde" }
 serde = { version = "1.0.229", features = ["derive"] }

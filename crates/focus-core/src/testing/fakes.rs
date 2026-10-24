@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use crate::config::BlockConfig;
 use crate::enforcement::{same_app, select_apps};
+use crate::login::Settings;
 use crate::ports::{
-    Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer, ForegroundApp, History,
-    HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState, ProcessList, StateStore,
-    StateStoreError,
+    Autostart, AutostartError, Clock, ConfigSource, ConfigSourceError, EnforceError, Enforcer,
+    ForegroundApp, History, HistoryError, HistoryEvent, Notifier, NotifyError, PersistedState,
+    ProcessList, StateStore, StateStoreError, UiWatch, UiWatchError,
 };
 use crate::time::Timestamp;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Locks a fake's mutex; a panicking test can't leave a fake's plain data half-updated.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -59,14 +61,17 @@ impl Clock for FakeClock {
 /// A config source that returns a fixed result.
 #[derive(Debug)]
 pub struct FakeConfigSource {
-    result: Result<Vec<BlockConfig>, ConfigSourceError>,
+    result: Result<Settings, ConfigSourceError>,
 }
 
 impl FakeConfigSource {
-    /// A source that loads `configs`.
+    /// A source that loads `configs`, with the other settings at their defaults.
     pub fn new(configs: Vec<BlockConfig>) -> Self {
         Self {
-            result: Ok(configs),
+            result: Ok(Settings {
+                configs,
+                ..Settings::default()
+            }),
         }
     }
 
@@ -77,8 +82,28 @@ impl FakeConfigSource {
 }
 
 impl ConfigSource for FakeConfigSource {
-    fn load(&self) -> Result<Vec<BlockConfig>, ConfigSourceError> {
+    fn load(&self) -> Result<Settings, ConfigSourceError> {
         self.result.clone()
+    }
+}
+
+/// An autostart registration that only remembers the last request.
+#[derive(Debug, Default)]
+pub struct FakeAutostart {
+    enabled: Mutex<Option<bool>>,
+}
+
+impl FakeAutostart {
+    /// The last value set, or `None` if it was never set.
+    pub fn enabled(&self) -> Option<bool> {
+        *lock(&self.enabled)
+    }
+}
+
+impl Autostart for FakeAutostart {
+    fn set_enabled(&self, enabled: bool) -> Result<(), AutostartError> {
+        *lock(&self.enabled) = Some(enabled);
+        Ok(())
     }
 }
 
@@ -208,6 +233,44 @@ impl RecordingHistory {
 impl History for RecordingHistory {
     fn record(&self, event: &HistoryEvent) -> Result<(), HistoryError> {
         lock(&self.events).push(event.clone());
+        Ok(())
+    }
+}
+
+/// A UI that "runs" once launched, until killed.
+#[derive(Debug, Default)]
+pub struct FakeUi {
+    running: AtomicBool,
+    launches: AtomicU32,
+}
+
+impl FakeUi {
+    /// A UI that is already running.
+    pub fn running() -> Self {
+        let ui = Self::default();
+        ui.running.store(true, Ordering::SeqCst);
+        ui
+    }
+
+    /// Stops the pretend UI, as if the user killed it.
+    pub fn kill(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// How many times it was launched.
+    pub fn launches(&self) -> u32 {
+        self.launches.load(Ordering::SeqCst)
+    }
+}
+
+impl UiWatch for FakeUi {
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    fn launch(&self) -> Result<(), UiWatchError> {
+        self.launches.fetch_add(1, Ordering::SeqCst);
+        self.running.store(true, Ordering::SeqCst);
         Ok(())
     }
 }

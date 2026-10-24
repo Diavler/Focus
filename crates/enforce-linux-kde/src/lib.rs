@@ -8,10 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use focus_core::KnownBrowser;
 use focus_core::ports::{
-    EnforceError, Enforcer, ForegroundApp, Notifier, NotifyError, ProcessList,
+    Autostart, AutostartError, EnforceError, Enforcer, ForegroundApp, Notifier, NotifyError,
+    ProcessList,
 };
 
-/// No enforcement yet: closes nothing, sees no apps, and leaves notifications alone.
+/// No enforcement yet: closes nothing, sees no apps, leaves notifications alone and doesn't
+/// register for login.
 #[derive(Debug, Default)]
 pub struct PendingEnforcer {
     warned: AtomicBool,
@@ -57,6 +59,18 @@ impl Notifier for PendingEnforcer {
     }
 }
 
+impl Autostart for PendingEnforcer {
+    /// Switching on says it isn't supported yet, so the UI doesn't claim Focus starts at login.
+    fn set_enabled(&self, enabled: bool) -> Result<(), AutostartError> {
+        if enabled {
+            return Err(AutostartError::Failed {
+                reason: "not available on Linux until build step 9".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Browsers to watch on Linux: none until step 9.
 pub fn known_browsers() -> Vec<KnownBrowser> {
     Vec::new()
@@ -65,7 +79,8 @@ pub fn known_browsers() -> Vec<KnownBrowser> {
 #[cfg(test)]
 mod tests {
     use focus_core::testing::{
-        enforcer_contract, foreground_app_contract, notifier_contract, process_list_contract,
+        autostart_contract, enforcer_contract, foreground_app_contract, notifier_contract,
+        process_list_contract,
     };
 
     use super::*;
@@ -77,5 +92,6 @@ mod tests {
         process_list_contract(&pending);
         foreground_app_contract(&pending);
         notifier_contract(&pending);
+        autostart_contract(&pending);
     }
 }

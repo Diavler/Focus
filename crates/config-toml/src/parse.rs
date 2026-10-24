@@ -2,13 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use focus_core::{BlockConfig, Mode, Rule, SharedList, UrlPattern, Verdict};
+use focus_core::{BlockConfig, Mode, Rule, Settings, SharedList, UrlPattern, Verdict};
 
 use crate::error::{Problem, SettingsError};
 use crate::schema::{RuleGroup, SettingsFile};
 
-/// Parses and validates settings text. Returns configurations sorted by name, or every problem found.
-pub fn parse_settings(text: &str) -> Result<Vec<BlockConfig>, SettingsError> {
+/// Parses and validates settings text. Returns the settings (configurations sorted by name), or
+/// every problem found.
+pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
     // Some Windows editors start UTF-8 files with a byte-order mark, which TOML doesn't allow.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let file: SettingsFile = toml::from_str(text).map_err(|error| SettingsError::Syntax {
@@ -32,7 +33,7 @@ pub fn parse_settings(text: &str) -> Result<Vec<BlockConfig>, SettingsError> {
         })
         .collect();
 
-    let configs = file
+    let configs: Vec<BlockConfig> = file
         .configs
         .iter()
         .map(|(name, table)| {
@@ -64,7 +65,10 @@ pub fn parse_settings(text: &str) -> Result<Vec<BlockConfig>, SettingsError> {
         .collect();
 
     if problems.is_empty() {
-        Ok(configs)
+        Ok(Settings {
+            configs,
+            start_at_login: file.start_at_login,
+        })
     } else {
         Err(SettingsError::Invalid { problems })
     }
@@ -129,7 +133,7 @@ mod tests {
 
     #[test]
     fn parses_the_design_example() {
-        let configs = parse_settings(DESIGN_EXAMPLE).unwrap();
+        let configs = parse_settings(DESIGN_EXAMPLE).unwrap().configs;
         let [coding, writing] = configs.as_slice() else {
             panic!("expected two configs, got {configs:?}");
         };
@@ -166,7 +170,8 @@ mod tests {
             block = ["e.com"]
             "#,
         )
-        .unwrap();
+        .unwrap()
+        .configs;
         let all = &configs[0];
         assert_eq!(all.mode, Mode::Blocklist);
         let verdicts: Vec<_> = ["a.com", "b.com", "c.com", "d.com", "e.com"]
@@ -187,8 +192,14 @@ mod tests {
 
     #[test]
     fn empty_settings_mean_no_configs() {
-        assert_eq!(parse_settings(""), Ok(Vec::new()));
-        assert_eq!(parse_settings("\u{feff}# just a comment\n"), Ok(Vec::new()));
+        assert_eq!(parse_settings(""), Ok(Settings::default()));
+        assert_eq!(
+            parse_settings("\u{feff}# just a comment\n"),
+            Ok(Settings::default())
+        );
+        let off = parse_settings("start_at_login = false\n").unwrap();
+        assert!(!off.start_at_login);
+        assert!(off.configs.is_empty());
     }
 
     #[test]

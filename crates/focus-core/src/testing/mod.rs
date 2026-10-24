@@ -8,12 +8,13 @@ mod contracts;
 mod fakes;
 
 pub use contracts::{
-    clock_contract, config_source_contract, enforcer_contract, foreground_app_contract,
-    history_contract, notifier_contract, process_list_contract, state_store_contract,
+    autostart_contract, clock_contract, config_source_contract, enforcer_contract,
+    foreground_app_contract, history_contract, notifier_contract, process_list_contract,
+    state_store_contract, ui_watch_contract,
 };
 pub use fakes::{
-    FakeClock, FakeConfigSource, FakeEnforcer, FakeForegroundApp, FakeNotifier, MemoryStateStore,
-    RecordingHistory,
+    FakeAutostart, FakeClock, FakeConfigSource, FakeEnforcer, FakeForegroundApp, FakeNotifier,
+    FakeUi, MemoryStateStore, RecordingHistory,
 };
 
 #[cfg(test)]
@@ -43,5 +44,8 @@ mod tests {
         notifier_contract(&FakeNotifier::default());
         history_contract(&RecordingHistory::default());
         history_contract(&NoopHistory);
+        autostart_contract(&FakeAutostart::default());
+        ui_watch_contract(&FakeUi::default());
+        ui_watch_contract(&FakeUi::running());
     }
 }
