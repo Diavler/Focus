@@ -1,58 +1,66 @@
-//! Today's calendar and tasks (and tomorrow's events), in local time, marking what will start a
-//! session.
+//! Calendar events grouped by day and tasks grouped by when they're due, in local time, marking
+//! what will start a session. Pure data first (tested), then how a row looks.
 
 use std::fmt::Display;
 
 use chrono::{DateTime, Days, NaiveDate, NaiveTime, TimeZone};
 use focus_core::{CalendarEvent, PlanSource, PlannedStart, Task, Timestamp};
-use iced::widget::{Column, column, row, text};
-use iced::{Alignment, Element, Length};
-use ipc_proto::{PlanStatus, PlanView, SourceState};
+use iced::widget::{Column, column, container, row, text};
+use iced::{Alignment, Length};
+use ipc_proto::PlanView;
 
 use crate::Message;
-use crate::help::info;
+use crate::style::{Tone, bold, caption, pill, toned};
 
-/// The agenda, ready to show.
+/// A titled group of rows: one day of events, or tasks due at a similar time.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Agenda {
-    /// Today, e.g. `Saturday 24 October`.
-    pub day: String,
-    /// Today's events, all-day ones first.
-    pub today: Vec<Row>,
-    /// Overdue tasks and tasks due today.
-    pub tasks: Vec<Row>,
-    /// Tomorrow's events.
-    pub tomorrow: Vec<Row>,
+pub struct Group {
+    /// `Today`, `Tomorrow`, `Monday`, `Overdue`, ...
+    pub title: String,
+    /// The date, e.g. `Saturday 24 October`, if the group is one day.
+    pub detail: Option<String>,
+    /// The events or tasks.
+    pub rows: Vec<Row>,
 }
 
-/// One line of the agenda.
+/// One event or task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// When: `09:00–11:00`, `All day`, `17:00` or `Overdue · Oct 22`.
+    /// When: `09:00–11:00`, `All day`, `17:00`, `Any time` or `Oct 22`.
     pub when: String,
     /// The event's or task's title.
     pub title: String,
-    /// Labels, whether it's on now, and the session it starts.
+    /// Labels, and whether it's on now.
     pub note: Option<String>,
+    /// The session it starts, e.g. `Starts coding (Deep)`.
+    pub starts: Option<String>,
     /// Already over.
     pub past: bool,
     /// Needs attention (an overdue task).
     pub warning: bool,
 }
 
-/// Builds the agenda for the day `view.now` falls on in `zone`.
-pub fn build<Z: TimeZone>(view: &PlanView, zone: &Z) -> Agenda
+/// Events for `days` days from the day `view.now` falls on in `zone`, one group per day.
+pub fn calendar_days<Z: TimeZone>(view: &PlanView, zone: &Z, days: u64) -> Vec<Group>
 where
     Z::Offset: Display,
 {
     let today = local(view.now, zone).date_naive();
-    let tomorrow = today + Days::new(1);
-    Agenda {
-        day: today.format("%A %-d %B").to_string(),
-        today: events_on(view, today, zone),
-        tasks: tasks_due(view, today, zone),
-        tomorrow: events_on(view, tomorrow, zone),
-    }
+    (0..days)
+        .map(|offset| {
+            let day = today + Days::new(offset);
+            let (title, detail) = match offset {
+                0 => ("Today".to_owned(), day.format("%A %-d %B")),
+                1 => ("Tomorrow".to_owned(), day.format("%A %-d %B")),
+                _ => (day.format("%A").to_string(), day.format("%-d %B")),
+            };
+            Group {
+                title,
+                detail: Some(detail.to_string()),
+                rows: events_on(view, day, zone),
+            }
+        })
+        .collect()
 }
 
 fn events_on<Z: TimeZone>(view: &PlanView, day: NaiveDate, zone: &Z) -> Vec<Row>
@@ -80,11 +88,11 @@ where
                     && start.starts_at == event.start
                     && start.title == event.title
             });
-            let note = join([now.then(|| "On now".to_owned()), planned.map(starts)]);
             Row {
                 when,
                 title: event.title.clone(),
-                note,
+                note: now.then(|| "On now".to_owned()),
+                starts: planned.map(starts),
                 past: event.end <= view.now,
                 warning: false,
             }
@@ -92,46 +100,79 @@ where
         .collect()
 }
 
-fn tasks_due<Z: TimeZone>(view: &PlanView, today: NaiveDate, zone: &Z) -> Vec<Row>
+/// Tasks grouped as Overdue, Today, Tomorrow and Later this week (empty groups included, so the
+/// page can say "nothing due").
+pub fn task_groups<Z: TimeZone>(view: &PlanView, zone: &Z) -> Vec<Group>
 where
     Z::Offset: Display,
 {
+    let today = local(view.now, zone).date_naive();
+    let tomorrow = today + Days::new(1);
     let mut due: Vec<(NaiveDate, &Task)> = view
         .tasks
         .iter()
         .filter_map(|task| Some((due_day(task, zone)?, task)))
-        .filter(|(day, _)| *day <= today)
         .collect();
     due.sort_by_key(|(day, task)| (*day, task.due_at.is_none(), task.due_at, task.title.clone()));
-    due.into_iter()
-        .map(|(day, task)| {
-            let overdue = day < today;
-            let when = match (overdue, task.due_at) {
-                (true, _) => format!("Overdue · {}", day.format("%b %-d")),
-                (false, Some(at)) => clock(at, zone),
-                (false, None) => "Today".to_owned(),
-            };
-            let planned = view.upcoming.iter().find(|start| {
-                start.source == PlanSource::Task
-                    && Some(start.starts_at) == task.due_at
-                    && start.title == task.title
-            });
-            let labels = (!task.labels.is_empty()).then(|| {
-                task.labels
-                    .iter()
-                    .map(|label| format!("@{label}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            });
-            Row {
-                when,
-                title: task.title.clone(),
-                note: join([labels, planned.map(starts)]),
-                past: false,
-                warning: overdue,
-            }
-        })
-        .collect()
+    let group = |title: &str, detail: Option<NaiveDate>, keep: &dyn Fn(NaiveDate) -> bool| Group {
+        title: title.to_owned(),
+        detail: detail.map(|day| day.format("%A %-d %B").to_string()),
+        rows: due
+            .iter()
+            .filter(|(day, _)| keep(*day))
+            .map(|(day, task)| task_row(view, task, *day, today, zone))
+            .collect(),
+    };
+    vec![
+        group("Overdue", None, &|day| day < today),
+        group("Today", Some(today), &|day| day == today),
+        group("Tomorrow", Some(tomorrow), &|day| day == tomorrow),
+        group("Later this week", None, &|day| day > tomorrow),
+    ]
+}
+
+fn task_row<Z: TimeZone>(
+    view: &PlanView,
+    task: &Task,
+    day: NaiveDate,
+    today: NaiveDate,
+    zone: &Z,
+) -> Row
+where
+    Z::Offset: Display,
+{
+    let tomorrow = today + Days::new(1);
+    let time = task.due_at.map(|at| clock(at, zone));
+    let when = if day < today {
+        day.format("%b %-d").to_string()
+    } else if day > tomorrow {
+        match &time {
+            Some(time) => format!("{} · {time}", day.format("%a %-d")),
+            None => day.format("%a %-d").to_string(),
+        }
+    } else {
+        time.unwrap_or_else(|| "Any time".to_owned())
+    };
+    let planned = view.upcoming.iter().find(|start| {
+        start.source == PlanSource::Task
+            && Some(start.starts_at) == task.due_at
+            && start.title == task.title
+    });
+    let labels = (!task.labels.is_empty()).then(|| {
+        task.labels
+            .iter()
+            .map(|label| format!("@{label}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+    Row {
+        when,
+        title: task.title.clone(),
+        note: labels,
+        starts: planned.map(starts),
+        past: false,
+        warning: day < today,
+    }
 }
 
 /// The day a task is due in `zone`.
@@ -147,11 +188,6 @@ fn starts(start: &PlannedStart) -> String {
     format!("Starts {} ({})", start.config, start.strictness)
 }
 
-fn join<const N: usize>(parts: [Option<String>; N]) -> Option<String> {
-    let parts: Vec<String> = parts.into_iter().flatten().collect();
-    (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
 fn local<Z: TimeZone>(at: Timestamp, zone: &Z) -> DateTime<Z> {
     let millis = i64::try_from(at.as_millis()).unwrap_or(i64::MAX);
     DateTime::from_timestamp_millis(millis)
@@ -160,7 +196,7 @@ fn local<Z: TimeZone>(at: Timestamp, zone: &Z) -> DateTime<Z> {
 }
 
 /// `14:05` in `zone`.
-fn clock<Z: TimeZone>(at: Timestamp, zone: &Z) -> String
+pub fn clock<Z: TimeZone>(at: Timestamp, zone: &Z) -> String
 where
     Z::Offset: Display,
 {
@@ -176,69 +212,31 @@ fn midnight<Z: TimeZone>(day: NaiveDate, zone: &Z) -> Timestamp {
     Timestamp::from_millis(u64::try_from(start).unwrap_or(0))
 }
 
-/// The agenda section, built from an agenda made just for this frame.
-pub fn view_owned(agenda: Agenda, sources: &PlanStatus) -> Element<'static, Message> {
-    let calendar_hint = match sources.calendar.state {
-        SourceState::NotConfigured => "Connect your calendar below to see your events here.",
-        _ => "Nothing on your calendar today.",
-    };
-    let tasks_hint = match sources.tasks.state {
-        SourceState::NotConfigured => "Connect Todoist below to see your tasks here.",
-        _ => "No tasks due today.",
-    };
-    let header = row![
-        text(format!("Today · {}", agenda.day)).size(20),
-        info(
-            "Your calendar and Todoist tasks, refreshed every few minutes and kept for when \
-             you're offline. \"Starts ...\" marks events and tasks that will start a session \
-             by themselves; set that up under Automatic starts."
-        ),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    let mut section = column![
-        header,
-        rows(column![], agenda.today, calendar_hint),
-        rows(column![text("Tasks").size(16)], agenda.tasks, tasks_hint),
-    ]
-    .spacing(12);
-    if !agenda.tomorrow.is_empty() {
-        section = section.push(rows(
-            column![text("Tomorrow").size(16)],
-            agenda.tomorrow,
-            "",
-        ));
-    }
-    section.into()
-}
-
-fn rows(
-    mut list: Column<'static, Message>,
-    rows: Vec<Row>,
-    empty: &'static str,
-) -> Column<'static, Message> {
-    if rows.is_empty() && !empty.is_empty() {
-        return list.push(text(empty).size(13).style(text::secondary));
-    }
+/// The rows of a group, one line each: when, title (with labels underneath), and a pill for the
+/// session it starts.
+pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
+    let mut list = column![].spacing(10);
     for item in rows {
-        let when = text(item.when).size(14).width(Length::Fixed(130.0));
-        let when = if item.warning {
-            when.style(text::danger)
+        let tone = if item.warning { Tone::Bad } else { Tone::Quiet };
+        let when = container(toned(item.when, tone).size(14)).width(Length::Fixed(120.0));
+        let title = if item.past {
+            text(item.title).size(15).style(text::secondary)
         } else {
-            when.style(text::secondary)
+            bold(item.title).size(15)
         };
-        let title = text(item.title).size(14);
-        let mut detail = column![if item.past {
-            title.style(text::secondary)
-        } else {
-            title
-        }];
+        let mut detail = column![title].spacing(2);
         if let Some(note) = item.note {
-            detail = detail.push(text(note).size(12).style(text::secondary));
+            detail = detail.push(caption(note));
         }
-        list = list.push(row![when, detail].spacing(8));
+        let mut line = row![when, detail.width(Length::Fill)]
+            .spacing(12)
+            .align_y(Alignment::Center);
+        if let Some(starts) = item.starts {
+            line = line.push(pill(starts, Tone::Good));
+        }
+        list = list.push(line);
     }
-    list.spacing(6)
+    list
 }
 
 #[cfg(test)]
@@ -301,9 +299,9 @@ mod tests {
                 ),
                 task("Old chore", "2026-10-22", None, &[]),
                 task("Buy milk", "2026-10-24", None, &[]),
-                task("Later", "2026-10-26", None, &[]),
+                task("Call mum", "2026-10-25", None, &[]),
+                task("Later", "2026-10-27", Some(at(27, 8, 0)), &[]),
             ],
-            rules: Vec::new(),
             upcoming: vec![PlannedStart {
                 key: "task:Write the report".into(),
                 source: PlanSource::Task,
@@ -317,11 +315,24 @@ mod tests {
     }
 
     #[test]
-    fn lists_today_in_local_time() {
-        let agenda = build(&view(), &zone());
-        assert_eq!(agenda.day, "Saturday 24 October");
-        let today: Vec<(&str, &str, bool)> = agenda
-            .today
+    fn groups_events_by_local_day() {
+        let days = calendar_days(&view(), &zone(), 7);
+        let titles: Vec<&str> = days.iter().map(|day| day.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Today",
+                "Tomorrow",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday"
+            ]
+        );
+        assert_eq!(days[0].detail.as_deref(), Some("Saturday 24 October"));
+        let today: Vec<(&str, &str, bool)> = days[0]
+            .rows
             .iter()
             .map(|row| (row.when.as_str(), row.title.as_str(), row.past))
             .collect();
@@ -333,30 +344,40 @@ mod tests {
                 ("10:00–12:00", "Deep work #focus", false),
             ]
         );
-        assert_eq!(agenda.today[2].note.as_deref(), Some("On now"));
-        assert_eq!(agenda.tomorrow.len(), 1, "only tomorrow, not next week");
-        assert_eq!(agenda.tomorrow[0].when, "14:00–15:00");
+        assert_eq!(days[0].rows[2].note.as_deref(), Some("On now"));
+        assert_eq!(days[1].rows[0].when, "14:00–15:00");
+        assert_eq!(days[6].rows[0].title, "Next week");
     }
 
     #[test]
-    fn lists_overdue_and_todays_tasks() {
-        let agenda = build(&view(), &zone());
-        let tasks: Vec<(&str, &str, bool)> = agenda
-            .tasks
+    fn groups_tasks_by_when_they_are_due() {
+        let groups = task_groups(&view(), &zone());
+        let summary: Vec<(&str, Vec<(&str, &str)>)> = groups
             .iter()
-            .map(|row| (row.when.as_str(), row.title.as_str(), row.warning))
+            .map(|group| {
+                let rows = group
+                    .rows
+                    .iter()
+                    .map(|row| (row.when.as_str(), row.title.as_str()))
+                    .collect();
+                (group.title.as_str(), rows)
+            })
             .collect();
         assert_eq!(
-            tasks,
+            summary,
             [
-                ("Overdue · Oct 22", "Old chore", true),
-                ("17:00", "Write the report", false),
-                ("Today", "Buy milk", false),
+                ("Overdue", vec![("Oct 22", "Old chore")]),
+                (
+                    "Today",
+                    vec![("17:00", "Write the report"), ("Any time", "Buy milk")]
+                ),
+                ("Tomorrow", vec![("Any time", "Call mum")]),
+                ("Later this week", vec![("Tue 27 · 10:00", "Later")]),
             ]
         );
-        assert_eq!(
-            agenda.tasks[1].note.as_deref(),
-            Some("@deep · Starts coding (Deep)")
-        );
+        assert!(groups[0].rows[0].warning);
+        let report = &groups[1].rows[0];
+        assert_eq!(report.note.as_deref(), Some("@deep"));
+        assert_eq!(report.starts.as_deref(), Some("Starts coding (Deep)"));
     }
 }

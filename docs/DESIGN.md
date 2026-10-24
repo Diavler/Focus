@@ -97,7 +97,7 @@ Dependencies (arrows point to what a crate depends on)
                         ▼
   focus-core: domain logic (sessions, rules, configs); no OS calls, no network, no disk
               ports (traits): CalendarSource, TaskSource, Secrets, Enforcer, Notifier,
-                              ConfigSource, SettingsEditor, StateStore, History, Clock
+                              ConfigSource, SettingsEditor, WindowedApps, StateStore, History, Clock
                         ▲ each implements a port
   config-toml · state-json · integrations · enforce-windows · enforce-linux-kde
   (later, optional: storage-sqlite, classifier, focus-online)

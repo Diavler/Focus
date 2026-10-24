@@ -2,8 +2,8 @@
 
 use focus_core::ports::SecretKey;
 use focus_core::{
-    AutoStartRule, BlockConfig, CalendarEvent, EndEarlyResponse, PlannedStart, SessionError,
-    SessionState, Strictness, Task, Timestamp, Verdict,
+    BlockConfig, CalendarEvent, EditableSettings, EndEarlyResponse, PlannedStart, SessionError,
+    SessionState, StopError, Strictness, Task, Timestamp, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -59,12 +59,30 @@ pub enum Request {
     /// The cached calendar events and tasks, the automatic-start rules and what they'll start.
     /// Answered with [`Response::Plan`]. Not relayed from the browser.
     Plan,
-    /// Replaces the automatic-start rules in the settings file (keeping the rest of it). Answered
-    /// with [`Response::Done`]. Not relayed from the browser.
-    SetAutoStart {
-        /// The new rules, in order.
-        rules: Vec<AutoStartRule>,
+    /// The settings as written, for the window's settings editor. Answered with
+    /// [`Response::Settings`]. Not relayed from the browser.
+    Settings,
+    /// Saves the edited settings into the settings file (keeping comments). Refused with
+    /// [`DaemonError::SettingsChanged`] if the file changed since they were read. Answered with
+    /// [`Response::Done`]. Not relayed from the browser.
+    SaveSettings {
+        /// The edited settings, with the revision they were read at.
+        settings: EditableSettings,
     },
+    /// The apps the user has a window open in, for picking apps to close. Answered with
+    /// [`Response::Apps`]. Not relayed from the browser.
+    WindowedApps,
+    /// Asks to stop Focus (the kill switch). Answered with [`Response::Stop`]. Not relayed from the
+    /// browser.
+    RequestStop,
+    /// Stops Focus once the wait is over: ends any session, then the daemon exits. Answered with
+    /// [`Response::Done`] just before it does. Not relayed from the browser.
+    ConfirmStop {
+        /// Why; required during a Locked session.
+        reason: String,
+    },
+    /// Withdraws a request to stop Focus. Answered with [`Response::Done`].
+    CancelStop,
 }
 
 /// The daemon's answer to one [`Request`].
@@ -93,6 +111,20 @@ pub enum Response {
     },
     /// Answer to [`Request::Plan`]. Boxed because it's much larger than the other answers.
     Plan(Box<PlanView>),
+    /// Answer to [`Request::Settings`]. Boxed like [`Response::Plan`].
+    Settings(Box<EditableSettings>),
+    /// Answer to [`Request::WindowedApps`].
+    Apps {
+        /// App names, sorted.
+        apps: Vec<String>,
+    },
+    /// Answer to [`Request::RequestStop`].
+    Stop {
+        /// When the stop may be confirmed.
+        allowed_at: Timestamp,
+        /// Whether confirming needs a typed reason.
+        reason_required: bool,
+    },
     /// The request succeeded and has nothing else to report.
     Done,
     /// The request failed; nothing changed.
@@ -130,6 +162,12 @@ pub struct StatusReport {
     /// The calendar and task sources, and the sessions they'll start.
     #[serde(default)]
     pub plan: PlanStatus,
+    /// When a requested stop (kill switch) may be confirmed, if one is pending.
+    #[serde(default)]
+    pub stop_allowed_at: Option<Timestamp>,
+    /// Whether stopping now needs a typed reason (a Locked session is running).
+    #[serde(default)]
+    pub stop_reason_required: bool,
 }
 
 /// How the plan sources are doing, and what they'll start.
@@ -151,8 +189,6 @@ pub struct PlanView {
     pub events: Vec<CalendarEvent>,
     /// Cached open tasks (overdue or due within 7 days).
     pub tasks: Vec<Task>,
-    /// The automatic-start rules in effect, in order.
-    pub rules: Vec<AutoStartRule>,
     /// Planned sessions that haven't started and still have time left, soonest first.
     pub upcoming: Vec<PlannedStart>,
 }
@@ -255,6 +291,22 @@ pub enum DaemonError {
     /// The daemon is stopping and no longer takes requests.
     #[error("the daemon is shutting down")]
     ShuttingDown,
+    /// The settings file changed since the window read it, so the edit wasn't saved.
+    #[error("settings.toml changed since Settings was opened; reload and make the change again")]
+    SettingsChanged,
+    /// The kill switch refused to stop Focus yet.
+    #[error("{error}")]
+    Stop {
+        /// Why.
+        error: StopError,
+    },
+    /// The daemon isn't running and no session is saved as running: Focus was stopped (reported
+    /// by `focus-nmh`, so the extension can lift its blocks).
+    #[error("Focus is stopped: {message}")]
+    Stopped {
+        /// What the relay saw.
+        message: String,
+    },
     /// The settings file couldn't be changed (it would be invalid, or can't be written).
     #[error("couldn't change the settings: {message}")]
     Settings {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { FEED_MATCHES, hideFeedCss } from "../src/feeds";
 import { BASE_DELAY, MAX_DELAY, delaySeconds } from "../src/friction";
+import { sessionFromStatus, type RunningSession } from "../src/protocol";
 
 describe("delaySeconds", () => {
   it("grows with each visit up to the cap", () => {
@@ -44,5 +45,23 @@ describe("chromium manifest", () => {
 
   it("runs the feed script exactly where the background expects it", () => {
     expect(manifest.content_scripts[0].matches).toEqual(FEED_MATCHES);
+  });
+});
+
+describe("sessionFromStatus", () => {
+  const running: RunningSession = {
+    spec: { config: { name: "coding", mode: "blocklist", rules: [], apps: [] }, strictness: "locked" },
+    started_at: 0,
+    ends_at: 1000,
+  };
+
+  it("reads the running session, or none", () => {
+    expect(sessionFromStatus({ type: "status", now: 1, session: { running } })).toEqual(running);
+    expect(sessionFromStatus({ type: "status", now: 1, session: "idle" })).toBeNull();
+  });
+
+  it("drops the session when Focus was stopped, but keeps it when the daemon is just gone", () => {
+    expect(sessionFromStatus({ type: "error", error: { kind: "stopped" } })).toBeNull();
+    expect(sessionFromStatus({ type: "error", error: { kind: "unreachable" } })).toBeUndefined();
   });
 });

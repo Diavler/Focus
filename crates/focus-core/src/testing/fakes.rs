@@ -4,17 +4,20 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use crate::auto_start::AutoStartRule;
 use crate::config::BlockConfig;
+use crate::config::Mode;
+use crate::editable::{ACTIONS, EditableSettings};
 use crate::enforcement::{same_app, select_apps};
 use crate::login::Settings;
+use crate::pattern::UrlPattern;
 use crate::plan::{CalendarEvent, Task};
 use crate::ports::{
     Autostart, AutostartError, CalendarSource, Clock, ConfigSource, ConfigSourceError,
     EnforceError, Enforcer, ForegroundApp, History, HistoryError, HistoryEvent, Notifier,
     NotifyError, PersistedState, ProcessList, SecretKey, Secrets, SecretsError, SettingsEditor,
-    SourceError, StateStore, StateStoreError, TaskSource, UiWatch, UiWatchError,
+    SourceError, StateStore, StateStoreError, TaskSource, UiWatch, UiWatchError, WindowedApps,
 };
+use crate::rule::Verdict;
 use crate::time::Timestamp;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -93,22 +96,132 @@ impl ConfigSource for FakeConfigSource {
     }
 }
 
-impl SettingsEditor for FakeConfigSource {
-    fn set_auto_start(&self, rules: &[AutoStartRule]) -> Result<(), ConfigSourceError> {
-        let mut result = lock(&self.result);
-        let settings = result.as_mut().map_err(|error| error.clone())?;
-        if let Some(rule) = rules.iter().find(|rule| {
-            !settings
+/// Keeps editable settings in memory and loads them as [`Settings`], checking edits the way the
+/// settings file is checked (unknown configs and lists, empty allowlists, bad patterns), and
+/// refusing a save from an old revision.
+#[derive(Debug)]
+pub struct FakeSettingsFile {
+    settings: Mutex<EditableSettings>,
+    revision: AtomicU32,
+}
+
+impl FakeSettingsFile {
+    /// A settings file with these contents.
+    pub fn new(mut settings: EditableSettings) -> Self {
+        settings.revision = "0".into();
+        Self {
+            settings: Mutex::new(settings),
+            revision: AtomicU32::new(0),
+        }
+    }
+
+    fn problem(settings: &EditableSettings) -> Option<String> {
+        for config in &settings.configs {
+            if let Some(missing) = config
+                .include
+                .iter()
+                .find(|name| !settings.lists.iter().any(|list| &list.name == *name))
+            {
+                return Some(format!("no list named \"{missing}\""));
+            }
+            let resolved = settings.resolve(&config.name)?;
+            let allows = resolved
+                .rules
+                .iter()
+                .any(|rule| rule.verdict == Verdict::Allow);
+            if config.mode == Mode::Allowlist && !allows {
+                return Some(format!("{} allows nothing", config.name));
+            }
+        }
+        let patterns = settings
+            .configs
+            .iter()
+            .map(|config| &config.patterns)
+            .chain(settings.lists.iter().map(|list| &list.patterns));
+        for patterns in patterns {
+            for verdict in ACTIONS {
+                if let Some(bad) = patterns
+                    .get(verdict)
+                    .iter()
+                    .find(|pattern| UrlPattern::parse(pattern).is_err())
+                {
+                    return Some(format!("bad pattern \"{bad}\""));
+                }
+            }
+        }
+        settings
+            .auto_start
+            .iter()
+            .find(|rule| {
+                !settings
+                    .configs
+                    .iter()
+                    .any(|config| config.name == rule.config)
+            })
+            .map(|rule| format!("no configuration named \"{}\"", rule.config))
+    }
+}
+
+impl ConfigSource for FakeSettingsFile {
+    fn load(&self) -> Result<Settings, ConfigSourceError> {
+        let settings = lock(&self.settings).clone();
+        Ok(Settings {
+            configs: settings
                 .configs
                 .iter()
-                .any(|config| config.name == rule.config)
-        }) {
-            return Err(ConfigSourceError::Invalid {
-                reason: format!("there is no configuration named \"{}\"", rule.config),
-            });
+                .filter_map(|config| settings.resolve(&config.name))
+                .collect(),
+            start_at_login: settings.start_at_login,
+            auto_start: settings.auto_start,
+        })
+    }
+}
+
+impl SettingsEditor for FakeSettingsFile {
+    fn load_editable(&self) -> Result<EditableSettings, ConfigSourceError> {
+        Ok(lock(&self.settings).clone())
+    }
+
+    fn save_editable(&self, edited: &EditableSettings) -> Result<(), ConfigSourceError> {
+        let mut settings = lock(&self.settings);
+        if edited.revision != settings.revision {
+            return Err(ConfigSourceError::Changed);
         }
-        settings.auto_start = rules.to_vec();
+        if let Some(reason) = Self::problem(edited) {
+            return Err(ConfigSourceError::Invalid { reason });
+        }
+        let revision = self.revision.fetch_add(1, Ordering::Relaxed) + 1;
+        *settings = edited.clone();
+        settings.revision = revision.to_string();
         Ok(())
+    }
+}
+
+/// Windowed apps that are whatever the test says.
+#[derive(Debug, Default)]
+pub struct FakeWindowedApps {
+    apps: Mutex<Vec<String>>,
+}
+
+impl FakeWindowedApps {
+    /// Pretends these apps have windows open.
+    pub fn with<I, S>(apps: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut apps: Vec<String> = apps.into_iter().map(Into::into).collect();
+        apps.sort_by_key(|app| app.to_lowercase());
+        apps.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        Self {
+            apps: Mutex::new(apps),
+        }
+    }
+}
+
+impl WindowedApps for FakeWindowedApps {
+    fn windowed_apps(&self) -> Result<Vec<String>, EnforceError> {
+        Ok(lock(&self.apps).clone())
     }
 }
 

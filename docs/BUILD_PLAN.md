@@ -42,19 +42,43 @@ Pick a config, strictness and duration; start a session; show status and time le
 `integrations`: `CalendarSource` from the private iCal URL and `TaskSource` from Todoist (personal token in `keyring`). Cache the last fetch in the state file. Start sessions from a calendar keyword or Todoist label mapped to a config.
 **Done when:** a tagged calendar event starts the mapped config automatically, offline start uses cached data, and both adapters pass contract tests against recorded fixtures.
 
-### 7b. Settings in the window
-Everything in `settings.toml` editable from the UI, through the daemon's `SettingsEditor` (the file stays the source of truth and stays hand-editable, ADR 0009):
-- Block configurations: mode, site rules (allow, ask, delay, hide feed, block) with a URL-pattern helper, included shared lists, apps to close (picked from running apps).
+### 7b. Window layout and settings
+**Layout:** replace the single scrolling page with a proper layout:
+- A left sidebar with the app name, the sections **Sessions**, **Calendar** and **Todoist**, and a sync status at the bottom.
+- The main area shows the selected section.
+- A consistent visual style: spacing, cards, type sizes, colours for states (running, warning, offline), light and dark themes.
+
+**Sessions:**
+- The running session, with a countdown and the end controls for its strictness.
+- The next automatic start.
+- Starting a new session.
+- A **Settings** button (top right) that opens the editable features.
+
+**Calendar:** today's and the coming days' events, marking the ones that start a session. Connecting the calendar (the secret iCal address) and its status live here.
+
+**Todoist:** overdue tasks and tasks due today and soon, with labels, marking the ones that start a session. Connecting Todoist (the API token) and its status live here.
+
+**Settings** (opened from Sessions): everything in `settings.toml`, edited through the daemon's `SettingsEditor`. The file stays the source of truth and stays hand-editable (ADR 0009). It covers:
+- Automatic-start rules (moved here from the main page).
+- Block configurations: mode, site rules (allow, ask, delay, hide feed, block) with a URL-pattern helper, included shared lists, and apps to close (picked from running apps).
 - Shared lists.
 - Start at login (switching off still cools off).
-Hover help on every control, and plain-language validation messages.
+- The kill switch.
 
-**Kill switch:** stops the daemon and the UI (not the browser's native messaging host), ending any running session and block. It needs friction: a wait, then an "Are you sure?" confirmation. Decide while planning:
-- whether it works during a Locked session, and with what wait;
-- whether Focus still starts at the next login;
-- how to stop the UI and daemon restarting each other (ADR 0008).
+Every control gets hover help, and validation messages are in plain language.
 
-**Done when:** a new user can set up configurations, rules and connections without opening `settings.toml`, and the kill switch works with its wait and confirmation (manual test notes for Windows).
+**Kill switch** (in Settings):
+- It stops the daemon and the UI, but not the browser's native messaging host, and ends any running session and its blocks.
+- Friction: a wait before the confirm button unlocks, then an "Are you sure?" confirmation.
+- During a Locked session it still works, as an emergency exit, but the wait is longer and a typed reason is required.
+- Focus starts again at the next login, as `start_at_login` says. Turning start-at-login off stays a separate, cooling-off setting.
+- The UI and daemon must not restart each other afterwards (ADR 0008).
+- Record the decision in an ADR.
+
+**Done when:**
+- A new user can set up configurations, rules and connections without opening `settings.toml`.
+- The three sections and Settings work at the default window size.
+- The kill switch works with its waits and confirmation (manual test notes for Windows).
 
 ### 8. Bypass friction and rabbit-hole tools
 Unlock budget for Deep, growing Delay, drift prompt (hops away from the starting sites), Later button (sends link to Todoist inbox), tab cap, parking-lot hotkey (`RegisterHotKey`; the XDG GlobalShortcuts portal comes in step 9). Windows Do Not Disturb: a small button in the UI that opens the notification settings, instead of opening them by itself at session start. Keep it per platform, since KDE can silence notifications itself.

@@ -2,7 +2,9 @@
 
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
 use std::time::Duration;
+use tokio::sync::Notify;
 
 use ipc_proto::{DaemonError, Request, Response, decode, encode};
 use ipc_transport::{Connection, Listener};
@@ -29,7 +31,8 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// The service shared by every task; `None` once shutdown has begun.
 type Shared = Arc<Mutex<Option<Service>>>;
 
-/// Serves `listener` until `shutdown` completes, then stops every task before returning.
+/// Serves `listener` until `shutdown` completes or a client stops Focus (the kill switch), then
+/// stops every task before returning.
 ///
 /// The service does blocking file I/O (reading settings, saving state), so it only ever runs on
 /// tokio's blocking-thread pool, never on the async worker threads that accept connections. Its
@@ -37,6 +40,7 @@ type Shared = Arc<Mutex<Option<Service>>>;
 pub async fn serve(listener: Listener, service: Service, shutdown: impl Future<Output = ()>) {
     tracing::info!("listening at {}", listener.endpoint());
     let shared: Shared = Arc::new(Mutex::new(Some(service)));
+    let stop = Arc::new(Notify::new());
     let mut tasks = JoinSet::new();
     tasks.spawn(tick_forever(Arc::clone(&shared)));
     tasks.spawn(sync_forever(Arc::clone(&shared)));
@@ -44,9 +48,13 @@ pub async fn serve(listener: Listener, service: Service, shutdown: impl Future<O
     loop {
         tokio::select! {
             () = &mut shutdown => break,
+            () = stop.notified() => {
+                tracing::info!("stopped with the kill switch");
+                break;
+            }
             accepted = listener.accept() => match accepted {
                 Ok(connection) => {
-                    tasks.spawn(answer(connection, Arc::clone(&shared)));
+                    tasks.spawn(answer(connection, Arc::clone(&shared), Arc::clone(&stop)));
                 }
                 Err(error) => {
                     tracing::warn!("accepting a connection failed: {error}");
@@ -65,8 +73,9 @@ pub async fn serve(listener: Listener, service: Service, shutdown: impl Future<O
     tracing::info!("stopped");
 }
 
-/// Answers requests on one connection until the client disconnects.
-async fn answer(mut connection: Connection, shared: Shared) {
+/// Answers requests on one connection until the client disconnects. After answering a request
+/// that stopped Focus, it tells `serve` to shut down.
+async fn answer(mut connection: Connection, shared: Shared, stop: Arc<Notify>) {
     loop {
         let line = match connection.recv_line().await {
             Ok(Some(line)) => line,
@@ -76,36 +85,56 @@ async fn answer(mut connection: Connection, shared: Shared) {
                 return;
             }
         };
-        let response = match decode::<Request>(&line) {
+        let (response, stopping) = match decode::<Request>(&line) {
             Ok(request) => handle(&shared, request).await,
-            Err(error) => Response::Error {
-                error: error.into(),
-            },
+            Err(error) => (
+                Response::Error {
+                    error: error.into(),
+                },
+                false,
+            ),
         };
-        if connection.send_line(&encode(&response)).await.is_err() {
+        let sent = connection.send_line(&encode(&response)).await;
+        if stopping {
+            // `notify_one` keeps the wake-up even if `serve` isn't waiting at this instant.
+            stop.notify_one();
+            return;
+        }
+        if sent.is_err() {
             return;
         }
     }
 }
 
-/// Runs one request on the blocking pool.
-async fn handle(shared: &Shared, request: Request) -> Response {
+/// Runs one request on the blocking pool. The flag says the request stopped Focus.
+async fn handle(shared: &Shared, request: Request) -> (Response, bool) {
     let shared = Arc::clone(shared);
     let shutting_down = || Response::Error {
         error: DaemonError::ShuttingDown,
     };
-    tokio::task::spawn_blocking(move || match lock(&shared).as_mut() {
-        Some(service) => service.handle(request),
-        None => shutting_down(),
+    tokio::task::spawn_blocking(move || {
+        let mut held = lock(&shared);
+        let Some(service) = held.as_mut() else {
+            return (shutting_down(), false);
+        };
+        let response = service.handle(request);
+        let stopping = service.take_stop();
+        if stopping {
+            // Take the service out under the same lock, so no tick or sync can start a session
+            // or save state between the stop and `serve` shutting down.
+            held.take();
+        }
+        (response, stopping)
     })
     .await
     .unwrap_or_else(|error| {
         tracing::error!("handling a request panicked: {error}");
-        Response::Error {
+        let response = Response::Error {
             error: DaemonError::Internal {
                 message: "handling the request panicked".into(),
             },
-        }
+        };
+        (response, false)
     })
 }
 

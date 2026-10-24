@@ -114,6 +114,20 @@ impl JsonStateStore {
     }
 }
 
+impl JsonStateStore {
+    /// The saved state, read without changing any file: a corrupt main file falls back to the
+    /// backup but isn't moved aside, and nothing is reported as corrupt for the next load. For
+    /// processes that only look, such as the native messaging host.
+    pub fn peek(&self) -> Result<Option<PersistedState>, StateStoreError> {
+        for path in [self.path.clone(), self.backup_path()] {
+            if let Read::Found(state) = Self::read(&path)? {
+                return Ok(Some(*state));
+            }
+        }
+        Ok(None)
+    }
+}
+
 impl StateStore for JsonStateStore {
     fn load(&self) -> Result<Option<PersistedState>, StateStoreError> {
         let main = Self::read_or_quarantine(&self.path);
@@ -260,6 +274,24 @@ mod tests {
             session,
             ..PersistedState::default()
         }
+    }
+
+    #[test]
+    fn peeking_changes_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonStateStore::new(dir.path().join("state.json"));
+        assert_eq!(store.peek(), Ok(None), "nothing saved yet");
+        let state = PersistedState::default();
+        store.save(&state).unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(store.peek(), Ok(Some(state.clone())));
+        std::fs::write(store.path(), b"{ not json").unwrap();
+        assert_eq!(store.peek(), Ok(Some(state)), "falls back to the backup");
+        assert_eq!(
+            std::fs::read(store.path()).unwrap(),
+            b"{ not json",
+            "the corrupt file is left where it is"
+        );
     }
 
     #[test]

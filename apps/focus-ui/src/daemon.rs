@@ -5,7 +5,7 @@
 
 use std::io;
 
-use focus_core::{BlockConfig, Verdict};
+use focus_core::{BlockConfig, EditableSettings};
 use ipc_proto::{PlanView, Request, Response, StatusReport};
 use ipc_transport::{Client, ClientError, Endpoint};
 
@@ -60,22 +60,22 @@ pub async fn act(endpoint: Endpoint, request: Request) -> Result<(), String> {
     client.request(&request).await.map(|_| ()).map_err(text)
 }
 
-/// What happens to `url` under the running session, or under `config`; worded for the window.
-pub async fn check(
-    endpoint: Endpoint,
-    url: String,
-    config: Option<String>,
-) -> Result<String, String> {
+/// The settings as written, for the settings editor.
+pub async fn settings(endpoint: Endpoint) -> Result<EditableSettings, String> {
     let mut client = Client::connect(&endpoint).await.map_err(text)?;
-    let (verdict, decided_by) = client
-        .rules_for(&url, config.as_deref())
-        .await
-        .map_err(text)?;
-    Ok(match (verdict, decided_by) {
-        (verdict, Some(config)) => format!("{config}: {verdict}"),
-        (Verdict::Allow, None) => "No session is running, so everything is allowed.".to_owned(),
-        (verdict, None) => verdict.to_string(),
-    })
+    match client.request(&Request::Settings).await.map_err(text)? {
+        Response::Settings(settings) => Ok(*settings),
+        other => Err(format!("unexpected answer: {other:?}")),
+    }
+}
+
+/// The apps with a window open.
+pub async fn apps(endpoint: Endpoint) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(&endpoint).await.map_err(text)?;
+    match client.request(&Request::WindowedApps).await.map_err(text)? {
+        Response::Apps { apps } => Ok(apps),
+        other => Err(format!("unexpected answer: {other:?}")),
+    }
 }
 
 fn text(error: impl std::fmt::Display) -> String {

@@ -90,9 +90,9 @@ mod tests {
 
     use focus_core::ports::SecretKey;
     use focus_core::{
-        AutoStartRule, BlockConfig, CalendarEvent, EndEarlyResponse, Mode, PlanSource,
-        PlannedStart, RuleAction, SessionError, SessionSpec, SessionState, Strictness, Task,
-        Timestamp, Verdict,
+        AutoStartRule, BlockConfig, CalendarEvent, ConfigEntry, EditableSettings, EndEarlyResponse,
+        Mode, PlanSource, PlannedStart, RuleAction, RulePatterns, SessionError, SessionSpec,
+        SessionState, StopError, Strictness, Task, Timestamp, Verdict,
     };
 
     use super::*;
@@ -109,6 +109,31 @@ mod tests {
         assert!(line.ends_with('\n'));
         assert_eq!(line.matches('\n').count(), 1, "one line: {line:?}");
         assert_eq!(decode::<T>(&line), Ok(message));
+    }
+
+    fn settings() -> EditableSettings {
+        EditableSettings {
+            start_at_login: true,
+            lists: Vec::new(),
+            configs: vec![ConfigEntry {
+                name: "coding".into(),
+                mode: Mode::Blocklist,
+                include: Vec::new(),
+                patterns: RulePatterns {
+                    block: vec!["x.com".into()],
+                    ..RulePatterns::default()
+                },
+                apps: vec!["discord".into()],
+            }],
+            auto_start: vec![AutoStartRule {
+                config: "coding".into(),
+                strictness: Strictness::Deep,
+                calendar_keywords: vec!["#focus".into()],
+                task_labels: Vec::new(),
+                task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
+            }],
+            revision: "abc".into(),
+        }
     }
 
     #[test]
@@ -143,7 +168,16 @@ mod tests {
                 value: None,
             },
             Request::Plan,
-            Request::SetAutoStart { rules: Vec::new() },
+            Request::Settings,
+            Request::SaveSettings {
+                settings: settings(),
+            },
+            Request::WindowedApps,
+            Request::RequestStop,
+            Request::ConfirmStop {
+                reason: "emergency".into(),
+            },
+            Request::CancelStop,
         ] {
             round_trip(request);
         }
@@ -177,6 +211,8 @@ mod tests {
                 start_at_login: true,
                 start_at_login_off_after: Some(Timestamp::from_millis(77)),
                 start_at_login_problem: None,
+                stop_allowed_at: Some(Timestamp::from_millis(70_000)),
+                stop_reason_required: true,
                 plan: PlanStatus {
                     calendar: SourceStatus {
                         state: SourceState::Failing {
@@ -206,13 +242,6 @@ mod tests {
                     due_at: None,
                     duration: Some(Duration::from_secs(60)),
                 }],
-                rules: vec![AutoStartRule {
-                    config: "coding".into(),
-                    strictness: Strictness::Deep,
-                    calendar_keywords: vec!["#focus".into()],
-                    task_labels: Vec::new(),
-                    task_duration: AutoStartRule::DEFAULT_TASK_DURATION,
-                }],
                 upcoming: vec![PlannedStart {
                     key: "calendar:a@1".into(),
                     source: PlanSource::Calendar,
@@ -225,6 +254,24 @@ mod tests {
             })),
             Response::Configs {
                 configs: vec![BlockConfig::new("writing", Mode::Allowlist)],
+            },
+            Response::Settings(Box::new(settings())),
+            Response::Apps {
+                apps: vec!["discord".into()],
+            },
+            Response::Stop {
+                allowed_at: Timestamp::from_millis(60_000),
+                reason_required: true,
+            },
+            Response::Error {
+                error: DaemonError::Stop {
+                    error: StopError::StillWaiting {
+                        remaining: Duration::from_secs(5),
+                    },
+                },
+            },
+            Response::Error {
+                error: DaemonError::SettingsChanged,
             },
             Response::EndSession {
                 outcome: EndEarlyResponse::WaitUntil(Timestamp::from_millis(30)),

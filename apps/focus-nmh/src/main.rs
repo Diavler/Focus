@@ -10,8 +10,10 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use focus_install::Paths;
 use focus_nmh::register::{self, Action, Machine, Platform};
 use ipc_transport::Endpoint;
+use state_json::JsonStateStore;
 
 const USAGE: &str = "usage:
   focus-nmh --register [--extension-id <id>] [--dry-run]
@@ -65,8 +67,16 @@ async fn main() -> ExitCode {
 /// Relays between the browser on stdin/stdout and the daemon of this install.
 async fn relay(install: &Path) -> ExitCode {
     let endpoint = Endpoint::for_install(install);
+    let state = JsonStateStore::new(Paths::portable(install).state);
+    // Only reads the state file (`peek` never moves or rewrites it). Missing or unreadable state
+    // counts as a session, so blocks stay: the kill switch always saves the stopped state before
+    // the daemon exits, so deleting the file mustn't look like a stop.
+    let no_session_saved = move || match state.peek() {
+        Ok(Some(saved)) => saved.session.running().is_none(),
+        Ok(None) | Err(_) => false,
+    };
     let (mut stdin, mut stdout) = (tokio::io::stdin(), tokio::io::stdout());
-    match focus_nmh::host::run(&mut stdin, &mut stdout, &endpoint).await {
+    match focus_nmh::host::run(&mut stdin, &mut stdout, &endpoint, no_session_saved).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("focus-nmh: {error}");

@@ -26,4 +26,8 @@ pub enum ConfigSourceError {
         /// What is wrong, worded for the user.
         reason: String,
     },
+    /// An edit was refused because the settings changed since they were read (e.g. edited by
+    /// hand in the meantime).
+    #[error("the settings changed since they were opened; reload them and try again")]
+    Changed,
 }

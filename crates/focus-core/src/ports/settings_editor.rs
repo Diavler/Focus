@@ -1,14 +1,19 @@
 //! Changing the settings on the user's behalf, from the window instead of a text editor.
 
-use crate::auto_start::AutoStartRule;
+use crate::editable::EditableSettings;
 
 use super::config_source::ConfigSourceError;
 
-/// Writes changes into the user's settings, leaving the rest of them as they were. Changes take
-/// effect the way hand edits do: the daemon re-reads the settings, with cooling-off where it
-/// applies.
+/// Reads the settings as written and writes the window's changes back, leaving anything it
+/// doesn't manage (comments, layout) as it was. Changes take effect the way hand edits do: the
+/// daemon re-reads the settings, with cooling-off where it applies.
 pub trait SettingsEditor: Send + Sync {
-    /// Replaces every automatic-start rule. If the result wouldn't be valid settings, nothing is
-    /// written and the problem is returned.
-    fn set_auto_start(&self, rules: &[AutoStartRule]) -> Result<(), ConfigSourceError>;
+    /// The settings as written, with a revision identifying the text they came from. Works as
+    /// long as the text is well-formed, even if it has problems a save would refuse.
+    fn load_editable(&self) -> Result<EditableSettings, ConfigSourceError>;
+
+    /// Replaces the settings with `settings`. Refused with [`ConfigSourceError::Changed`] if the
+    /// text changed since `settings.revision` was read, and with
+    /// [`ConfigSourceError::Invalid`] if the result wouldn't be valid; nothing is written then.
+    fn save_editable(&self, settings: &EditableSettings) -> Result<(), ConfigSourceError>;
 }

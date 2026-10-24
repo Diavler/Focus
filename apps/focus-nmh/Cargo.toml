@@ -11,6 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+focus-install.workspace = true
+# Reads (never writes) the saved state, to tell "stopped" from "unreachable".
+state-json.workspace = true
 ipc-proto.workspace = true
 ipc-transport.workspace = true
 serde.workspace = true

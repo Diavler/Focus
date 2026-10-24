@@ -108,6 +108,7 @@ async fn run() -> anyhow::Result<()> {
         tasks: Arc::new(TodoistTasks::new(secrets.clone())),
         secrets,
         settings: settings.clone(),
+        windowed: enforcement.windowed,
     };
     let mut service = Service::open(ports, ConfigState::DEFAULT_COOLING_OFF)?;
     if at_login {
@@ -176,7 +177,9 @@ mod platform {
     use focus_core::KnownBrowser;
     use std::path::Path;
 
-    use focus_core::ports::{Autostart, Enforcer, ForegroundApp, Notifier, ProcessList};
+    use focus_core::ports::{
+        Autostart, Enforcer, ForegroundApp, Notifier, ProcessList, WindowedApps,
+    };
 
     /// One adapter per enforcement port, plus the browsers to watch.
     pub struct Enforcement {
@@ -192,6 +195,8 @@ mod platform {
         pub browsers: Vec<KnownBrowser>,
         /// Registers Focus to start at login.
         pub autostart: Arc<dyn Autostart>,
+        /// Lists apps with a window open.
+        pub windowed: Arc<dyn WindowedApps>,
     }
 
     /// Windows: the real adapters, acting or (`dry_run`) only logging.
@@ -199,6 +204,7 @@ mod platform {
     pub fn enforcement(dry_run: bool, install: &Path) -> Enforcement {
         use enforce_windows::{
             Mode, WindowsAutostart, WindowsEnforcer, WindowsForeground, WindowsNotifier,
+            WindowsWindowedApps,
         };
         let mode = if dry_run { Mode::DryRun } else { Mode::Live };
         // One enforcer serves both ports; `Arc` lets it be shared.
@@ -210,6 +216,7 @@ mod platform {
             notifier: Arc::new(WindowsNotifier::new(mode)),
             browsers: enforce_windows::known_browsers(),
             autostart: Arc::new(WindowsAutostart::new(mode, install)),
+            windowed: Arc::new(WindowsWindowedApps),
         }
     }
 
@@ -223,7 +230,8 @@ mod platform {
             foreground: pending.clone(),
             notifier: pending.clone(),
             browsers: enforce_linux_kde::known_browsers(),
-            autostart: pending,
+            autostart: pending.clone(),
+            windowed: pending,
         }
     }
 }

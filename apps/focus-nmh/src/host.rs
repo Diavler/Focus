@@ -30,7 +30,18 @@ struct Outgoing<'a> {
 
 /// Relays messages until the browser closes the pipe. A bad or oversized message gets an error
 /// answer; only a broken pipe ends the relay.
-pub async fn run<R, W>(reader: &mut R, writer: &mut W, endpoint: &Endpoint) -> io::Result<()>
+///
+/// When the daemon can't be reached, `no_session_saved` is asked whether the saved state shows no
+/// running session. If so, Focus was stopped (the kill switch saves that before the daemon
+/// exits), and the answer is [`DaemonError::Stopped`] so the extension lifts its blocks. Otherwise
+/// it's [`DaemonError::Unreachable`] and the extension keeps the last session's blocks, so killing
+/// the daemon isn't a way out of a session.
+pub async fn run<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    endpoint: &Endpoint,
+    no_session_saved: impl Fn() -> bool,
+) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -48,7 +59,13 @@ where
             ),
             Frame::Message(bytes) => {
                 let id = serde_json::from_slice::<IdOnly>(&bytes).map_or(0, |only| only.id);
-                (id, answer(&bytes, &mut daemon, endpoint).await)
+                let response = match answer(&bytes, &mut daemon, endpoint).await {
+                    Response::Error {
+                        error: DaemonError::Unreachable { message },
+                    } if no_session_saved() => error_response(DaemonError::Stopped { message }),
+                    response => response,
+                };
+                (id, response)
             }
         };
         let mut bytes = encode(id, &response);
