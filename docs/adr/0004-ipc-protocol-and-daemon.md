@@ -46,11 +46,14 @@ Connects wait at most 3 s and requests at most 5 s, so a stuck daemon shows up a
 
 - The build plan's done-when holds: an in-process integration test starts a session over IPC, restarts the daemon and finds the session still running.
 - Closing or killing the UI never ends a session.
-- **Open hardening item (Windows):** another local user could create `\\.\pipe\focus-daemon-<you>` before your daemon starts. Your UI would then talk to their process, and your daemon would see "already running" and exit. Fix in a follow-up: create the pipe with a current-user-only security descriptor, and have clients check the server process's owner (`GetNamedPipeServerProcessId`). The pipe's default security already stops other users from sending requests to *your* daemon.
+- **Windows pipe hardening** (added after step 4). Pipe names are machine-wide, so another local user could create `\\.\pipe\focus-daemon-<you>` before your daemon starts. Two defences, in `ipc-transport/src/windows_security.rs` (the one place outside the `enforce-*` crates and the daemon's wiring allowed `#[cfg(windows)]`):
+  - The daemon creates the pipe with a protected DACL that grants only SYSTEM and the current user's SID, so other users can neither connect to it nor create instances of it.
+  - Every client checks who serves the pipe: the server's process ID (`GetNamedPipeServerProcessId`, via `interprocess`), then that process's user SID. Another user's pipe is refused with `PermissionDenied`, and `bind` reports `TakenByAnotherUser` instead of mistaking it for our own daemon.
+  - It uses `windows-sys` and `widestring`, the versions `interprocess` already depends on. The Linux socket gets the equivalent in step 9.
 - The workspace gains `ipc-transport`, which `docs/DESIGN.md`'s folder layout doesn't list.
 - Dependencies added: `interprocess` (local sockets), `tokio`, `tracing` and `tracing-subscriber` (developer diagnostics), and `anyhow` (binaries only). `deny.toml` now allows `0BSD`, which `interprocess`'s helper crates use. No platform-directories crate is needed because of the portable layout.
-- Upgrading means replacing the executables and keeping `data/`. Installers in step 9 must preserve it.
-- Linux `.deb`/`.rpm` packages install to read-only `/usr/bin`, which conflicts with the portable layout. Step 9 decides between per-user data for those packages only and shipping only the portable archive.
+- Upgrading means replacing the executables and keeping `data/`. Installers in step 10 must preserve it.
+- Linux `.deb`/`.rpm` packages install to read-only `/usr/bin`, which conflicts with the portable layout. Step 10 decides between per-user data for those packages only and shipping only the portable archive.
 - A few things can't live in the folder: the named pipe (not a file), and the registry entries for autostart (step 6) and native messaging (step 4) under `HKCU` on Windows. The native-messaging manifest file itself stays in the install folder on Windows. Linux browsers only look in their own config folder, so step 4 adds one small manifest there.
 - When run with `cargo run`, the files land in `target/<profile>/data`, and `cargo clean` wipes them.
 - Polling once a second costs two local connections a second while the window is open. Push updates can replace this if it ever matters.

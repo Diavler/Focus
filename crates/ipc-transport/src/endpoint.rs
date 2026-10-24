@@ -14,6 +14,10 @@ use thiserror::Error;
 
 use crate::connection::Connection;
 
+/// What a client reports when the endpoint is held by a process of another user.
+#[cfg(windows)]
+const OTHER_USER: &str = "the Focus daemon endpoint belongs to another user's process";
+
 /// How long a connect may wait for a busy daemon before giving up.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -52,7 +56,8 @@ impl Endpoint {
     }
 
     /// Opens a connection to whatever listens here, waiting at most [`CONNECT_TIMEOUT`] for a busy
-    /// listener.
+    /// listener. On Windows, a pipe served by another user's process is refused with
+    /// `PermissionDenied`: pipe names are machine-wide, so another user could have created ours.
     pub(crate) async fn connect(&self) -> io::Result<Connection> {
         let options = ConnectOptions::new()
             .name(self.name()?)
@@ -62,6 +67,8 @@ impl Endpoint {
             .map_err(|_| {
                 io::Error::new(io::ErrorKind::TimedOut, "the daemon didn't accept in time")
             })??;
+        #[cfg(windows)]
+        ensure_same_user(&stream)?;
         Ok(Connection::new(stream))
     }
 }
@@ -100,6 +107,9 @@ pub enum BindError {
     /// Another daemon already answers on this endpoint.
     #[error("a Focus daemon is already running at {0}")]
     AlreadyRunning(Endpoint),
+    /// A process of another user holds this endpoint (Windows pipe squatting).
+    #[error("{0} is held by another user's process; Focus won't use it")]
+    TakenByAnotherUser(Endpoint),
     /// The OS refused.
     #[error("couldn't listen at {endpoint}: {source}")]
     Io {
@@ -116,28 +126,53 @@ pub enum BindError {
 /// processes binding at the same moment could both see it as stale, so callers must make sure
 /// only one of them gets here: the daemon holds an exclusive lock on `data/daemon.lock` first.
 /// (On Windows the first pipe instance is exclusive anyway.)
+///
+/// On Windows the pipe only admits the current user (and SYSTEM), and a pipe already created by
+/// another user's process is reported as [`BindError::TakenByAnotherUser`].
 pub async fn bind(endpoint: &Endpoint) -> Result<Listener, BindError> {
-    if endpoint.connect().await.is_ok() {
-        return Err(BindError::AlreadyRunning(endpoint.clone()));
+    if let Some(error) = held_by(endpoint).await {
+        return Err(error);
     }
     let io_error = |source| BindError::Io {
         endpoint: endpoint.clone(),
         source,
     };
     let name = endpoint.name().map_err(io_error)?;
-    match ListenerOptions::new()
-        .name(name)
-        .try_overwrite(true)
-        .create_tokio()
-    {
+    let options = ListenerOptions::new().name(name).try_overwrite(true);
+    #[cfg(windows)]
+    let options = {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt;
+        options.security_descriptor(crate::windows_security::current_user_only().map_err(io_error)?)
+    };
+    match options.create_tokio() {
         Ok(inner) => Ok(Listener {
             inner,
             endpoint: endpoint.clone(),
         }),
-        Err(_) if endpoint.connect().await.is_ok() => {
-            Err(BindError::AlreadyRunning(endpoint.clone()))
+        Err(source) => Err(held_by(endpoint).await.unwrap_or_else(|| io_error(source))),
+    }
+}
+
+/// Who already listens at `endpoint`: our own daemon, another user's process, or nobody (`None`).
+async fn held_by(endpoint: &Endpoint) -> Option<BindError> {
+    match endpoint.connect().await {
+        Ok(_) => Some(BindError::AlreadyRunning(endpoint.clone())),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            Some(BindError::TakenByAnotherUser(endpoint.clone()))
         }
-        Err(source) => Err(io_error(source)),
+        Err(_) => None,
+    }
+}
+
+/// Refuses a pipe whose server runs as another user (or can't be checked).
+#[cfg(windows)]
+fn ensure_same_user(stream: &LocalSocketStream) -> io::Result<()> {
+    use crate::windows_security::{current_user_sid, process_user_sid};
+    let other_user = || io::Error::new(io::ErrorKind::PermissionDenied, OTHER_USER);
+    let pid = stream.peer_creds()?.pid().ok_or_else(other_user)?;
+    match process_user_sid(pid) {
+        Ok(sid) if sid == current_user_sid()? => Ok(()),
+        _ => Err(other_user()),
     }
 }
 
