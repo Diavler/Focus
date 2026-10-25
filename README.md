@@ -11,7 +11,7 @@ From a [release](https://github.com/Diavler/FocusApp/releases), take either:
 - **MSI** (`Focus-<version>-windows-x64.msi`): installs for your user only, into `%LOCALAPPDATA%\Programs\Focus`, with no admin prompt. It adds a Start menu entry and registers the browser extension's native messaging host. Uninstall from Settings → Apps.
 - **Zip** (`Focus-<version>-windows-x64.zip`): unzip anywhere you can write to, run `focus-nmh.exe --register` once, then open `focus-ui.exe`. To remove it, run `focus-nmh.exe --unregister`, turn off "Start at login" and delete the folder.
 
-Either way, Focus keeps its settings and state in `data\` beside the exes, and uninstalling leaves that folder in place. Close Focus from the tray (**Close Focus…**) before you upgrade or uninstall. The browser extension is a separate download; see [extension/README.md](extension/README.md).
+Either way, Focus keeps its settings and state in `data\` beside the exes, and uninstalling leaves that folder in place. Close Focus from the tray (**Close Focus…**) before you upgrade or uninstall. Then install the browser extension from the same release: `Focus-<version>-chromium-extension.zip` for Chromium browsers (load unpacked) or `Focus-<version>-firefox-extension.xpi` for Firefox. Steps are in [extension/README.md](extension/README.md#install-from-a-release).
 
 ## Build from source
 
@@ -65,7 +65,7 @@ cd extension && npm test && npm run build
 
 ### Making a release
 
-`scripts/package-windows.ps1` builds the Windows zip and MSI into `target/release-artifacts/` (`-SkipMsi` if you don't have the WiX v5 tool: `dotnet tool install --global wix --version 5.0.2`). To publish, bump `version` in `[workspace.package]` of `Cargo.toml`, merge, then push a matching tag (`git tag v0.1.0 && git push origin v0.1.0`). `.github/workflows/release.yml` builds both files and attaches them to a **draft** GitHub release, which you check and publish by hand. See ADR 0017.
+`scripts/package-windows.ps1` builds the Windows zip and MSI into `target/release-artifacts/` (`-SkipMsi` if you don't have the WiX v5 tool: `dotnet tool install --global wix --version 5.0.2`). To publish, bump `version` in `[workspace.package]` of `Cargo.toml` and in `extension/package.json`, `package-lock.json` and both `extension/manifests/*.json`, merge, then push a matching tag (`git tag v0.1.0 && git push origin v0.1.0`). `.github/workflows/release.yml` builds the zip, the MSI, the Chromium extension zip and the Firefox `.xpi` (signed as unlisted on AMO; needs the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` repository secrets) and attaches them to a **draft** GitHub release, which you check and publish by hand. See ADRs 0017 and 0018.
 
 ## License
 

@@ -1,7 +1,8 @@
 name: Release
 
-# A `v*` tag builds the Windows zip and MSI and attaches them to a draft GitHub release
-# (ADR 0017). Pull requests that touch the packaging build both without releasing.
+# A `v*` tag builds the Windows zip and MSI and the browser extension, and attaches them to a
+# draft GitHub release (ADRs 0017, 0018). Pull requests that touch the packaging build the same
+# files without releasing or signing.
 on:
   push:
     tags: ["v*"]
@@ -10,6 +11,8 @@ on:
       - .github/workflows/release.yml
       - installer/**
       - scripts/package-windows.ps1
+      - extension/manifests/**
+      - extension/package.json
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,13 +20,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  WEB_EXT: web-ext@10.7.0
 
 jobs:
   windows:
     name: Windows zip and MSI
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,11 +54,76 @@ jobs:
           path: |
             target/release-artifacts/*.zip
             target/release-artifacts/*.msi
-      - name: Draft the GitHub release
+
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Versions match Cargo.toml
+        run: |
+          cargo=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' ../Cargo.toml)
+          for f in package.json manifests/chromium.json manifests/firefox.json; do
+            v=$(node -p "require('./$f').version")
+            [ "$v" = "$cargo" ] || { echo "::error::$f has version $v, Cargo.toml has $cargo"; exit 1; }
+          done
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && [ "${GITHUB_REF_NAME#v}" != "$cargo" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $cargo"; exit 1
+          fi
+          echo "VERSION=$cargo" >> "$GITHUB_ENV"
+      - name: Lint for Firefox
+        run: npx --yes "$WEB_EXT" lint --source-dir dist/firefox --output text
+      # One top-level folder, which is what "Load unpacked" points at.
+      - name: Zip for Chromium
+        run: |
+          name="Focus-$VERSION-chromium-extension"
+          mkdir -p artifacts
+          cp -r dist/chromium "artifacts/$name"
+          (cd artifacts && zip -qr "$name.zip" "$name" && rm -r "$name")
+      # Signing an unlisted version uploads it to AMO and uses up the version number, so only tags do it.
+      - name: Sign for Firefox (unlisted on AMO)
         if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$AMO_JWT_ISSUER" ] || [ -z "$AMO_JWT_SECRET" ]; then
+            echo "::error::Add the AMO_JWT_ISSUER and AMO_JWT_SECRET repository secrets (see ADR 0018)"; exit 1
+          fi
+          npx --yes "$WEB_EXT" sign --channel unlisted --source-dir dist/firefox --artifacts-dir signed \
+            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+          mv signed/*.xpi "artifacts/Focus-$VERSION-firefox-extension.xpi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-release
+          path: extension/artifacts/*
+
+  release:
+    name: Draft the GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, extension]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Create the draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
-          gh release create '${{ github.ref_name }}' --draft --title 'Focus ${{ github.ref_name }}'
-          --generate-notes (Get-Item target/release-artifacts/*.zip, target/release-artifacts/*.msi).FullName
+          gh release create '${{ github.ref_name }}' --repo '${{ github.repository }}' --draft
+          --title 'Focus ${{ github.ref_name }}' --generate-notes release/*
