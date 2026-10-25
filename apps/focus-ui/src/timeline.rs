@@ -31,8 +31,6 @@ const HOUR_HEIGHT: f32 = 36.0;
 const LABEL_WIDTH: f32 = 46.0;
 /// Height of an hour label; labels are centred on their line, so the grid starts half of it down.
 const LABEL_HEIGHT: f32 = 16.0;
-/// An hour label this close to now (in minutes) is hidden, so the now line's time shows instead.
-const LABEL_CLEARANCE: u32 = 12;
 
 /// One day as an hour grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,7 +218,7 @@ fn grid(timeline: Timeline) -> Element<'static, Message> {
 
     let mut hour_labels = column![];
     for (hour, label) in (from_hour..).zip(labels) {
-        let near_now = now_shown && (hour * 60).abs_diff(now) < LABEL_CLEARANCE;
+        let near_now = now_shown && clashes_with_now(hour, now);
         let label = if near_now { String::new() } else { label };
         hour_labels = hour_labels.push(
             container(caption(label))
@@ -318,6 +316,12 @@ fn gap(height: f32) -> Element<'static, Message> {
         .into()
 }
 
+/// Whether the label for `hour` would overlap the now line's time at minute `now`, so it's hidden.
+fn clashes_with_now(hour: u32, now: u32) -> bool {
+    // Both labels are LABEL_HEIGHT tall and centred on their lines.
+    pixels(0, (hour * 60).abs_diff(now)) < LABEL_HEIGHT
+}
+
 /// How tall the time from minute `from` to minute `to` is on the grid (0 if `to` is earlier).
 fn pixels(from: u32, to: u32) -> f32 {
     // Minutes in a day fit an f32 exactly.
@@ -391,6 +395,16 @@ mod tests {
             .iter()
             .map(|block| (block.start, block.end))
             .collect()
+    }
+
+    #[test]
+    fn hour_labels_near_now_give_way_to_its_time() {
+        assert!(
+            clashes_with_now(11, 11 * 60 + 20),
+            "20 minutes is under a label's height"
+        );
+        assert!(clashes_with_now(12, 11 * 60 + 40));
+        assert!(!clashes_with_now(11, 11 * 60 + 30), "30 minutes clears it");
     }
 
     #[test]
