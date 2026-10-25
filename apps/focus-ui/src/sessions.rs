@@ -74,7 +74,15 @@ impl App {
                 row![
                     style::lcd(format_duration(left)).size(54),
                     space::horizontal(),
-                    style::label(&format!("of {}", format_duration(total))),
+                    // While ending early waits, the readout counts that down instead.
+                    style::label(&match running.end_allowed_at() {
+                        Some(at) if at > status.now => format!(
+                            "end in {}",
+                            format_duration(at.saturating_duration_since(status.now))
+                        ),
+                        Some(_) => "ready to end".to_owned(),
+                        None => format!("of {}", format_duration(total)),
+                    }),
                 ]
                 .align_y(Alignment::Center),
                 style::meter(share(left, total)),
@@ -244,7 +252,8 @@ impl App {
         }
     }
 
-    /// The wait countdown and reason box for ending a Deep session.
+    /// The reason box for ending a Deep session; the wait counts down on the readout above, and
+    /// End session opens once it's over and a reason is typed.
     fn deep_end_form(&self, wait: Duration) -> Element<'_, Message> {
         let ready = wait.is_zero() && !self.reason.trim().is_empty();
         let confirm = if ready {
@@ -252,31 +261,20 @@ impl App {
         } else {
             None
         };
-        let prompt = if wait.is_zero() {
-            "Why are you ending early?".to_owned()
-        } else {
-            format!(
-                "You can end in {}. Why are you ending early?",
-                format_duration(wait)
-            )
-        };
-        column![
-            text(prompt),
-            text_input("Type a reason", &self.reason)
+        row![
+            text_input("Why are you ending early?", &self.reason)
                 .style(style::field)
                 .on_input(Message::ReasonChanged)
                 .on_submit_maybe(confirm.clone()),
-            row![
-                button("End session")
-                    .style(style::key_danger)
-                    .on_press_maybe(confirm),
-                button("Keep focusing")
-                    .style(style::key_accent)
-                    .on_press_maybe(self.idle_then(Message::CancelEnd)),
-            ]
-            .spacing(12),
+            button("End session")
+                .style(style::key_danger)
+                .on_press_maybe(confirm),
+            button("Keep focusing")
+                .style(style::key_accent)
+                .on_press_maybe(self.idle_then(Message::CancelEnd)),
         ]
         .spacing(10)
+        .align_y(Alignment::Center)
         .into()
     }
 

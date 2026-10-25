@@ -346,7 +346,7 @@ impl Row {
 /// A row's title: bold, or grey once it's over.
 pub fn item_title(title: String, past: bool) -> Text<'static> {
     if past {
-        text(title).size(15).style(text::secondary)
+        text(title).size(15).style(crate::style::muted)
     } else {
         bold(title).size(15)
     }

@@ -11,7 +11,7 @@ use iced::widget::{
 use iced::{Alignment, Element, Length};
 
 use crate::help::{info, tip};
-use crate::rules::entries;
+use crate::rules::{chip, entries};
 use crate::style::{self, Tone, caption, card, heading, toned};
 use crate::{Message, settings};
 
@@ -511,8 +511,9 @@ fn delete_key<'a>(
         .align_y(Alignment::Center)
         .into()
     } else {
-        button("Delete")
-            .style(style::key_danger)
+        // Plain until asked; the red key is the confirmation.
+        button("Delete…")
+            .style(style::key)
             .on_press(wrap(Edit::Delete))
             .into()
     }
@@ -603,11 +604,7 @@ fn grouped_sites<'a>(
             .iter()
             .enumerate()
             .fold(row![].spacing(6), |chips, (at, site)| {
-                chips.push(
-                    button(text(format!("{site}  ×")).size(14))
-                        .style(style::key)
-                        .on_press(wrap(Edit::Remove(slot, at))),
-                )
+                chips.push(chip(site, wrap(Edit::Remove(slot, at))))
             });
         groups = groups.push(
             row![

@@ -19,8 +19,8 @@ use crate::Message;
 use crate::agenda::{self, Row};
 use crate::style::{Tone, bold, caption, entry, now_rule, pill, toned};
 
-/// The hours always shown, even on an empty day: 08:00 to 18:00.
-const WORKDAY: (u32, u32) = (8, 18);
+/// The fewest hours the grid shows, so a quiet day still looks like a day.
+const MIN_SPAN: u32 = 5;
 /// No box is drawn shorter than this many minutes, so its title fits (except at the very end of
 /// the day).
 const MIN_MINUTES: u32 = 25;
@@ -44,6 +44,8 @@ pub struct Timeline {
     pub labels: Vec<String>,
     /// All-day events, shown above the grid.
     pub all_day: Vec<Row>,
+    /// Events that ended before the grid starts, listed above it.
+    pub earlier: Vec<Row>,
     /// The timed events, in groups that overlap each other, in time order.
     pub clusters: Vec<Cluster>,
     /// Now, in minutes since midnight.
@@ -97,16 +99,19 @@ where
         .collect();
 
     let now_minute = minute(now);
+    // The grid starts an hour before now; events over by then are listed above it instead, so
+    // the afternoon isn't a tall stack of empty hours.
+    let cut = (now_minute / 60).saturating_sub(1);
+    let (mut earlier, blocks): (Vec<Block>, Vec<Block>) =
+        blocks.into_iter().partition(|block| block.end <= cut * 60);
+    earlier.sort_by_key(|block| block.start);
     let earliest = blocks.iter().map(|block| block.start / 60).min();
     let latest = blocks.iter().map(|block| block.end.div_ceil(60)).max();
-    let from_hour = earliest
-        .unwrap_or(WORKDAY.0)
-        .min(WORKDAY.0)
-        .min(now_minute / 60);
+    let from_hour = earliest.map_or(cut, |hour| hour.min(cut));
     let to_hour = latest
-        .unwrap_or(WORKDAY.1)
-        .max(WORKDAY.1)
+        .unwrap_or(0)
         .max(now_minute / 60 + 1)
+        .max(from_hour + MIN_SPAN)
         .min(day_length.div_ceil(60));
     let labels = (from_hour..=to_hour)
         .map(|hour| {
@@ -119,6 +124,7 @@ where
         to_hour,
         labels,
         all_day: all_day.into_iter().map(|(_, row)| row).collect(),
+        earlier: earlier.into_iter().map(|block| block.row).collect(),
         clusters: clusters(blocks),
         now: now_minute,
         now_label: agenda::clock(now, zone),
@@ -162,7 +168,8 @@ impl Cluster {
     }
 }
 
-/// The day: all-day events in a strip, then the hour grid with a line at now.
+/// The day: all-day events and those already over in strips, then the hour grid with a line
+/// at now.
 pub fn view(timeline: Timeline) -> Column<'static, Message> {
     let mut page = column![].spacing(12);
     if !timeline.all_day.is_empty() {
@@ -170,6 +177,18 @@ pub fn view(timeline: Timeline) -> Column<'static, Message> {
         for item in &timeline.all_day {
             let title = bold(item.title.clone()).size(13);
             strip = strip.push(entry(title, item.tone(), item.past, Length::Shrink));
+        }
+        page = page.push(strip);
+    }
+    if !timeline.earlier.is_empty() {
+        let mut strip = column![caption("Earlier today")].spacing(6);
+        for item in &timeline.earlier {
+            let line = row![
+                caption(item.when.clone()).size(13),
+                bold(item.title.clone()).size(13),
+            ]
+            .spacing(10);
+            strip = strip.push(entry(line, item.tone(), item.past, Length::Shrink));
         }
         page = page.push(strip);
     }
@@ -374,14 +393,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_day_shows_the_working_hours() {
+    fn an_empty_day_shows_the_next_few_hours() {
         let timeline = today(&view(Vec::new()), at(24, 11, 7), &zone());
-        assert_eq!((timeline.from_hour, timeline.to_hour), (8, 18));
-        assert_eq!(timeline.labels.first().map(String::as_str), Some("08:00"));
-        assert_eq!(timeline.labels.last().map(String::as_str), Some("18:00"));
+        assert_eq!((timeline.from_hour, timeline.to_hour), (10, 15));
+        assert_eq!(timeline.labels.first().map(String::as_str), Some("10:00"));
+        assert_eq!(timeline.labels.last().map(String::as_str), Some("15:00"));
         assert_eq!(
             timeline.labels.len(),
-            11,
+            6,
             "a label for every line, the last included"
         );
         assert_eq!(timeline.now, 11 * 60 + 7);
@@ -390,16 +409,30 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_stretches_to_early_and_late_events_and_to_now() {
+    fn the_grid_starts_before_now_and_stretches_to_later_events() {
         let events = vec![
             event("Gym", at(24, 6, 30), at(24, 7, 15), false),
             event("Film", at(24, 20, 0), at(24, 22, 10), false),
         ];
-        let timeline = today(&view(events), at(24, 11, 0), &zone());
-        assert_eq!((timeline.from_hour, timeline.to_hour), (6, 23));
+        let timeline = today(&view(events.clone()), at(24, 11, 0), &zone());
+        assert_eq!((timeline.from_hour, timeline.to_hour), (10, 23));
+        let earlier: Vec<&str> = timeline
+            .earlier
+            .iter()
+            .map(|row| row.title.as_str())
+            .collect();
+        assert_eq!(
+            earlier,
+            ["Gym"],
+            "over before the grid starts, so listed above it"
+        );
+
+        let morning = today(&view(events), at(24, 6, 0), &zone());
+        assert_eq!(morning.from_hour, 5);
+        assert!(morning.earlier.is_empty());
 
         let late = today(&view(Vec::new()), at(24, 23, 30), &zone());
-        assert_eq!((late.from_hour, late.to_hour), (8, 24));
+        assert_eq!((late.from_hour, late.to_hour), (22, 24));
         assert_eq!(late.labels.last().map(String::as_str), Some("00:00"));
     }
 
@@ -431,7 +464,7 @@ mod tests {
             event("Standup", at(24, 9, 0), at(24, 9, 10), false),
             event("Reminder", at(24, 9, 15), at(24, 9, 15), false),
         ];
-        let timeline = today(&view(events), at(24, 11, 0), &zone());
+        let timeline = today(&view(events), at(24, 8, 0), &zone());
         let block = &timeline.clusters[0].lanes[0][0];
         assert_eq!((block.start, block.end), (9 * 60, 9 * 60 + MIN_MINUTES));
         // Stretched, Standup now reaches past 09:15, so Reminder sits beside it.
@@ -459,7 +492,7 @@ mod tests {
             event("Party", at(24, 23, 0), at(25, 1, 0), false),
             event("Holiday", at(24, 0, 0), at(25, 0, 0), true),
         ];
-        let timeline = today(&view(events), at(24, 11, 0), &zone());
+        let timeline = today(&view(events), at(24, 1, 0), &zone());
         assert_eq!(spans(&timeline), [(0, 2 * 60), (23 * 60, 24 * 60)]);
         assert_eq!((timeline.from_hour, timeline.to_hour), (0, 24));
         assert_eq!(timeline.all_day.len(), 1);

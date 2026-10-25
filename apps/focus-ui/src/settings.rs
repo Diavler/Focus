@@ -260,104 +260,89 @@ impl App {
         status: &'a StatusReport,
     ) -> Element<'a, Message> {
         let login = login_line(status);
-        let start_at_login = card(
+        let settings = card(
             column![
-                row![
-                    heading("Start at login"),
-                    info("Brings Focus back after a restart. Turning it off waits 24 hours."),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                toggler(draft.edited.start_at_login)
-                    .label("Start Focus when I log in")
-                    .size(22)
-                    .style(style::switch)
-                    .on_toggle(|on| Message::Settings(Msg::StartAtLogin(on))),
-                row![dot(login.tone), toned(login.text, login.tone).size(14)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-            ]
-            .spacing(12),
-        );
-        let shortcut = card(
-            column![
-                row![
-                    heading("Parking lot shortcut"),
-                    info(
-                        "Opens the parking lot from any app. Enter parks the thought and hides Focus."
+                column![
+                    setting_row(
+                        "Start at login",
+                        "Brings Focus back after a restart. Turning it off waits 24 hours.",
+                        toggler(draft.edited.start_at_login)
+                            .size(22)
+                            .style(style::switch)
+                            .on_toggle(|on| Message::Settings(Msg::StartAtLogin(on))),
                     ),
+                    row![dot(login.tone), toned(login.text, login.tone).size(13)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
                 ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                pick_list(
-                    focus_core::Hotkey::ALL,
-                    Some(draft.edited.parking_hotkey),
-                    |hotkey| Message::Settings(Msg::ParkingHotkey(hotkey)),
-                )
-                .style(style::picker)
-                .menu_style(style::menu),
-            ]
-            .spacing(12),
-        );
-        let theme = card(
-            column![
-                row![
-                    heading("Theme"),
-                    info("System follows Windows' light or dark mode."),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                style::segmented(
-                    &focus_core::Theme::ALL,
-                    draft.edited.theme,
-                    |theme| theme.to_string(),
-                    |theme| Message::Settings(Msg::Theme(theme)),
+                .spacing(6),
+                setting_row(
+                    "Theme",
+                    "System follows Windows' light or dark mode.",
+                    style::segmented(
+                        &focus_core::Theme::ALL,
+                        draft.edited.theme,
+                        |theme| theme.to_string(),
+                        |theme| Message::Settings(Msg::Theme(theme)),
+                    ),
+                ),
+                setting_row(
+                    "Parking lot shortcut",
+                    "Opens the parking lot from any app. Enter parks the thought and hides Focus.",
+                    pick_list(
+                        focus_core::Hotkey::ALL,
+                        Some(draft.edited.parking_hotkey),
+                        |hotkey| Message::Settings(Msg::ParkingHotkey(hotkey)),
+                    )
+                    .style(style::picker)
+                    .menu_style(style::menu),
                 ),
             ]
-            .spacing(12),
+            .spacing(20),
         );
-        column![
-            start_at_login,
-            theme,
-            shortcut,
-            self.kill_switch_card(status)
-        ]
-        .spacing(16)
-        .into()
+        column![settings, self.kill_switch_card(status)]
+            .spacing(16)
+            .into()
     }
 
-    /// Stopping Focus entirely: ask, wait, then confirm.
+    /// Stopping Focus entirely: ask, wait, then confirm. Kept apart from the settings, and
+    /// quiet until it's asked for.
     fn kill_switch_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let header = row![
-            heading("Stop Focus"),
+            heading("Emergency exit"),
             info(
-                "Emergency exit: ends any session, lifts blocking and closes Focus. Waits 1 minute first (5 and a reason during a Locked session)."
+                "Ends any session, lifts blocking and closes Focus. Waits 1 minute first (5 and a \
+                 reason during a Locked session). Focus starts again at login or when opened."
             ),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
         let body: Element<'a, Message> = match status.stop_allowed_at {
-            None => column![
+            None => row![
+                caption("Stop Focus completely, for when something has gone wrong."),
+                space::horizontal(),
                 button("Stop Focus…")
-                    .style(style::key_danger)
+                    .style(style::key)
                     .on_press_maybe(self.idle_then(Message::RequestStop)),
             ]
             .spacing(10)
+            .align_y(Alignment::Center)
             .into(),
-            Some(allowed_at) if status.now < allowed_at => column![
-                toned(
-                    format!(
-                        "You can stop Focus in {}. Take the moment: is this really worth it?",
-                        format_duration(allowed_at.saturating_duration_since(status.now))
-                    ),
-                    Tone::Warn
-                )
-                .size(15),
+            Some(allowed_at) if status.now < allowed_at => row![
+                style::readout(
+                    style::mono(format_duration(
+                        allowed_at.saturating_duration_since(status.now)
+                    ))
+                    .size(15)
+                ),
+                caption("until you can stop Focus. Take the moment: is this worth it?"),
+                space::horizontal(),
                 button("Cancel")
                     .style(style::key)
                     .on_press_maybe(self.idle_then(Message::CancelStop)),
             ]
-            .spacing(10)
+            .spacing(12)
+            .align_y(Alignment::Center)
             .into(),
             Some(_) => {
                 let needs_reason = status.stop_reason_required;
@@ -407,6 +392,23 @@ impl App {
         };
         card(column![header, body].spacing(12).width(Length::Fill)).into()
     }
+}
+
+/// One setting on one line: its name and help on the left, its control on the right.
+fn setting_row<'a>(
+    name: &'a str,
+    help: &'a str,
+    control: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    row![
+        style::field_label(name),
+        info(help),
+        space::horizontal(),
+        control.into()
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 #[cfg(test)]
