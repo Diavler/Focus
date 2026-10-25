@@ -908,6 +908,36 @@ pub fn pill<'a>(label: impl text::IntoFragment<'a>, tone: Tone) -> Element<'a, M
         .into()
 }
 
+/// A task's priority as a small dot in Todoist's colours (P1 red, P2 orange, P3 blue), so it
+/// reads the same as in Todoist. P4 isn't flagged and gets nothing.
+pub fn priority_flag<'a>(priority: focus_core::TaskPriority) -> Element<'a, Message> {
+    use focus_core::TaskPriority;
+    let color = match priority {
+        TaskPriority::P1 => Color::from_rgb8(0xD1, 0x45, 0x3B),
+        TaskPriority::P2 => Color::from_rgb8(0xEB, 0x89, 0x09),
+        TaskPriority::P3 => Color::from_rgb8(0x24, 0x6F, 0xE0),
+        TaskPriority::P4 => return space::horizontal().width(Length::Fixed(0.0)).into(),
+    };
+    let name = match priority {
+        TaskPriority::P1 => "Priority 1",
+        TaskPriority::P2 => "Priority 2",
+        _ => "Priority 3",
+    };
+    crate::help::tip(
+        container(space::horizontal().width(Length::Fixed(10.0)))
+            .height(Length::Fixed(10.0))
+            .style(move |_: &Theme| container::Style {
+                background: Some(Background::Color(color)),
+                border: Border {
+                    radius: 5.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+        name,
+    )
+}
+
 /// An LED for a status line, unlit for Quiet.
 pub fn dot<'a>(tone: Tone) -> Container<'a, Message> {
     led(move |theme| match tone {
