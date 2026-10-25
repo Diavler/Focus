@@ -182,13 +182,13 @@ impl App {
         let duration = column![
             style::readout(
                 row![
-                    style::lcd(format_duration(Duration::from_secs(
-                        u64::from(self.minutes) * 60
-                    )))
-                    .size(54),
+                    style::lcd_input(&self.minutes_text)
+                        .on_input(Message::MinutesTyped)
+                        .on_submit(Message::MinutesSubmitted),
                     space::horizontal(),
                     style::label("Duration"),
-                    info("Ends by itself when the time is up."),
+                    info("Ends by itself when the time is up. Type minutes (45), m:ss or h:mm:ss, or drag \
+                         the slider."),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -497,6 +497,29 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// `minutes` as the readout shows it, e.g. `25:00` or `1:30:00`.
+pub(crate) fn minutes_label(minutes: u16) -> String {
+    format_duration(Duration::from_secs(u64::from(minutes) * 60))
+}
+
+/// A session length typed on the readout: plain minutes (`45`), `m:ss` as it's shown (`25:00`)
+/// or `h:mm:ss` (`1:30:00`). Seconds are dropped; the result is kept within [`MINUTES`]. `None`
+/// if it isn't a length.
+pub(crate) fn parse_minutes(text: &str) -> Option<u16> {
+    let parts: Vec<u32> = text
+        .trim()
+        .split(':')
+        .map(|part| part.parse().ok())
+        .collect::<Option<_>>()?;
+    let minutes = match parts.as_slice() {
+        [minutes] | [minutes, _] => *minutes,
+        [hours, minutes, _] => hours.checked_mul(60)?.checked_add(*minutes)?,
+        _ => return None,
+    };
+    let minutes = u16::try_from(minutes).unwrap_or(u16::MAX);
+    Some(minutes.clamp(*MINUTES.start(), *MINUTES.end()))
+}
+
 #[cfg(test)]
 mod tests {
     use focus_core::{SessionState, Timestamp};
@@ -510,6 +533,21 @@ mod tests {
         assert_eq!(share(minute, minute * 4), 0.25);
         assert_eq!(share(minute * 5, minute), 1.0);
         assert_eq!(share(minute, Duration::ZERO), 0.0);
+    }
+
+    #[test]
+    fn reads_typed_lengths() {
+        assert_eq!(parse_minutes("45"), Some(45));
+        assert_eq!(parse_minutes(" 25:00 "), Some(25));
+        assert_eq!(parse_minutes("1:30:00"), Some(90));
+        assert_eq!(parse_minutes("0"), Some(1), "at least a minute");
+        assert_eq!(parse_minutes("999"), Some(180), "at most three hours");
+        assert_eq!(parse_minutes(""), None);
+        assert_eq!(parse_minutes("abc"), None);
+        assert_eq!(parse_minutes("1:2:3:4"), None);
+        for minutes in [1, 25, 59, 60, 90, 180] {
+            assert_eq!(parse_minutes(&minutes_label(minutes)), Some(minutes));
+        }
     }
 
     #[test]

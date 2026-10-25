@@ -125,6 +125,8 @@ pub(crate) struct App {
     selected: Option<String>,
     strictness: Strictness,
     minutes: u16,
+    /// The session length as typed on the readout.
+    minutes_text: String,
     reason: String,
     /// The calendar and tasks, from the daemon; `None` until it first answers.
     plan: Option<PlanView>,
@@ -201,6 +203,8 @@ pub(crate) enum Message {
     ConfigPicked(String),
     StrictnessPicked(Strictness),
     MinutesChanged(u16),
+    MinutesTyped(String),
+    MinutesSubmitted,
     Start,
     EndEarly,
     ReasonChanged(String),
@@ -255,6 +259,7 @@ impl App {
             selected: None,
             strictness: Strictness::Deep,
             minutes: 25,
+            minutes_text: sessions::minutes_label(25),
             reason: String::new(),
             plan: None,
             calendar_input: String::new(),
@@ -344,7 +349,19 @@ impl App {
             }
             Message::ConfigPicked(name) => self.selected = Some(name),
             Message::StrictnessPicked(strictness) => self.strictness = strictness,
-            Message::MinutesChanged(minutes) => self.minutes = minutes,
+            Message::MinutesChanged(minutes) => {
+                self.minutes = minutes;
+                self.minutes_text = sessions::minutes_label(minutes);
+            }
+            Message::MinutesTyped(text) => {
+                if let Some(minutes) = sessions::parse_minutes(&text) {
+                    self.minutes = minutes;
+                }
+                self.minutes_text = text;
+            }
+            Message::MinutesSubmitted => {
+                self.minutes_text = sessions::minutes_label(self.minutes);
+            }
             Message::Start => {
                 let Some(config) = self.selected.clone() else {
                     return Task::none();

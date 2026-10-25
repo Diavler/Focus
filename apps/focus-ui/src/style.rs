@@ -9,8 +9,8 @@ use iced::gradient::Linear;
 use iced::overlay::menu;
 use iced::theme::{Mode, Palette};
 use iced::widget::{
-    Button, Container, Text, button, container, pick_list, row, rule, scrollable, slider, space,
-    stack, text, text_editor, text_input, toggler,
+    Button, Container, Text, TextInput, button, container, pick_list, row, rule, scrollable,
+    slider, space, stack, text, text_editor, text_input, toggler,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Gradient, Length, Padding, Radians,
@@ -228,6 +228,31 @@ pub fn label<'a>(content: &str) -> Text<'a> {
         .font(MONO)
         .size(11)
         .style(text::secondary)
+}
+
+/// Big readout digits the user can type into, on a [`readout`]'s glass.
+pub fn lcd_input<'a>(value: &str) -> TextInput<'a, Message> {
+    text_input("", value)
+        .font(MONO)
+        .size(54)
+        .padding([0, 4])
+        .width(Length::Fixed(240.0))
+        .style(|theme: &Theme, status| {
+            let look = look(theme);
+            let focused = matches!(status, text_input::Status::Focused { .. });
+            text_input::Style {
+                background: Background::Color(Color::TRANSPARENT),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: if focused { 1.0 } else { 0.0 },
+                    color: look.digits.scale_alpha(0.5),
+                },
+                icon: look.digits,
+                placeholder: look.unlit,
+                value: look.digits,
+                selection: look.digits.scale_alpha(0.3),
+            }
+        })
 }
 
 /// Readout text in the glowing digit colour, for text on glass outside a [`readout`].
