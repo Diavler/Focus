@@ -69,10 +69,19 @@ fn main() -> iced::Result {
         .title("Focus")
         .subscription(App::subscription)
         .theme(App::theme)
-        .window_size((1040.0, 760.0))
-        .centered()
+        .window(iced::window::Settings {
+            size: iced::Size::new(1120.0, 780.0),
+            min_size: Some(MIN_WINDOW),
+            position: iced::window::Position::Centered,
+            ..iced::window::Settings::default()
+        })
         .run()
 }
+
+/// The smallest the window can be made. The width keeps the Sessions start card's strictness
+/// keys and Start key on one line beside the parking lot (sidebar 210 + padding + a 3:2 split);
+/// the height keeps the sidebar's readouts, pages and status lines clear of each other.
+const MIN_WINDOW: iced::Size = iced::Size::new(1080.0, 640.0);
 
 /// How often (in polls, about seconds) a shortcut another app held is tried again.
 const HOTKEY_RETRY_POLLS: u32 = 30;
