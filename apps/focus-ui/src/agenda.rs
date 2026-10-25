@@ -319,17 +319,22 @@ pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
     })
 }
 
-/// The rows as narrow boxes, for a column beside something else: the title first, then when
-/// and the labels, then the session it starts.
+/// The rows as narrow boxes, for a column beside something else: the title first, then when,
+/// the labels and the tags (wrapping onto more lines rather than squeezing), then the session it
+/// starts.
 pub fn compact_rows_view(rows: Vec<Row>) -> Column<'static, Message> {
     boxes(rows, |item| {
-        let mut details = row![toned(item.when.clone(), item.when_tone()).size(13)].spacing(8);
+        let mut details = row![toned(item.when.clone(), item.when_tone()).size(13)]
+            .spacing(8)
+            .align_y(Alignment::Center);
         if let Some(note) = item.note {
             details = details.push(caption(note));
         }
-        let tags = [item.project, item.section].into_iter().flatten();
-        let title = title_line(item.title, item.past, item.priority, tags);
-        let mut body = column![title, details].spacing(4);
+        for tag in [item.project, item.section].into_iter().flatten() {
+            details = details.push(pill(tag, Tone::Quiet));
+        }
+        let title = title_line(item.title, item.past, item.priority, []);
+        let mut body = column![title, details.wrap().vertical_spacing(6)].spacing(4);
         if let Some(starts) = item.starts {
             body = body.push(pill(starts, Tone::Good));
         }
@@ -381,7 +386,8 @@ fn title_line(
     for tag in tags {
         line = line.push(pill(tag, Tone::Quiet));
     }
-    line.into()
+    // Tags drop to the next line when the title is long, instead of being squeezed.
+    line.wrap().vertical_spacing(6).into()
 }
 
 /// A row's title: bold, or grey once it's over.
