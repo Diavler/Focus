@@ -274,6 +274,7 @@ mod tests {
             duration: None,
             priority: crate::TaskPriority::default(),
             project: None,
+            section: None,
         }
     }
 

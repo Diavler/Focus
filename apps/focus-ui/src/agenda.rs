@@ -42,6 +42,8 @@ pub struct Row {
     pub priority: Option<TaskPriority>,
     /// A task's project, if known.
     pub project: Option<String>,
+    /// A task's section within its project, if any.
+    pub section: Option<String>,
 }
 
 /// Events for `days` days from the day `view.now` falls on in `zone`, one group per day.
@@ -118,6 +120,7 @@ where
                 warning: false,
                 priority: None,
                 project: None,
+                section: None,
             };
             (event, row)
         })
@@ -252,6 +255,7 @@ where
         warning: day < today,
         priority: (task.priority != TaskPriority::P4).then_some(task.priority),
         project: task.project.clone(),
+        section: task.section.clone(),
     }
 }
 
@@ -299,7 +303,8 @@ pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
     boxes(rows, |item| {
         let when = container(toned(item.when.clone(), item.when_tone()).size(14))
             .width(Length::Fixed(110.0));
-        let title = title_line(item.title, item.past, item.priority, item.project);
+        let tags = [item.project, item.section].into_iter().flatten();
+        let title = title_line(item.title, item.past, item.priority, tags);
         let mut detail = column![title].spacing(2);
         if let Some(note) = item.note {
             detail = detail.push(caption(note));
@@ -322,7 +327,8 @@ pub fn compact_rows_view(rows: Vec<Row>) -> Column<'static, Message> {
         if let Some(note) = item.note {
             details = details.push(caption(note));
         }
-        let title = title_line(item.title, item.past, item.priority, item.project);
+        let tags = [item.project, item.section].into_iter().flatten();
+        let title = title_line(item.title, item.past, item.priority, tags);
         let mut body = column![title, details].spacing(4);
         if let Some(starts) = item.starts {
             body = body.push(pill(starts, Tone::Good));
@@ -360,20 +366,20 @@ impl Row {
     }
 }
 
-/// A row's title with a task's priority flag before it and its project after it.
+/// A row's title with a task's priority flag before it and its tags (project, section) after it.
 fn title_line(
     title: String,
     past: bool,
     priority: Option<TaskPriority>,
-    project: Option<String>,
+    tags: impl IntoIterator<Item = String>,
 ) -> Element<'static, Message> {
     let mut line = row![].spacing(8).align_y(Alignment::Center);
     if let Some(priority) = priority {
         line = line.push(priority_flag(priority));
     }
     line = line.push(item_title(title, past));
-    if let Some(project) = project {
-        line = line.push(pill(project, Tone::Quiet));
+    for tag in tags {
+        line = line.push(pill(tag, Tone::Quiet));
     }
     line.into()
 }
@@ -426,6 +432,7 @@ mod tests {
             duration: None,
             priority: focus_core::TaskPriority::default(),
             project: None,
+            section: None,
         }
     }
 
@@ -542,10 +549,12 @@ mod tests {
             .unwrap();
         milk.priority = TaskPriority::P1;
         milk.project = Some("Home".into());
+        milk.section = Some("Errands".into());
         let today = &task_groups(&plan, &zone())[1];
         let titles: Vec<&str> = today.rows.iter().map(|row| row.title.as_str()).collect();
         assert_eq!(titles, ["Buy milk", "Write the report"]);
         assert_eq!(today.rows[0].priority, Some(TaskPriority::P1));
         assert_eq!(today.rows[0].project.as_deref(), Some("Home"));
+        assert_eq!(today.rows[0].section.as_deref(), Some("Errands"));
     }
 }

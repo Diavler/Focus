@@ -97,6 +97,7 @@ mod tests {
             duration: None,
             priority: crate::TaskPriority::default(),
             project: None,
+            section: None,
         }]));
         task_source_contract(&tasks);
         tasks.set(Err(SourceError::Unavailable {

@@ -19,6 +19,9 @@ const FILTER_URL: &str = "https://api.todoist.com/api/v1/tasks/filter";
 /// The user's projects, for the names tasks only refer to by ID.
 const PROJECTS_URL: &str = "https://api.todoist.com/api/v1/projects";
 
+/// The sections of those projects, likewise.
+const SECTIONS_URL: &str = "https://api.todoist.com/api/v1/sections";
+
 /// Open tasks that could start a session soon. Tasks due later are fetched at a later sync.
 const QUERY: &str = "overdue | next 7 days";
 
@@ -66,9 +69,9 @@ impl<H: HttpGet> TodoistTasks<H> {
         })
     }
 
-    /// Project names by ID. Best effort: a failed lookup only means tasks show no project, so it
-    /// never fails the fetch.
-    fn project_names(&self, token: &str) -> HashMap<String, String> {
+    /// Names by ID from a paged list of projects or sections at `url`. Best effort: a failed
+    /// lookup only means tasks show no project or section, so it never fails the fetch.
+    fn names(&self, url: &str, token: &str) -> HashMap<String, String> {
         let mut names = HashMap::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
@@ -76,17 +79,13 @@ impl<H: HttpGet> TodoistTasks<H> {
             if let Some(cursor) = cursor.as_deref() {
                 query.push(("cursor", cursor));
             }
-            let page: Option<ProjectPage> = self
+            let page: Option<NamePage> = self
                 .http
-                .get(PROJECTS_URL, &query, Some(token))
+                .get(url, &query, Some(token))
                 .ok()
                 .and_then(|body| serde_json::from_str(&body).ok());
             let Some(page) = page else { break };
-            names.extend(
-                page.results
-                    .into_iter()
-                    .map(|project| (project.id, project.name)),
-            );
+            names.extend(page.results.into_iter().map(|named| (named.id, named.name)));
             cursor = page.next_cursor;
             if cursor.is_none() {
                 break;
@@ -142,11 +141,23 @@ impl<H: HttpGet> TaskSource for TodoistTasks<H> {
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
-                // Only ask for project names if some task is in a project.
-                let names = if raws.iter().any(|raw| raw.project_id.is_some()) {
-                    self.project_names(token)
-                } else {
-                    HashMap::new()
+                // Names are only looked up when some task needs them.
+                let lookup = |url, needed: bool| {
+                    if needed {
+                        self.names(url, token)
+                    } else {
+                        HashMap::new()
+                    }
+                };
+                let names = Names {
+                    projects: lookup(
+                        PROJECTS_URL,
+                        raws.iter().any(|raw| raw.project_id.is_some()),
+                    ),
+                    sections: lookup(
+                        SECTIONS_URL,
+                        raws.iter().any(|raw| raw.section_id.is_some()),
+                    ),
                 };
                 return Ok(raws
                     .into_iter()
@@ -180,19 +191,27 @@ struct RawTask {
     #[serde(default)]
     priority: u8,
     project_id: Option<String>,
+    section_id: Option<String>,
 }
 
-/// One page of `projects`.
+/// One page of `projects` or `sections`.
 #[derive(Debug, Deserialize)]
-struct ProjectPage {
-    results: Vec<RawProject>,
+struct NamePage {
+    results: Vec<Named>,
     next_cursor: Option<String>,
 }
 
+/// A project or section: all a task needs is its name.
 #[derive(Debug, Deserialize)]
-struct RawProject {
+struct Named {
     id: String,
     name: String,
+}
+
+/// Project and section names by ID.
+struct Names {
+    projects: HashMap<String, String>,
+    sections: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,7 +229,7 @@ struct RawDuration {
 }
 
 impl RawTask {
-    fn into_task(self, zone: Tz, project_names: &HashMap<String, String>) -> Task {
+    fn into_task(self, zone: Tz, names: &Names) -> Task {
         Task {
             priority: match self.priority {
                 4 => TaskPriority::P1,
@@ -221,7 +240,12 @@ impl RawTask {
             project: self
                 .project_id
                 .as_ref()
-                .and_then(|id| project_names.get(id))
+                .and_then(|id| names.projects.get(id))
+                .cloned(),
+            section: self
+                .section_id
+                .as_ref()
+                .and_then(|id| names.sections.get(id))
                 .cloned(),
             due_date: self.due.as_ref().and_then(|due| due_day(&due.date, zone)),
             due_at: self.due.and_then(|due| due_time(&due.date, zone)),
@@ -277,6 +301,7 @@ mod tests {
     const PAGE_1: &str = include_str!("../tests/fixtures/todoist-filter-page1.json");
     const PAGE_2: &str = include_str!("../tests/fixtures/todoist-filter-page2.json");
     const PROJECTS: &str = include_str!("../tests/fixtures/todoist-projects.json");
+    const SECTIONS: &str = include_str!("../tests/fixtures/todoist-sections.json");
     const TOKEN: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn first_page() -> [(&'static str, &'static str); 2] {
@@ -289,6 +314,7 @@ mod tests {
             .with(FILTER_URL, &first_page(), Ok(PAGE_1))
             .with(FILTER_URL, &second, Ok(PAGE_2))
             .with(PROJECTS_URL, &[("limit", PAGE_SIZE)], Ok(PROJECTS))
+            .with(SECTIONS_URL, &[("limit", PAGE_SIZE)], Ok(SECTIONS))
     }
 
     fn source(http: Recorded) -> TodoistTasks<Recorded> {
@@ -339,13 +365,13 @@ mod tests {
         );
         assert_eq!(
             source.http.tokens(),
-            vec![Some(TOKEN.to_owned()); 3],
-            "sends the trimmed token on every page and the project lookup"
+            vec![Some(TOKEN.to_owned()); 4],
+            "sends the trimmed token on every page and both name lookups"
         );
     }
 
     #[test]
-    fn reads_priorities_and_project_names() {
+    fn reads_priorities_and_project_and_section_names() {
         let tasks = source(recorded()).tasks().unwrap();
         let priorities: Vec<TaskPriority> = tasks.iter().map(|task| task.priority).collect();
         assert_eq!(
@@ -358,6 +384,9 @@ mod tests {
                 .iter()
                 .all(|task| task.project.as_deref() == Some("Uni"))
         );
+        let sections: Vec<Option<&str>> =
+            tasks.iter().map(|task| task.section.as_deref()).collect();
+        assert_eq!(sections, [Some("Lectures"), None, None]);
 
         // Without the project names, tasks still arrive, just without a project.
         let second = [("query", QUERY), ("limit", PAGE_SIZE), ("cursor", "c2")];
@@ -368,10 +397,15 @@ mod tests {
                 PROJECTS_URL,
                 &[("limit", PAGE_SIZE)],
                 Err(HttpError::Status(503)),
-            );
+            )
+            .with(SECTIONS_URL, &[("limit", PAGE_SIZE)], Ok("not json"));
         let tasks = source(no_projects).tasks().unwrap();
         assert_eq!(tasks.len(), 3);
-        assert!(tasks.iter().all(|task| task.project.is_none()));
+        assert!(
+            tasks
+                .iter()
+                .all(|task| task.project.is_none() && task.section.is_none())
+        );
     }
 
     #[test]

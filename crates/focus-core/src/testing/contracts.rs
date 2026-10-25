@@ -555,6 +555,7 @@ fn running_state() -> PersistedState {
                 duration: Some(Duration::from_secs(25 * 60)),
                 priority: crate::TaskPriority::default(),
                 project: None,
+                section: None,
             }],
         }),
     };

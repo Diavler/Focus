@@ -278,6 +278,7 @@ mod tests {
                     duration: Some(Duration::from_secs(60)),
                     priority: focus_core::TaskPriority::default(),
                     project: None,
+                    section: None,
                 }],
                 upcoming: vec![PlannedStart {
                     key: "calendar:a@1".into(),

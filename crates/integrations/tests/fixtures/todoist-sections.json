@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "id": "6Jf8VQXxpwv56VQ9",
+      "project_id": "6Jf8VQXxpwv56VQ7",
+      "name": "Lectures",
+      "section_order": 1,
+      "is_collapsed": false,
+      "is_archived": false
+    },
+    {
+      "id": "6Jf8VQXxpwv56VR1",
+      "project_id": "6Jf8VQXxpwv56VQ7",
+      "name": "Labs",
+      "section_order": 2,
+      "is_collapsed": false,
+      "is_archived": false
+    }
+  ],
+  "next_cursor": null
+}

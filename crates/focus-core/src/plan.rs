@@ -70,6 +70,9 @@ pub struct Task {
     /// The project it's in, by name, if known.
     #[serde(default)]
     pub project: Option<String>,
+    /// The section of that project it's in, by name, if any.
+    #[serde(default)]
+    pub section: Option<String>,
 }
 
 /// The items from one successful fetch.
