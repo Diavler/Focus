@@ -9,25 +9,25 @@ use iced::widget::{Column, button, column, pick_list, row, space, text, text_inp
 use iced::{Alignment, Element, Length};
 use ipc_proto::StatusReport;
 
-use crate::configs::{self, Target};
+use crate::configs;
 use crate::help::info;
 use crate::rules;
-use crate::sessions::{format_duration, login_line, pending_summary};
+use crate::sessions::{format_duration, login_line};
 use crate::style::{self, Tone, caption, card, dot, heading, title, toned};
-use crate::{App, Message, Page};
+use crate::{App, Message};
 
-/// The tabs of the Settings page.
+/// The tabs of the Rules page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
-    /// Automatic-start rules.
-    #[default]
-    Rules,
     /// Block configurations.
+    #[default]
     Configs,
     /// Shared lists.
     Lists,
-    /// Start at login, friction limits and the kill switch.
-    General,
+    /// Automatic-start rules.
+    AutoStarts,
+    /// The friction limits.
+    Limits,
 }
 
 /// How long after the last edit the settings save themselves, so typing isn't saved on every
@@ -182,67 +182,32 @@ pub enum Msg {
 }
 
 impl App {
-    /// The Settings page.
+    /// The Settings page: how Focus itself behaves (start at login, theme, the parking
+    /// shortcut) and the kill switch.
     pub(crate) fn settings_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
-        let header = row![
-            button(text("← Sessions").size(14))
-                .style(style::key_flat)
-                .on_press(Message::Navigate(Page::Sessions)),
+        let mut header = row![
             title("Settings"),
-            info(
-                "Saved to settings.toml. Edits to configurations in use wait 24 hours (cooling off)."
-            ),
+            info("Saved to settings.toml in Focus's data folder."),
+            space::horizontal(),
         ]
         .spacing(12)
         .align_y(Alignment::Center);
-        let tabs = style::segmented(
-            &[Tab::Rules, Tab::Configs, Tab::Lists, Tab::General],
-            self.settings_tab,
-            |tab| {
-                match tab {
-                    Tab::Rules => "Automatic starts",
-                    Tab::Configs => "Configurations",
-                    Tab::Lists => "Lists",
-                    Tab::General => "General",
-                }
-                .to_string()
-            },
-            |tab| Message::Settings(Msg::Tab(tab)),
-        );
-        let tabs = match &self.settings {
-            Some(draft) => row![tabs, space::horizontal(), self.save_status(draft)]
-                .spacing(12)
-                .align_y(Alignment::Center)
-                .into(),
-            None => tabs,
-        };
-        let mut page: Column<'a, Message> = column![header, tabs].spacing(18);
-        if let Some(pending) = pending_summary(status) {
-            page = page.push(card(
-                column![heading("Cooling off"), caption(pending)].spacing(8),
-            ));
+        if let Some(draft) = &self.settings {
+            header = header.push(self.save_status(draft));
         }
+        let page: Column<'a, Message> = column![header].spacing(18);
         let Some(draft) = &self.settings else {
-            page = page.push(self.settings_unavailable());
             // The kill switch doesn't need the settings, so it's there even if they can't be read.
-            if self.settings_tab == Tab::General {
-                page = page.push(self.kill_switch_card(status));
-            }
-            return page.into();
+            return page
+                .push(self.settings_unavailable())
+                .push(self.kill_switch_card(status))
+                .into();
         };
-        let body: Element<'a, Message> = match self.settings_tab {
-            Tab::Rules => rules::view(&draft.rules, &self.rule_configs),
-            Tab::Configs => {
-                configs::view(&draft.edited, &draft.configs, Target::Configs, &self.apps)
-            }
-            Tab::Lists => configs::view(&draft.edited, &draft.lists, Target::Lists, &self.apps),
-            Tab::General => self.general_tab(draft, status),
-        };
-        page.push(body).into()
+        page.push(self.general_tab(draft, status)).into()
     }
 
     /// Why there are no settings to edit: still loading, or the file can't be read.
-    fn settings_unavailable<'a>(&'a self) -> Element<'a, Message> {
+    pub(crate) fn settings_unavailable<'a>(&'a self) -> Element<'a, Message> {
         let Some(problem) = &self.settings_problem else {
             return caption("Loading the settings…").into();
         };
@@ -264,7 +229,7 @@ impl App {
     }
 
     /// Whether the edits are saved. Saving happens by itself shortly after an edit.
-    fn save_status<'a>(&'a self, draft: &'a Draft) -> Element<'a, Message> {
+    pub(crate) fn save_status<'a>(&'a self, draft: &'a Draft) -> Element<'a, Message> {
         if let Some(error) = &draft.error {
             return row![
                 toned(format!("Not saved: {error}"), Tone::Bad).size(13),
@@ -288,7 +253,7 @@ impl App {
         }
     }
 
-    /// Start at login, friction limits and the kill switch.
+    /// Start at login, theme, the parking shortcut and the kill switch.
     fn general_tab<'a>(
         &'a self,
         draft: &'a Draft,
@@ -313,10 +278,6 @@ impl App {
                     .align_y(Alignment::Center),
             ]
             .spacing(12),
-        );
-        let friction = crate::friction::view(
-            &draft.edited.friction,
-            status.friction_loosen_after.map(|at| (at, status.now)),
         );
         let shortcut = card(
             column![
@@ -359,7 +320,6 @@ impl App {
             start_at_login,
             theme,
             shortcut,
-            friction,
             self.kill_switch_card(status)
         ]
         .spacing(16)

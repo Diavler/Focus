@@ -57,7 +57,7 @@ impl App {
     /// The parking lot: a box to park a thought, what's parked, and how sending it goes.
     pub(crate) fn parking_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let shortcut = match status.parking_hotkey {
-            Hotkey::Off => "Turn on a shortcut in Settings → General to park from any app.".into(),
+            Hotkey::Off => "Turn on a shortcut in Settings to park from any app.".into(),
             hotkey => format!("{hotkey} parks from any app."),
         };
         let park = (!self.park_input.text().trim().is_empty())

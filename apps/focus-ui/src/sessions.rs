@@ -24,12 +24,8 @@ impl App {
         let header = row![
             title("Sessions"),
             info("Sessions run in the background; closing this window doesn't end them."),
-            space::horizontal(),
-            button(text("Settings").size(15))
-                .padding([8, 16])
-                .style(style::key)
-                .on_press(Message::OpenSettings),
         ]
+        .spacing(12)
         .align_y(Alignment::Center);
         let mut page = column![header].spacing(18);
         if let Some(problem) = &status.settings_problem {
@@ -171,7 +167,7 @@ impl App {
             .placeholder("no configurations")
             .style(style::picker)
             .menu_style(style::menu),
-            info("Which sites and apps are restricted. Edit in Settings → Configurations."),
+            info("Which sites and apps are restricted. Edit in Rules → Configurations."),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
@@ -373,7 +369,7 @@ pub(crate) fn login_line(status: &StatusReport) -> Line {
             tone: Tone::Good,
         },
         (false, _) => Line {
-            text: "Doesn't start at login (Settings → General).".to_owned(),
+            text: "Doesn't start at login.".to_owned(),
             tone: Tone::Warn,
         },
     }
