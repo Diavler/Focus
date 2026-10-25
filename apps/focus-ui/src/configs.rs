@@ -5,10 +5,12 @@
 use focus_core::{
     ConfigEntry, EditableSettings, ListEntry, Mode, RulePatterns, UrlPattern, same_app,
 };
-use iced::widget::{Column, button, checkbox, column, pick_list, row, space, text_input};
+use iced::widget::{
+    Column, button, checkbox, column, container, pick_list, row, space, text, text_input,
+};
 use iced::{Alignment, Element, Length};
 
-use crate::help::info;
+use crate::help::{info, tip};
 use crate::rules::entries;
 use crate::style::{self, Tone, caption, card, heading, toned};
 use crate::{Message, settings};
@@ -54,7 +56,7 @@ const ACTION_ROWS: [(usize, &str, &str); 5] = [
     ),
 ];
 
-/// How patterns are written, for the "(?)" next to each group.
+/// How patterns are written, for the "(?)" beside the add bar.
 const PATTERN_HELP: &str = "site.com covers the whole site and its subdomains; site.com/ is \
                             only the front page; site.com/path/* matches anything under that \
                             path. No https:// or query strings needed.";
@@ -63,31 +65,61 @@ const PATTERN_HELP: &str = "site.com covers the whole site and its subdomains; s
 #[derive(Debug, Clone, Default)]
 pub struct Editor {
     selected: Option<String>,
+    /// Whether the name box for a new one is showing.
+    naming: bool,
     new_name: String,
-    typed: [String; 5],
+    /// The site typed in the add bar, and what it does.
+    site: String,
+    action: Action,
     app: String,
+    /// Whether the URL tester is open.
+    testing: bool,
     try_url: String,
     confirm_delete: bool,
     problem: Option<String>,
+}
+
+/// What a site in the add bar does: an index into [`ACTION_ROWS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Action(usize);
+
+impl Action {
+    /// Every action, strictest first, as the add bar offers them.
+    const ALL: [Self; 5] = [Self(0), Self(1), Self(2), Self(3), Self(4)];
+
+    /// Its index into [`focus_core::ACTIONS`].
+    fn slot(self) -> usize {
+        ACTION_ROWS.get(self.0).map_or(4, |row| row.0)
+    }
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(ACTION_ROWS.get(self.0).map_or("Block", |row| row.1))
+    }
 }
 
 /// One change in an editor.
 #[derive(Debug, Clone)]
 pub enum Edit {
     Select(String),
+    StartNew,
+    CancelNew,
     NewName(String),
     Create,
     Delete,
     ConfirmDelete(bool),
     Mode(Mode),
     Include(String, bool),
-    Typed(usize, String),
-    Add(usize),
+    SiteTyped(String),
+    Action(Action),
+    Add,
     Remove(usize, usize),
     AppTyped(String),
     AddApp,
     PickApp(String),
     RemoveApp(usize),
+    ToggleTest,
     TryUrl(String),
 }
 
@@ -110,21 +142,26 @@ pub fn apply(
         Edit::Select(name) => {
             *editor = Editor {
                 selected: Some(name),
+                naming: editor.naming,
                 new_name: std::mem::take(&mut editor.new_name),
+                action: editor.action,
                 ..Editor::default()
             };
+        }
+        Edit::StartNew => editor.naming = true,
+        Edit::CancelNew => {
+            editor.naming = false;
+            editor.new_name.clear();
         }
         Edit::NewName(name) => editor.new_name = name,
         Edit::Create => create(settings, editor, target),
         Edit::Delete => editor.confirm_delete = true,
         Edit::ConfirmDelete(false) => editor.confirm_delete = false,
         Edit::ConfirmDelete(true) => return delete(settings, editor, target),
+        Edit::ToggleTest => editor.testing = !editor.testing,
         Edit::TryUrl(url) => editor.try_url = url,
-        Edit::Typed(slot, typed) => {
-            if let Some(field) = editor.typed.get_mut(slot) {
-                *field = typed;
-            }
-        }
+        Edit::SiteTyped(site) => editor.site = site,
+        Edit::Action(action) => editor.action = action,
         Edit::AppTyped(typed) => editor.app = typed,
         other => {
             let name = selected(settings, editor, target)?;
@@ -213,11 +250,11 @@ fn edit_selected(
     };
     let Some(patterns) = patterns else { return };
     match edit {
-        Edit::Add(slot) => {
-            let Some(verdict) = focus_core::ACTIONS.get(slot).copied() else {
+        Edit::Add => {
+            let Some(verdict) = focus_core::ACTIONS.get(editor.action.slot()).copied() else {
                 return;
             };
-            let typed = editor.typed[slot].trim().to_owned();
+            let typed = editor.site.trim().to_owned();
             if typed.is_empty() {
                 return;
             }
@@ -229,7 +266,7 @@ fn edit_selected(
             if !list.contains(&typed) {
                 list.push(typed);
             }
-            editor.typed[slot].clear();
+            editor.site.clear();
         }
         Edit::Remove(slot, at) => {
             if let Some(verdict) = focus_core::ACTIONS.get(slot).copied() {
@@ -321,44 +358,68 @@ pub fn view<'a>(
     let (noun, explanation) = match target {
         Target::Configs => (
             "configuration",
-            "A configuration is what a session runs: which pages are blocked, delayed, asked \
-             about or have their feeds hidden, and which apps are closed. To rename one, create \
-             a new one and delete the old.",
+            "What a session runs: which sites are restricted and which apps are closed. To \
+             rename one, create a new one and delete the old.",
         ),
         Target::Lists => (
             "list",
-            "Shared lists are groups of sites (say, social media) that several configurations \
-             can include, so you only keep them up to date in one place.",
+            "A group of sites (say, social media) that several configurations can include.",
         ),
     };
-    let create = (!editor.new_name.trim().is_empty()).then(|| wrap(Edit::Create));
-    let picker = row![
+    let mut picker = row![
         pick_list(names, current.clone(), move |name| wrap(Edit::Select(name)))
             .placeholder(format!("No {noun}s yet"))
             .style(style::picker)
             .menu_style(style::menu),
         info(explanation),
         space::horizontal(),
-        text_input(&format!("New {noun} name"), &editor.new_name)
-            .style(style::field)
-            .on_input(move |name| wrap(Edit::NewName(name)))
-            .on_submit_maybe(create.clone())
-            .width(Length::Fixed(200.0)),
-        button("Create")
-            .style(style::key_accent)
-            .on_press_maybe(create),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    picker = if editor.naming {
+        let create = (!editor.new_name.trim().is_empty()).then(|| wrap(Edit::Create));
+        picker
+            .push(
+                text_input(&format!("New {noun} name"), &editor.new_name)
+                    .style(style::field)
+                    .on_input(move |name| wrap(Edit::NewName(name)))
+                    .on_submit_maybe(create.clone())
+                    .width(Length::Fixed(200.0)),
+            )
+            .push(
+                button("Create")
+                    .style(style::key_accent)
+                    .on_press_maybe(create),
+            )
+            .push(
+                button("Cancel")
+                    .style(style::key)
+                    .on_press(wrap(Edit::CancelNew)),
+            )
+    } else {
+        picker.push(
+            button("+ New")
+                .style(style::key)
+                .on_press(wrap(Edit::StartNew)),
+        )
+    };
     let mut page = column![picker].spacing(16);
-    if let Some(problem) = &editor.problem {
-        page = page.push(toned(problem.as_str(), Tone::Bad).size(14));
+    // A problem with the new name shows by its box; others by the add bar.
+    let problem = editor
+        .problem
+        .as_deref()
+        .map(|problem| toned(problem, Tone::Bad).size(14));
+    let (name_problem, site_problem) = if editor.naming {
+        (problem, None)
+    } else {
+        (None, problem)
+    };
+    if let Some(problem) = name_problem {
+        page = page.push(problem);
     }
     let Some(name) = current else {
         return page
-            .push(caption(format!(
-                "No {noun}s yet. Type a name above and press Create."
-            )))
+            .push(caption(format!("No {noun}s yet. Press + New to make one.")))
             .into();
     };
     let (patterns, config) = match target {
@@ -376,7 +437,41 @@ pub fn view<'a>(
         }
     };
 
-    let delete: Element<'a, Message> = if editor.confirm_delete {
+    let mut sites: Column<'a, Message> = column![
+        row![
+            heading(name.clone()),
+            space::horizontal(),
+            delete_key(editor, &name, wrap)
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+    ]
+    .spacing(16);
+    if let Some(config) = config {
+        sites = sites.push(mode_and_includes(settings, config, wrap));
+    }
+    sites = sites.push(add_bar(editor, wrap));
+    if let Some(problem) = site_problem {
+        sites = sites.push(problem);
+    }
+    sites = sites.push(grouped_sites(patterns, wrap));
+    if let Some(config) = config {
+        sites = sites.push(try_url(settings, editor, &config.name, wrap));
+    }
+    page = page.push(card(sites));
+    if let Some(config) = config {
+        page = page.push(card(apps_editor(config, editor, open_apps, wrap)));
+    }
+    page.into()
+}
+
+/// Delete, asking first.
+fn delete_key<'a>(
+    editor: &Editor,
+    name: &str,
+    wrap: impl Fn(Edit) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    if editor.confirm_delete {
         row![
             toned(format!("Delete \"{name}\"?"), Tone::Bad).size(14),
             button("Delete")
@@ -394,97 +489,117 @@ pub fn view<'a>(
             .style(style::key_danger)
             .on_press(wrap(Edit::Delete))
             .into()
-    };
-    let mut body: Column<'a, Message> = column![
-        row![heading(name.clone()), space::horizontal(), delete]
-            .spacing(10)
-            .align_y(Alignment::Center)
-    ]
-    .spacing(18);
-
-    if let Some(config) = config {
-        body = body.push(mode_picker(config, wrap));
-        body = body.push(include_picker(settings, config, wrap));
     }
-    for (slot, title, help) in ACTION_ROWS {
-        let entries_here = patterns.get(focus_core::ACTIONS[slot]);
-        body = body.push(entries(
-            title,
-            help,
-            "site.com or site.com/path/*",
-            entries_here,
-            &editor.typed[slot],
-            move |typed| wrap(Edit::Typed(slot, typed)),
-            wrap(Edit::Add(slot)),
-            move |at| wrap(Edit::Remove(slot, at)),
-        ));
-    }
-    body = body.push(caption(PATTERN_HELP));
-    if let Some(config) = config {
-        body = body.push(apps_editor(config, editor, open_apps, wrap));
-        body = body.push(try_url(settings, editor, &config.name, wrap));
-    }
-    page.push(card(body)).into()
 }
 
-fn mode_picker<'a>(
-    config: &'a ConfigEntry,
-    wrap: impl Fn(Edit) -> Message + Copy + 'a,
-) -> Element<'a, Message> {
-    column![
-        row![
-            style::label("Mode"),
-            info(
-                "Blocklist: everything opens except what the rules restrict. Allowlist: only Allow patterns open."
-            ),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-        style::segmented(
-            &[Mode::Blocklist, Mode::Allowlist],
-            config.mode,
-            |mode| match mode {
-                Mode::Blocklist => "Blocklist: block what's listed".to_owned(),
-                Mode::Allowlist => "Allowlist: allow only what's listed".to_owned(),
-            },
-            move |mode| wrap(Edit::Mode(mode)),
-        ),
-    ]
-    .spacing(8)
-    .into()
-}
-
-fn include_picker<'a>(
+/// Blocklist or allowlist, and the shared lists it includes, on one line.
+fn mode_and_includes<'a>(
     settings: &'a EditableSettings,
     config: &'a ConfigEntry,
     wrap: impl Fn(Edit) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
-    let mut lists = row![].spacing(16);
+    let mut line = row![
+        style::segmented(
+            &[Mode::Blocklist, Mode::Allowlist],
+            config.mode,
+            |mode| match mode {
+                Mode::Blocklist => "Blocklist".to_owned(),
+                Mode::Allowlist => "Allowlist".to_owned(),
+            },
+            move |mode| wrap(Edit::Mode(mode)),
+        ),
+        info(
+            "Blocklist: everything opens except what's restricted below. Allowlist: only the \
+             Allow sites open."
+        ),
+        space::horizontal().width(Length::Fixed(16.0)),
+        style::field_label("Includes"),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    if settings.lists.is_empty() {
+        line = line.push(caption("no shared lists yet"));
+    }
     for list in &settings.lists {
         let name = list.name.clone();
-        lists = lists.push(
+        line = line.push(
             checkbox(config.include.contains(&list.name))
                 .label(list.name.as_str())
+                .text_size(14)
                 .on_toggle(move |on| wrap(Edit::Include(name.clone(), on))),
         );
     }
-    let body: Element<'a, Message> = if settings.lists.is_empty() {
-        caption("No shared lists yet; make them in the Lists tab.").into()
-    } else {
-        lists.wrap().into()
-    };
-    column![
-        row![
-            style::label("Includes"),
-            info("Shared lists this configuration also uses.")
-        ]
-        .spacing(8),
-        body,
-    ]
-    .spacing(8)
+    line.push(info(
+        "Shared lists whose sites this configuration uses too.",
+    ))
+    .wrap()
     .into()
 }
 
+/// One box for a site, what it does, and Add.
+fn add_bar<'a>(
+    editor: &'a Editor,
+    wrap: impl Fn(Edit) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let add = (!editor.site.trim().is_empty()).then(|| wrap(Edit::Add));
+    row![
+        text_input("site.com or site.com/path/*", &editor.site)
+            .style(style::field)
+            .on_input(move |site| wrap(Edit::SiteTyped(site)))
+            .on_submit_maybe(add.clone()),
+        pick_list(Action::ALL, Some(editor.action), move |action| {
+            wrap(Edit::Action(action))
+        })
+        .style(style::picker)
+        .menu_style(style::menu),
+        info(PATTERN_HELP),
+        button("Add").style(style::key_accent).on_press_maybe(add),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The sites under each action that has any, strictest first; hover an action for what it does.
+fn grouped_sites<'a>(
+    patterns: &'a RulePatterns,
+    wrap: impl Fn(Edit) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let mut groups = column![].spacing(10);
+    let mut any = false;
+    for (slot, title, help) in ACTION_ROWS {
+        let here = patterns.get(focus_core::ACTIONS[slot]);
+        if here.is_empty() {
+            continue;
+        }
+        any = true;
+        let chips = here
+            .iter()
+            .enumerate()
+            .fold(row![].spacing(6), |chips, (at, site)| {
+                chips.push(
+                    button(text(format!("{site}  ×")).size(14))
+                        .style(style::key)
+                        .on_press(wrap(Edit::Remove(slot, at))),
+                )
+            });
+        groups = groups.push(
+            row![
+                container(tip(style::field_label(title), help)).width(Length::Fixed(100.0)),
+                chips.wrap(),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        );
+    }
+    if any {
+        groups.into()
+    } else {
+        caption("No sites yet. Add one above.").into()
+    }
+}
+
+/// Apps to close during a session: typed, or picked from what's open now.
 fn apps_editor<'a>(
     config: &'a ConfigEntry,
     editor: &'a Editor,
@@ -499,9 +614,8 @@ fn apps_editor<'a>(
     column![
         entries(
             "Apps to close",
-            "Closed during a session, by program name (without .exe). Each is asked to close \
-             first, so it can save your work, then ended if it's still open a few seconds \
-             later. Focus never closes itself or Windows' own programs.",
+            "Closed during a session, by program name (no .exe). Each is asked to close first, \
+             then ended if it's still open. Focus never closes itself or Windows.",
             "program name, e.g. discord",
             &config.apps,
             &editor.app,
@@ -514,35 +628,47 @@ fn apps_editor<'a>(
             .style(style::picker)
             .menu_style(style::menu),
     ]
-    .spacing(8)
+    .spacing(10)
     .into()
 }
 
+/// A closed "Test a URL" line that opens into a box and what the rules do with the address.
 fn try_url<'a>(
     settings: &'a EditableSettings,
     editor: &'a Editor,
     name: &str,
     wrap: impl Fn(Edit) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
+    let toggle = button(
+        text(if editor.testing {
+            "▾ Test a URL"
+        } else {
+            "▸ Test a URL"
+        })
+        .size(14),
+    )
+    .style(style::key_flat)
+    .on_press(wrap(Edit::ToggleTest));
+    if !editor.testing {
+        return toggle.into();
+    }
     let url = editor.try_url.trim();
     let result = match settings.resolve(name) {
-        _ if url.is_empty() => {
-            "Type an address to see what this configuration does with it (unsaved edits count)."
-                .to_owned()
-        }
+        _ if url.is_empty() => String::new(),
         Some(config) => format!("{}", config.verdict(url)),
         None => String::new(),
     };
     column![
+        toggle,
         row![
-            style::label("Try a URL"),
-            info("Tests an address against the rules, unsaved edits included."),
+            text_input("reddit.com/r/rust/comments/abc", &editor.try_url)
+                .style(style::field)
+                .on_input(move |url| wrap(Edit::TryUrl(url))),
+            info("What this configuration does with the address, unsaved edits included."),
         ]
-        .spacing(8),
-        text_input("reddit.com/r/rust/comments/abc", &editor.try_url)
-            .style(style::field)
-            .on_input(move |url| wrap(Edit::TryUrl(url))),
-        caption(result),
+        .spacing(10)
+        .align_y(Alignment::Center),
+        style::field_label(result),
     ]
     .spacing(8)
     .into()
@@ -585,18 +711,18 @@ mod tests {
             &mut settings,
             &mut editor,
             configs,
-            Edit::Typed(4, " x.com ".into()),
+            Edit::SiteTyped(" x.com ".into()),
         );
-        apply(&mut settings, &mut editor, configs, Edit::Add(4));
+        apply(&mut settings, &mut editor, configs, Edit::Add);
         apply(
             &mut settings,
             &mut editor,
             configs,
-            Edit::Typed(4, "*.bad.com".into()),
+            Edit::SiteTyped("*.bad.com".into()),
         );
-        apply(&mut settings, &mut editor, configs, Edit::Add(4));
+        apply(&mut settings, &mut editor, configs, Edit::Add);
         assert!(editor.problem.is_some(), "a bad pattern is explained");
-        assert_eq!(editor.typed[4], "*.bad.com", "and kept for fixing");
+        assert_eq!(editor.site, "*.bad.com", "and kept for fixing");
         apply(
             &mut settings,
             &mut editor,
@@ -627,6 +753,61 @@ mod tests {
                 .verdict("https://x.com/"),
             Verdict::Restrict(RuleAction::Block)
         );
+    }
+
+    #[test]
+    fn the_add_bar_files_a_site_under_the_picked_action() {
+        let mut settings = settings();
+        let mut editor = Editor::default();
+        let configs = Target::Configs;
+        assert_eq!(
+            editor.action.to_string(),
+            "Block",
+            "blocking is the default"
+        );
+        apply(&mut settings, &mut editor, configs, Edit::Action(Action(4)));
+        assert_eq!(editor.action.to_string(), "Allow");
+        apply(
+            &mut settings,
+            &mut editor,
+            configs,
+            Edit::SiteTyped("docs.rs".into()),
+        );
+        apply(&mut settings, &mut editor, configs, Edit::Add);
+        assert!(
+            settings.configs[0]
+                .patterns
+                .allow
+                .contains(&"docs.rs".to_owned())
+        );
+        assert!(editor.site.is_empty());
+        assert_eq!(editor.action.to_string(), "Allow", "kept for the next site");
+    }
+
+    #[test]
+    fn the_name_box_shows_only_while_making_one() {
+        let mut settings = settings();
+        let mut editor = Editor::default();
+        assert!(!editor.naming);
+        apply(&mut settings, &mut editor, Target::Lists, Edit::StartNew);
+        apply(
+            &mut settings,
+            &mut editor,
+            Target::Lists,
+            Edit::NewName("news".into()),
+        );
+        apply(&mut settings, &mut editor, Target::Lists, Edit::CancelNew);
+        assert!(!editor.naming && editor.new_name.is_empty());
+        apply(&mut settings, &mut editor, Target::Lists, Edit::StartNew);
+        apply(
+            &mut settings,
+            &mut editor,
+            Target::Lists,
+            Edit::NewName("news".into()),
+        );
+        apply(&mut settings, &mut editor, Target::Lists, Edit::Create);
+        assert!(!editor.naming, "closes once made");
+        assert!(settings.lists.iter().any(|list| list.name == "news"));
     }
 
     #[test]

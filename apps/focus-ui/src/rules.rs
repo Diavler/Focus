@@ -235,7 +235,7 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
     let minutes = u16::try_from(rule.task_duration.as_secs() / 60).unwrap_or(u16::MAX);
     let task_length = column![
         row![
-            style::label(&format!("Task session length: {minutes} min")),
+            style::field_label(format!("Task session length: {minutes} min")),
             info("For Todoist tasks without a duration."),
         ]
         .spacing(8),
@@ -267,7 +267,7 @@ pub(crate) fn entries<'a>(
     let mut chips = row![].spacing(6);
     for (at, entry) in entries.iter().enumerate() {
         chips = chips.push(tip(
-            button(text(format!("{entry}  ×")).size(13))
+            button(text(format!("{entry}  ×")).size(14))
                 .style(style::key)
                 .on_press(on_remove(at)),
             "Click to remove.",
@@ -275,7 +275,7 @@ pub(crate) fn entries<'a>(
     }
     let add = (!typed.trim().is_empty()).then_some(on_add);
     column![
-        row![style::label(title), info(explanation)]
+        row![style::field_label(title), info(explanation)]
             .spacing(8)
             .align_y(Alignment::Center),
         chips.wrap(),

@@ -138,7 +138,7 @@ fn limit<'a>(
     control: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     column![
-        row![style::label(&label), info(help)]
+        row![style::field_label(label), info(help)]
             .spacing(8)
             .align_y(Alignment::Center),
         control.into(),
