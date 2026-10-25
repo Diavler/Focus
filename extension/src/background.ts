@@ -46,7 +46,7 @@ import {
 } from "./protocol";
 import { NEW_TAB_URL, browserName } from "./platform";
 import { siteOf } from "./sites";
-import { continueTarget, overCap } from "./tabcap";
+import { continueTarget, overCap, restoredAtStartup } from "./tabcap";
 
 /** How often to send a heartbeat and refresh rules while the worker is awake. */
 const HEARTBEAT_MS = 5000;
@@ -299,14 +299,19 @@ async function later(tabId: number, url: string, title: string): Promise<string 
   return refusal;
 }
 
-/** Shows on the toolbar button why Later failed, for a few seconds. */
+/**
+ * Shows on the toolbar button why Later failed. An alarm clears it (a timer could die with a
+ * suspended background), and so does the next click.
+ */
 async function flagLaterFailure(tabId: number, why: string): Promise<void> {
   await browser.action.setBadgeText({ tabId, text: "!" });
   await browser.action.setTitle({ tabId, title: why });
-  setTimeout(() => {
-    void browser.action.setBadgeText({ tabId, text: "" }).catch(() => undefined);
-    void browser.action.setTitle({ tabId, title: LATER_TITLE }).catch(() => undefined);
-  }, 6000);
+  browser.alarms.create(`badge:${tabId}`, { delayInMinutes: 0.5 });
+}
+
+async function clearLaterFailure(tabId: number): Promise<void> {
+  await browser.action.setBadgeText({ tabId, text: "" }).catch(() => undefined);
+  await browser.action.setTitle({ tabId, title: LATER_TITLE }).catch(() => undefined);
 }
 
 /** The toolbar button's tooltip. */
@@ -351,38 +356,41 @@ async function browserStartedAt(): Promise<number> {
 }
 
 /**
- * Sends a tab opened over the cap to the tab-cap page, which asks to close one first. Chromium
- * says up front which page the tab is opening (`pendingUrl`); Firefox doesn't, so there the tab is
- * held until its first page load (see `capOnLoad`).
+ * A tab was opened. Chromium says up front which page it's opening (`pendingUrl`), so the cap is
+ * checked now; Firefox doesn't, so the tab waits for its first page load (`capOnLoad`). Runs in
+ * the `serially` queue, like `capOnLoad`, so a tab is always recorded before its first load is
+ * looked at.
  */
 async function capTab(tab: { id?: number; pendingUrl?: string }): Promise<void> {
   const tabId = tab.id;
-  if (tabId === undefined || !(await knownSession())) return;
-  const { friction } = await knownFriction();
-  const open = (await browser.tabs.query({})).length;
-  if (!overCap(open, friction.tab_cap, await browserStartedAt(), Date.now())) return;
+  if (tabId === undefined || restoredAtStartup(await browserStartedAt(), Date.now())) return;
   if (tab.pendingUrl) {
-    await sendToTabCap(tabId, tab.pendingUrl);
+    await capIfOver(tabId, tab.pendingUrl);
     return;
   }
-  await serially(async () => browser.storage.session.set({ capped: [...(await cappedTabs()), tabId] }));
+  await browser.storage.session.set({ newTabs: [...(await newTabs()), tabId] });
 }
 
-/** Tabs opened over the cap whose page isn't known yet. */
-async function cappedTabs(): Promise<number[]> {
-  const { capped } = (await browser.storage.session.get("capped")) as { capped?: number[] };
-  return capped ?? [];
+/** Tabs opened whose first page load hasn't happened yet. */
+async function newTabs(): Promise<number[]> {
+  const { newTabs } = (await browser.storage.session.get("newTabs")) as { newTabs?: number[] };
+  return newTabs ?? [];
 }
 
-/** A held tab's first page load goes to the tab-cap page instead. */
+/** A new tab's first page load: checked against the cap as it stands now. */
 async function capOnLoad(tabId: number, url: string): Promise<void> {
-  const capped = await cappedTabs();
-  if (!capped.includes(tabId)) return;
-  await browser.storage.session.set({ capped: capped.filter((id) => id !== tabId) });
-  await sendToTabCap(tabId, url);
+  const pending = await newTabs();
+  if (!pending.includes(tabId)) return;
+  await browser.storage.session.set({ newTabs: pending.filter((id) => id !== tabId) });
+  await capIfOver(tabId, url);
 }
 
-async function sendToTabCap(tabId: number, intended: string): Promise<void> {
+/** Sends the tab to the tab-cap page if a session is running and the browser is over the cap. */
+async function capIfOver(tabId: number, intended: string): Promise<void> {
+  if (!(await knownSession())) return;
+  const { friction } = await knownFriction();
+  const open = (await browser.tabs.query({})).length;
+  if (!overCap(open, friction.tab_cap)) return;
   await browser.tabs.update(tabId, { url: `${base}interstitial.html?a=tabs#${intended}` });
 }
 
@@ -483,8 +491,8 @@ browser.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabI
 browser.tabs.onRemoved.addListener((tabId) => {
   void serially(async () => {
     await changeDrift((state) => forgetTab(state, tabId));
-    const capped = await cappedTabs();
-    if (capped.includes(tabId)) await browser.storage.session.set({ capped: capped.filter((id) => id !== tabId) });
+    const pending = await newTabs();
+    if (pending.includes(tabId)) await browser.storage.session.set({ newTabs: pending.filter((id) => id !== tabId) });
   });
 });
 
@@ -492,16 +500,18 @@ browser.webNavigation.onBeforeNavigate.addListener(({ tabId, frameId, url }) => 
   if (frameId === 0 && siteOf(url) !== null) void serially(() => capOnLoad(tabId, url));
 });
 
-browser.tabs.onCreated.addListener((tab) => void capTab(tab));
+browser.tabs.onCreated.addListener((tab) => void serially(() => capTab(tab)));
 
 browser.action.onClicked.addListener(async (tab) => {
   if (tab.id === undefined) return;
+  await clearLaterFailure(tab.id);
   const why = await later(tab.id, tab.url ?? "", tab.title ?? "").catch(() => "Focus couldn't save this for later.");
   if (why !== null) await flagLaterFailure(tab.id, why);
 });
 
 browser.alarms.onAlarm.addListener(({ name }) => {
   if (name.startsWith("grant:")) void endGrant(Number(name.slice("grant:".length)));
+  else if (name.startsWith("badge:")) void clearLaterFailure(Number(name.slice("badge:".length)));
   else if (name === "tick") void tick();
 });
 

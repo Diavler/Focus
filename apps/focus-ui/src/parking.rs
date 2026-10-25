@@ -1,11 +1,12 @@
 //! The parking lot on the Sessions page, and the system-wide shortcut that brings the window up
 //! to park a thought without opening a new tab.
 
+use focus_core::ports::HotkeyError;
 use focus_core::{Hotkey, ParkedItem};
 use iced::futures::SinkExt;
 use iced::widget::{Column, button, column, row, space, text, text_input};
 use iced::{Alignment, Element, Subscription};
-use ipc_proto::StatusReport;
+use ipc_proto::{SourceState, StatusReport};
 
 use crate::help::info;
 use crate::style::{Tone, caption, card, heading, pill, toned};
@@ -17,15 +18,16 @@ pub(crate) const INPUT: &str = "park-input";
 /// The most items listed; older ones are counted instead.
 const SHOWN: usize = 8;
 
-/// Listens for `hotkey` while the window runs. When the shortcut changes the subscription does
-/// too: the old stream (and with it the registration) is dropped and a new one registered.
-pub(crate) fn hotkey_subscription(hotkey: Hotkey) -> Subscription<Message> {
-    Subscription::run_with(hotkey, listen)
+/// Listens for `hotkey` while the window runs. When the shortcut (or `attempt`) changes the
+/// subscription does too: the old stream (and with it the registration) is dropped and a new one
+/// registered, which is how a shortcut another app held is tried again.
+pub(crate) fn hotkey_subscription(hotkey: Hotkey, attempt: u32) -> Subscription<Message> {
+    Subscription::run_with((hotkey, attempt), listen)
 }
 
 /// The stream behind [`hotkey_subscription`]: registers, then forwards presses until dropped.
-fn listen(hotkey: &Hotkey) -> impl iced::futures::Stream<Item = Message> + use<> {
-    let hotkey = *hotkey;
+fn listen(key: &(Hotkey, u32)) -> impl iced::futures::Stream<Item = Message> + use<> {
+    let hotkey = key.0;
     iced::stream::channel(4, async move |mut output| {
         let presses = output.clone();
         let registered = focus_hotkey::system_hotkey().listen(
@@ -36,7 +38,10 @@ fn listen(hotkey: &Hotkey) -> impl iced::futures::Stream<Item = Message> + use<>
             }),
         );
         let problem = registered.as_ref().err().map(ToString::to_string);
-        let _ = output.send(Message::HotkeyRegistered(problem)).await;
+        let retry = matches!(&registered, Err(HotkeyError::Taken { .. }));
+        let _ = output
+            .send(Message::HotkeyRegistered { problem, retry })
+            .await;
         // Holding the guard keeps the shortcut registered until iced drops this stream.
         let _guard = registered;
         std::future::pending::<()>().await;
@@ -83,8 +88,10 @@ impl App {
         }
         body = body.push(sending_line(status));
         let mut list = column![].spacing(8);
+        // Removing waits for an action on its way, so its answer isn't taken for the other's.
+        let idle = !self.action_pending;
         for item in self.parked.iter().rev().take(SHOWN) {
-            list = list.push(item_row(item));
+            list = list.push(item_row(item, idle));
         }
         let hidden = self.parked.len().saturating_sub(SHOWN);
         if hidden > 0 {
@@ -105,34 +112,47 @@ impl App {
 /// How sending to Todoist goes.
 fn sending_line<'a>(status: &StatusReport) -> Element<'a, Message> {
     let lot = &status.parking_lot;
-    let (line, tone) = match (lot.total, lot.waiting, &lot.problem) {
+    let (line, tone) = match (lot.total, lot.waiting, &lot.inbox) {
         (0, _, _) => ("Nothing parked.".to_owned(), Tone::Quiet),
+        (_, 0, _) if lot.refused > 0 => (
+            format!(
+                "{} not accepted by Todoist; everything else is in your inbox.",
+                lot.refused
+            ),
+            Tone::Warn,
+        ),
         (_, 0, _) => (
             "Everything parked is in your Todoist inbox.".to_owned(),
             Tone::Good,
         ),
-        (_, waiting, Some(problem)) if problem == "not set up" => (
+        (_, waiting, SourceState::NotConfigured) => (
             format!("{waiting} kept here: connect Todoist on the Todoist page to send them."),
             Tone::Quiet,
         ),
-        (_, waiting, Some(problem)) => (
+        (_, waiting, SourceState::Failing { problem, .. }) => (
             format!("{waiting} waiting for Todoist ({problem}); Focus keeps trying."),
             Tone::Warn,
         ),
-        (_, waiting, None) => (format!("{waiting} on the way to Todoist…"), Tone::Quiet),
+        (_, waiting, SourceState::Unknown | SourceState::Ok) => {
+            (format!("{waiting} on the way to Todoist…"), Tone::Quiet)
+        }
     };
     toned(line, tone).size(14).into()
 }
 
 /// One parked item: its text, link, where it is, and a button to remove it.
-fn item_row(item: &ParkedItem) -> Element<'_, Message> {
+fn item_row(item: &ParkedItem, idle: bool) -> Element<'_, Message> {
     let mut words = column![text(item.text.as_str()).size(14)].spacing(2);
     if let Some(url) = item.url.as_deref().filter(|url| *url != item.text) {
         words = words.push(caption(url));
     }
-    let place = match item.sent_at {
-        Some(_) => pill("In Todoist", Tone::Good),
-        None => pill("Waiting", Tone::Quiet),
+    if let Some(reason) = &item.refused {
+        words = words.push(toned(format!("{reason}; it stays here."), Tone::Warn).size(12));
+    }
+    let place = match (item.sent_at, &item.refused) {
+        (Some(_), _) => pill("In Todoist", Tone::Good),
+        (None, Some(_)) => pill("Not accepted", Tone::Warn),
+        (None, None) => pill("Waiting", Tone::Quiet),
     };
     row![
         words,
@@ -140,7 +160,7 @@ fn item_row(item: &ParkedItem) -> Element<'_, Message> {
         place,
         button(text("×").size(14))
             .style(button::text)
-            .on_press(Message::Unpark(item.id)),
+            .on_press_maybe(idle.then_some(Message::Unpark(item.id))),
     ]
     .spacing(10)
     .align_y(Alignment::Center)

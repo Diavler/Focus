@@ -240,7 +240,9 @@ mod tests {
                 parking_lot: ParkingStatus {
                     total: 3,
                     waiting: 1,
-                    problem: Some("offline".into()),
+                    refused: 1,
+                    inbox: SourceState::NotConfigured,
+                    revision: 7,
                 },
                 notifications: Some(Silencing::AskUser),
                 parking_hotkey: Hotkey::CtrlAltP,

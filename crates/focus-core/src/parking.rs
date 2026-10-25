@@ -25,9 +25,17 @@ pub struct ParkedItem {
     pub parked_at: Timestamp,
     /// When it reached the task inbox, if it has.
     pub sent_at: Option<Timestamp>,
+    /// Why the task inbox refused it, if it did; it then stays here and isn't sent again.
+    #[serde(default)]
+    pub refused: Option<String>,
 }
 
 impl ParkedItem {
+    /// Whether it still has to go to the inbox: not sent, and not refused.
+    pub fn waiting(&self) -> bool {
+        self.sent_at.is_none() && self.refused.is_none()
+    }
+
     /// Names this item to the inbox, so a send repeated after a lost answer isn't added twice.
     pub fn request_id(&self) -> String {
         format!("focus-parked-{}-{}", self.parked_at.as_millis(), self.id)
@@ -60,6 +68,9 @@ pub enum ParkError {
 pub struct ParkingLot {
     items: Vec<ParkedItem>,
     next_id: u64,
+    /// Goes up with every change, so a window can tell its copy is out of date.
+    #[serde(default)]
+    revision: u64,
 }
 
 impl ParkingLot {
@@ -68,21 +79,35 @@ impl ParkingLot {
         &self.items
     }
 
-    /// How many items haven't reached the inbox yet.
+    /// Goes up with every change.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// How many items still have to go to the inbox.
     pub fn waiting(&self) -> usize {
+        self.items.iter().filter(|item| item.waiting()).count()
+    }
+
+    /// How many items the inbox refused.
+    pub fn refused(&self) -> usize {
         self.items
             .iter()
-            .filter(|item| item.sent_at.is_none())
+            .filter(|item| item.refused.is_some())
             .count()
     }
 
-    /// The items that haven't reached the inbox yet, oldest first.
+    /// The items that still have to go to the inbox, oldest first.
     pub fn unsent(&self) -> Vec<ParkedItem> {
         self.items
             .iter()
-            .filter(|item| item.sent_at.is_none())
+            .filter(|item| item.waiting())
             .cloned()
             .collect()
+    }
+
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Parks `text` (or, if it's blank, the link itself) at `now`. Returns the new item's id.
@@ -114,33 +139,53 @@ impl ParkingLot {
             url: url.map(str::to_owned),
             parked_at: now,
             sent_at: None,
+            refused: None,
         });
+        self.changed();
         Ok(id)
     }
 
     /// Records that item `id` reached the inbox at `now`. False if there's no such item.
     pub fn mark_sent(&mut self, id: u64, now: Timestamp) -> bool {
-        match self.items.iter_mut().find(|item| item.id == id) {
-            Some(item) => {
-                item.sent_at.get_or_insert(now);
-                true
-            }
-            None => false,
-        }
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+        item.sent_at.get_or_insert(now);
+        self.changed();
+        true
+    }
+
+    /// Records that the inbox refused item `id`, so it isn't sent again. False if there's no
+    /// such item.
+    pub fn mark_refused(&mut self, id: u64, reason: &str) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+        item.refused = Some(reason.to_owned());
+        self.changed();
+        true
     }
 
     /// Removes item `id`. False if there's no such item.
     pub fn remove(&mut self, id: u64) -> bool {
         let before = self.items.len();
         self.items.retain(|item| item.id != id);
-        self.items.len() != before
+        let removed = self.items.len() != before;
+        if removed {
+            self.changed();
+        }
+        removed
     }
 
     /// Removes every item that reached the inbox, returning how many.
     pub fn remove_sent(&mut self) -> usize {
         let before = self.items.len();
         self.items.retain(|item| item.sent_at.is_none());
-        before - self.items.len()
+        let removed = before - self.items.len();
+        if removed > 0 {
+            self.changed();
+        }
+        removed
     }
 }
 
@@ -204,6 +249,25 @@ mod tests {
         assert!(lot.items().is_empty());
         let third = lot.park("c", None, NOW).unwrap();
         assert!(third > second, "ids aren't reused");
+    }
+
+    #[test]
+    fn refused_items_stay_but_are_not_sent_again() {
+        let mut lot = ParkingLot::default();
+        let first = lot.park("too long for the inbox", None, NOW).unwrap();
+        let second = lot.park("fine", None, NOW).unwrap();
+        let before = lot.revision();
+        assert!(lot.mark_refused(first, "HTTP 400"));
+        assert!(lot.revision() > before, "a change bumps the revision");
+        assert_eq!(
+            lot.unsent().iter().map(|i| i.id).collect::<Vec<_>>(),
+            [second]
+        );
+        assert_eq!((lot.waiting(), lot.refused()), (1, 1));
+        assert!(!lot.mark_refused(99, "x"));
+        let unchanged = lot.revision();
+        assert!(!lot.remove(99));
+        assert_eq!(lot.revision(), unchanged, "no change, same revision");
     }
 
     #[test]

@@ -245,10 +245,14 @@ pub struct StatusReport {
 pub struct ParkingStatus {
     /// Items parked.
     pub total: usize,
-    /// Items not yet in the task inbox.
+    /// Items still to go to the task inbox.
     pub waiting: usize,
-    /// Why the last send to the task inbox failed, if it did ("not set up" when there's none).
-    pub problem: Option<String>,
+    /// Items the task inbox refused; they stay in the parking lot.
+    pub refused: usize,
+    /// How the last send to the task inbox went.
+    pub inbox: SourceState,
+    /// Goes up with every change to the parking lot, so the window knows to read it again.
+    pub revision: u64,
 }
 
 /// How the plan sources are doing, and what they'll start.

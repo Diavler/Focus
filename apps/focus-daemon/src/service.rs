@@ -483,23 +483,33 @@ impl Service {
     /// [`Service::store_sent`].
     pub fn inbox_send_due(&mut self) -> Option<InboxSend> {
         let now = self.now();
-        let waiting = self.state.parking_lot.unsent();
-        self.inbox_schedule
-            .take_due(&self.ports.inbox, waiting, now)
+        // Checked before copying the items, since this runs every few seconds under the lock.
+        if self.state.parking_lot.waiting() == 0 || !self.inbox_schedule.due(now) {
+            return None;
+        }
+        let items = self.state.parking_lot.unsent();
+        Some(self.inbox_schedule.start(&self.ports.inbox, items, now))
     }
 
     /// Records which parked items reached the inbox, and why the rest didn't.
     pub fn store_sent(&mut self, sent: &InboxSent) {
         let now = self.now();
-        if let Some(failure) = &sent.failure
-            && self.inbox_schedule.problem() != Some(failure.to_string().as_str())
-        {
-            tracing::warn!("couldn't send parked items to the task inbox: {failure}");
-        }
+        let before = self.inbox_schedule.state().clone();
         self.inbox_schedule.finish(sent, now);
+        if let SourceState::Failing { problem, .. } = self.inbox_schedule.state()
+            && before != *self.inbox_schedule.state()
+        {
+            tracing::warn!("couldn't send parked items to the task inbox: {problem}");
+        }
+        for (_, reason) in &sent.refused {
+            tracing::warn!("the task inbox refused a parked item: {reason}");
+        }
         let result = self.update(|state| {
             for &id in &sent.sent {
                 state.parking_lot.mark_sent(id, now);
+            }
+            for (id, reason) in &sent.refused {
+                state.parking_lot.mark_refused(*id, reason);
             }
             Ok(())
         });
@@ -753,7 +763,9 @@ impl Service {
             parking_lot: ParkingStatus {
                 total: self.state.parking_lot.items().len(),
                 waiting: self.state.parking_lot.waiting(),
-                problem: self.inbox_schedule.problem().map(str::to_owned),
+                refused: self.state.parking_lot.refused(),
+                inbox: self.inbox_schedule.state().clone(),
+                revision: self.state.parking_lot.revision(),
             },
             notifications: self.state.session.running().and(self.silencing),
             parking_hotkey: self.parking_hotkey,
@@ -2203,7 +2215,10 @@ mod tests {
         let report = status(&mut service);
         assert_eq!(report.parking_lot.total, 2);
         assert_eq!(report.parking_lot.waiting, 2, "offline: kept here");
-        assert!(report.parking_lot.problem.is_some());
+        assert!(matches!(
+            report.parking_lot.inbox,
+            SourceState::Failing { offline: true, .. }
+        ));
         assert!(service.inbox_send_due().is_none(), "waits before retrying");
 
         harness.inbox.fail_with(None);
@@ -2212,13 +2227,38 @@ mod tests {
         service.store_sent(&send.run());
         let report = status(&mut service);
         assert_eq!(report.parking_lot.waiting, 0);
-        assert_eq!(report.parking_lot.problem, None);
+        assert_eq!(report.parking_lot.inbox, SourceState::Ok);
         assert_eq!(harness.inbox.added().len(), 2);
 
         let restarted = harness.open();
         assert_eq!(restarted.state().parking_lot.items().len(), 2, "saved");
         service.handle(Request::ClearSentParked);
         assert!(service.state().parking_lot.items().is_empty());
+    }
+
+    #[test]
+    fn an_item_the_inbox_refuses_is_kept_and_not_sent_again() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        harness.inbox.refuse("too long for Todoist");
+        for text in ["too long for Todoist", "fine"] {
+            service.handle(Request::Park {
+                text: text.into(),
+                url: None,
+            });
+        }
+        let revision = status(&mut service).parking_lot.revision;
+        let send = service.inbox_send_due().expect("due");
+        service.store_sent(&send.run());
+        let report = status(&mut service);
+        assert_eq!(
+            (report.parking_lot.waiting, report.parking_lot.refused),
+            (0, 1)
+        );
+        assert!(report.parking_lot.revision > revision);
+        assert_eq!(harness.inbox.added().len(), 1, "the other one went through");
+        harness.clock.advance(10 * MINUTE);
+        assert!(service.inbox_send_due().is_none(), "nothing left to send");
     }
 
     #[test]

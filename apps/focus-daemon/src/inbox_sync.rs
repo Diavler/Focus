@@ -4,10 +4,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use focus_core::ports::{SourceError, TaskInbox};
+use focus_core::ports::{InboxError, SourceError, TaskInbox};
 use focus_core::{ParkedItem, Timestamp};
+use ipc_proto::SourceState;
 
-/// How long to wait after a failed send (offline, or the service refused).
+/// How long to wait after a failed send (offline, or the service refused the token).
 const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// How long to wait when no task inbox is set up; parking right after one is set up sends at once.
@@ -25,76 +26,77 @@ pub struct InboxSend {
 pub struct InboxSent {
     /// The items that reached the inbox.
     pub(crate) sent: Vec<u64>,
+    /// The items the inbox refused, and why; they aren't sent again.
+    pub(crate) refused: Vec<(u64, String)>,
     /// Why the send stopped early, if it did.
     pub(crate) failure: Option<SourceError>,
 }
 
 impl InboxSend {
-    /// Sends each item in order, stopping at the first failure (the rest would fail the same way).
-    /// Blocks on the network.
+    /// Sends each item in order. An item the inbox refuses is skipped; the send stops when the
+    /// inbox can't take anything (the rest would fail the same way). Blocks on the network.
     pub fn run(self) -> InboxSent {
-        let mut sent = Vec::new();
+        let mut outcome = InboxSent {
+            sent: Vec::new(),
+            refused: Vec::new(),
+            failure: None,
+        };
         for item in &self.items {
             match self.inbox.add(item) {
-                Ok(()) => sent.push(item.id),
-                Err(failure) => {
-                    return InboxSent {
-                        sent,
-                        failure: Some(failure),
-                    };
+                Ok(()) => outcome.sent.push(item.id),
+                Err(InboxError::Refused { reason }) => outcome.refused.push((item.id, reason)),
+                Err(InboxError::Unavailable(failure)) => {
+                    outcome.failure = Some(failure);
+                    break;
                 }
             }
         }
-        InboxSent {
-            sent,
-            failure: None,
-        }
+        outcome
     }
 }
 
-/// When to send next, and why the last send failed.
+/// When to send next, and how the last send went.
 #[derive(Debug, Default)]
 pub(crate) struct InboxSchedule {
     /// No send before this, after a failure (or while one is running).
     not_before: Option<Timestamp>,
     /// Something was parked, or a credential changed: send at the next check.
     requested: bool,
-    /// Why the last send failed, for `Status`.
-    problem: Option<String>,
+    /// How the last send went, for `Status`.
+    state: SourceState,
 }
 
 impl InboxSchedule {
-    /// The send to run for `waiting` at `now`, if one is due; it then counts as started.
-    pub(crate) fn take_due(
-        &mut self,
-        inbox: &Arc<dyn TaskInbox>,
-        waiting: Vec<ParkedItem>,
-        now: Timestamp,
-    ) -> Option<InboxSend> {
-        if waiting.is_empty() {
-            return None;
-        }
-        // A wait "in the future" past the retry (the clock went back) counts as over.
+    /// Whether a send is due at `now` (checked before copying anything to send).
+    pub(crate) fn due(&self, now: Timestamp) -> bool {
+        // A wait "in the future" past the longest retry (the clock went back) counts as over.
         let waiting_out = self.not_before.is_some_and(|not_before| {
             now < not_before && not_before.saturating_duration_since(now) <= UNCONFIGURED_RETRY
         });
-        if waiting_out && !self.requested {
-            return None;
-        }
+        self.requested || !waiting_out
+    }
+
+    /// Starts a send of `items` at `now`.
+    pub(crate) fn start(
+        &mut self,
+        inbox: &Arc<dyn TaskInbox>,
+        items: Vec<ParkedItem>,
+        now: Timestamp,
+    ) -> InboxSend {
         self.requested = false;
         // Until the result is stored, another check mustn't start a second send.
         self.not_before = Some(now.saturating_add(RETRY_AFTER));
-        Some(InboxSend {
+        InboxSend {
             inbox: Arc::clone(inbox),
-            items: waiting,
-        })
+            items,
+        }
     }
 
     /// Records how a send went at `now`.
     pub(crate) fn finish(&mut self, sent: &InboxSent, now: Timestamp) {
         match &sent.failure {
             None => {
-                self.problem = None;
+                self.state = SourceState::Ok;
                 self.not_before = None;
             }
             Some(failure) => {
@@ -102,7 +104,13 @@ impl InboxSchedule {
                     SourceError::NotConfigured => UNCONFIGURED_RETRY,
                     _ => RETRY_AFTER,
                 };
-                self.problem = Some(failure.to_string());
+                self.state = match failure {
+                    SourceError::NotConfigured => SourceState::NotConfigured,
+                    other => SourceState::Failing {
+                        problem: other.to_string(),
+                        offline: matches!(other, SourceError::Unavailable { .. }),
+                    },
+                };
                 self.not_before = Some(now.saturating_add(wait));
             }
         }
@@ -113,9 +121,9 @@ impl InboxSchedule {
         self.requested = true;
     }
 
-    /// Why the last send failed, if it did.
-    pub(crate) fn problem(&self) -> Option<&str> {
-        self.problem.as_deref()
+    /// How the last send went.
+    pub(crate) fn state(&self) -> &SourceState {
+        &self.state
     }
 }
 
@@ -136,76 +144,83 @@ mod tests {
         lot.unsent()
     }
 
+    fn send(inbox: &Arc<dyn TaskInbox>, texts: &[&str]) -> InboxSent {
+        InboxSchedule::default()
+            .start(inbox, waiting(texts), NOW)
+            .run()
+    }
+
     #[test]
-    fn sends_in_order_and_stops_at_a_failure() {
+    fn sends_in_order_and_stops_when_the_inbox_is_unavailable() {
         let fake = Arc::new(FakeInbox::default());
         let inbox: Arc<dyn TaskInbox> = fake.clone();
-        let mut schedule = InboxSchedule::default();
-        let send = schedule
-            .take_due(&inbox, waiting(&["a", "b"]), NOW)
-            .unwrap();
         assert_eq!(
-            send.run(),
+            send(&inbox, &["a", "b"]),
             InboxSent {
                 sent: vec![0, 1],
+                refused: Vec::new(),
                 failure: None
             }
         );
         fake.fail_with(Some(SourceError::Unavailable {
             reason: "offline".into(),
         }));
-        let send = InboxSend {
-            inbox: Arc::clone(&inbox),
-            items: waiting(&["c", "d"]),
-        };
-        let sent = send.run();
+        let sent = send(&inbox, &["c", "d"]);
         assert!(sent.sent.is_empty());
         assert!(sent.failure.is_some());
+    }
+
+    #[test]
+    fn a_refused_item_doesnt_hold_up_the_rest() {
+        let fake = Arc::new(FakeInbox::default());
+        fake.refuse("way too long");
+        let inbox: Arc<dyn TaskInbox> = fake.clone();
+        let sent = send(&inbox, &["way too long", "fine"]);
+        assert_eq!(sent.sent, [1]);
+        assert_eq!(sent.refused.len(), 1);
+        assert_eq!(sent.refused[0].0, 0);
+        assert_eq!(sent.failure, None);
     }
 
     #[test]
     fn waits_after_a_failure_unless_asked() {
         let inbox: Arc<dyn TaskInbox> = Arc::new(FakeInbox::default());
         let mut schedule = InboxSchedule::default();
-        assert!(
-            schedule.take_due(&inbox, Vec::new(), NOW).is_none(),
-            "nothing waiting"
-        );
-        assert!(schedule.take_due(&inbox, waiting(&["a"]), NOW).is_some());
-        assert!(
-            schedule.take_due(&inbox, waiting(&["a"]), NOW).is_none(),
-            "one send at a time"
-        );
+        assert!(schedule.due(NOW));
+        schedule.start(&inbox, waiting(&["a"]), NOW);
+        assert!(!schedule.due(NOW), "one send at a time");
         let failed = InboxSent {
             sent: Vec::new(),
+            refused: Vec::new(),
             failure: Some(SourceError::NotConfigured),
         };
         schedule.finish(&failed, NOW);
-        assert_eq!(schedule.problem(), Some("not set up"));
+        assert_eq!(schedule.state(), &SourceState::NotConfigured);
         let later = NOW.saturating_add(RETRY_AFTER);
-        assert!(schedule.take_due(&inbox, waiting(&["a"]), later).is_none());
+        assert!(!schedule.due(later), "not set up: waits longer");
         schedule.request();
         assert!(
-            schedule.take_due(&inbox, waiting(&["a"]), later).is_some(),
+            schedule.due(later),
             "a request (new item or token) sends at once"
         );
+        schedule.start(&inbox, waiting(&["a"]), later);
         schedule.finish(
             &InboxSent {
                 sent: vec![0],
+                refused: Vec::new(),
                 failure: None,
             },
             later,
         );
-        assert_eq!(schedule.problem(), None);
-        assert!(schedule.take_due(&inbox, waiting(&["b"]), later).is_some());
+        assert_eq!(schedule.state(), &SourceState::Ok);
+        assert!(schedule.due(later));
     }
 
     #[test]
     fn a_clock_turned_back_doesnt_stop_sending() {
         let inbox: Arc<dyn TaskInbox> = Arc::new(FakeInbox::default());
         let mut schedule = InboxSchedule::default();
-        schedule.take_due(&inbox, waiting(&["a"]), NOW);
-        let back = Timestamp::from_millis(1_000);
-        assert!(schedule.take_due(&inbox, waiting(&["a"]), back).is_some());
+        schedule.start(&inbox, waiting(&["a"]), NOW);
+        assert!(schedule.due(Timestamp::from_millis(1_000)));
     }
 }

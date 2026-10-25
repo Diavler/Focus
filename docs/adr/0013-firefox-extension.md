@@ -26,7 +26,7 @@ The extension is required and must stay browser-neutral, Chromium first (CLAUDE.
 
 **Differences handled in shared code:**
 - `declarativeNetRequest.isRegexSupported` is used only where the browser has it.
-- **Tab cap:** Firefox gives no `pendingUrl` for a new tab, so a tab opened over the cap is held and sent to the tab-cap page on its first page load. A blank new tab is caught when it navigates.
+- **Tab cap:** Firefox gives no `pendingUrl` for a new tab, so the cap is checked at the tab's first page load instead, against the session and tab count at that moment. Tab creation and first load are handled in one queue, so a tab is always recorded before its load is looked at. A blank new tab is caught when it navigates. Tabs created in the first seconds after the browser starts are taken as restored, decided when they're created.
 - When a capped tab's page isn't known, Firefox opens `about:blank` (`NEW_TAB_URL` in `platform/`), since extensions can't open its new tab page.
 - Closing the tab from an interstitial uses `tabs.remove`, because Firefox may refuse `window.close()`.
 

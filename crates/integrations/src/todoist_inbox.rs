@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use focus_core::ParkedItem;
-use focus_core::ports::{Secrets, SourceError, TaskInbox};
+use focus_core::ports::{InboxError, Secrets, SourceError, TaskInbox};
 use serde::Serialize;
 
-use crate::http::{HttpPost, UreqHttp};
+use crate::http::{HttpError, HttpPost, UreqHttp};
 use crate::todoist::{todoist_error, todoist_token};
 
 /// Where new tasks go; without a project they land in the Inbox.
@@ -41,7 +41,7 @@ struct NewTask<'a> {
 }
 
 impl<H: HttpPost> TaskInbox for TodoistInbox<H> {
-    fn add(&self, item: &ParkedItem) -> Result<(), SourceError> {
+    fn add(&self, item: &ParkedItem) -> Result<(), InboxError> {
         let token = todoist_token(self.secrets.as_ref())?;
         let body = serde_json::to_string(&NewTask {
             content: &item.text,
@@ -56,7 +56,13 @@ impl<H: HttpPost> TaskInbox for TodoistInbox<H> {
         self.http
             .post_json(TASKS_URL, &body, &token, &[("X-Request-Id", &request_id)])
             .map(|_| ())
-            .map_err(todoist_error)
+            .map_err(|error| match error {
+                // Todoist checked this task and said no (too long, say); the rest can still go.
+                HttpError::Status(400) => InboxError::Refused {
+                    reason: "Todoist refused this item (HTTP 400)".into(),
+                },
+                other => todoist_error(other).into(),
+            })
     }
 }
 
@@ -69,7 +75,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::http::HttpError;
     use crate::http::fixtures::Recorded;
 
     const CREATED: &str = r#"{"id": "6X7rM8997g3RQmvh", "content": "Read later"}"#;
@@ -129,19 +134,24 @@ mod tests {
             TodoistInbox::with_http(Arc::new(MemorySecrets::default()), Recorded::default());
         assert_eq!(
             unset.add(&parked("a", None)),
-            Err(SourceError::NotConfigured)
+            Err(InboxError::Unavailable(SourceError::NotConfigured))
         );
         let refused = inbox(Recorded::default().with_post(TASKS_URL, Err(HttpError::Status(401))));
         assert!(matches!(
             refused.add(&parked("a", None)),
-            Err(SourceError::Rejected { .. })
+            Err(InboxError::Unavailable(SourceError::Rejected { .. }))
+        ));
+        let bad_item = inbox(Recorded::default().with_post(TASKS_URL, Err(HttpError::Status(400))));
+        assert!(matches!(
+            bad_item.add(&parked("a", None)),
+            Err(InboxError::Refused { .. })
         ));
         let offline = inbox(
             Recorded::default().with_post(TASKS_URL, Err(HttpError::Network("no route".into()))),
         );
         assert!(matches!(
             offline.add(&parked("a", None)),
-            Err(SourceError::Unavailable { .. })
+            Err(InboxError::Unavailable(SourceError::Unavailable { .. }))
         ));
     }
 

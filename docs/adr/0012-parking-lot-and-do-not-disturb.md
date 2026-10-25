@@ -24,11 +24,17 @@ The developer chose that captures always land in a **local** parking lot that sy
   - the link goes in the description;
   - an `X-Request-Id` comes from the item, so a send repeated after a lost answer isn't added twice.
 - HTTP writes go through a new `HttpPost` trait, so read-only adapters can't post.
+- The port's `InboxError` tells "this item was refused" (Todoist's HTTP 400) apart from "nothing can be sent now" (not set up, offline, token refused).
 - The daemon sends waiting items on its own task (`send_parked_forever`), outside the service's lock, like the plan fetch:
   - soon after parking, or after a credential changes;
   - one minute after a failure, or ten minutes when Todoist isn't set up;
-  - it stops at the first failure.
-- `Status.parking_lot` reports the total, how many are waiting, and why the last send failed.
+  - a refused item is marked (`refused`), stays listed, and isn't sent again, so it can't hold up the rest;
+  - it stops when the inbox is unavailable.
+- Whether a send is due is checked before any item is copied, since the check runs every few seconds under the lock.
+- `Status.parking_lot` reports:
+  - the total, and how many are waiting or refused;
+  - the inbox's state, as the same `SourceState` the plan sources use;
+  - a `revision` that goes up with every change, so the window reloads the list whenever it changes, even when the counts stay the same.
 
 **Later (extension).**
 - The block, ask, delay and drift pages, and the toolbar button (`action`), send `Park` with the page's link (and title from the toolbar), then close the tab.
@@ -43,6 +49,8 @@ The developer chose that captures always land in a **local** parking lot that sy
 - The shortcut is a closed set (`Hotkey`: Ctrl+Alt+Space by default, Ctrl+Shift+Space, Ctrl+Alt+P, off). It's chosen from a pick list in Settings → General and written as `parking_hotkey` in `settings.toml`. It isn't a protection, so changes apply at once, without cooling off.
 - An iced subscription keyed by the shortcut owns the guard, so changing the setting re-registers it.
 - Pressing the shortcut restores and focuses the window on Sessions, with the parking-lot box focused. Enter parks the thought and minimises the window again.
+  - Clicking away (the window loses focus) or a failed park ends that capture, so a later park from the window doesn't minimise it.
+- A shortcut another app holds is tried again every 30 seconds.
 
 **Do Not Disturb (amends ADR 0007).**
 - `Notifier::silence` now answers `Silencing::{Silenced, AskUser, Unsupported}`, and a new `NotificationSettings` port opens the platform's settings.

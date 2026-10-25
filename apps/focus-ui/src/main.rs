@@ -68,6 +68,9 @@ fn main() -> iced::Result {
     .run()
 }
 
+/// How often (in polls, about seconds) a shortcut another app held is tried again.
+const HOTKEY_RETRY_POLLS: u32 = 30;
+
 /// Shortest and longest session the duration slider offers, in minutes.
 pub(crate) const MINUTES: std::ops::RangeInclusive<u16> = 1..=180;
 
@@ -142,6 +145,12 @@ pub(crate) struct App {
     capturing: bool,
     /// Why the parking-lot shortcut couldn't be registered, if it couldn't.
     hotkey_problem: Option<String>,
+    /// Whether registering is worth retrying (another app held the shortcut).
+    hotkey_retry: bool,
+    /// Bumped to register the shortcut again.
+    hotkey_attempt: u32,
+    /// The parking lot's revision the list was last read at.
+    parked_revision: Option<u64>,
     error: Option<String>,
     polls: u32,
     /// A status request is on its way, so polls don't pile up if the daemon is slow.
@@ -208,8 +217,13 @@ pub(crate) enum Message {
     ParkedLoaded(Result<Vec<ParkedItem>, String>),
     /// The parking-lot shortcut was pressed somewhere.
     HotkeyPressed,
-    /// The shortcut was registered (`None`) or why it couldn't be.
-    HotkeyRegistered(Option<String>),
+    /// The shortcut was registered (`problem` is `None`) or why it couldn't be.
+    HotkeyRegistered {
+        problem: Option<String>,
+        retry: bool,
+    },
+    /// The window lost focus (ends a capture the shortcut started).
+    WindowUnfocused,
     OpenNotificationSettings,
 }
 
@@ -244,6 +258,9 @@ impl App {
             park_input: String::new(),
             capturing: false,
             hotkey_problem: None,
+            hotkey_retry: false,
+            hotkey_attempt: 0,
+            parked_revision: None,
             error: None,
             polls: 0,
             status_pending: false,
@@ -272,14 +289,12 @@ impl App {
                 self.status_pending = false;
                 match *result {
                     Ok(status) => {
-                        let lot = &status.parking_lot;
-                        let unsent = self.parked.iter().filter(|i| i.sent_at.is_none()).count();
-                        let parked_changed =
-                            lot.total != self.parked.len() || lot.waiting != unsent;
+                        let revision = status.parking_lot.revision;
                         self.status = Some(status);
                         self.unreachable = None;
                         self.failed_polls = 0;
-                        if parked_changed && !self.parked_pending {
+                        if self.parked_revision != Some(revision) && !self.parked_pending {
+                            self.parked_revision = Some(revision);
                             return self.fetch_parked();
                         }
                     }
@@ -420,7 +435,11 @@ impl App {
                     iced::widget::operation::focus(parking::INPUT),
                 ]);
             }
-            Message::HotkeyRegistered(problem) => self.hotkey_problem = problem,
+            Message::HotkeyRegistered { problem, retry } => {
+                self.hotkey_problem = problem;
+                self.hotkey_retry = retry;
+            }
+            Message::WindowUnfocused => self.capturing = false,
             Message::OpenNotificationSettings => {
                 return self.act(Request::OpenNotificationSettings);
             }
@@ -431,6 +450,10 @@ impl App {
     /// The once-a-second poll: status every time, configs and plan now and then.
     fn poll(&mut self) -> Task<Message> {
         self.polls = self.polls.wrapping_add(1);
+        // Another app held the shortcut: try again now and then.
+        if self.hotkey_retry && self.polls.is_multiple_of(HOTKEY_RETRY_POLLS) {
+            self.hotkey_attempt = self.hotkey_attempt.wrapping_add(1);
+        }
         let mut tasks = Vec::new();
         if std::fs::remove_file(&self.show_request).is_ok() {
             tasks.push(iced::window::oldest().and_then(|id| {
@@ -464,6 +487,8 @@ impl App {
                 return iced::exit();
             }
             (Some(Saving::Secret(key)), Ok(())) => self.secret_input(key).clear(),
+            // A failed park leaves the window up, with the error, so the thought isn't lost.
+            (Some(Saving::Park), Err(_)) => self.capturing = false,
             (Some(Saving::Park), Ok(())) => {
                 self.park_input.clear();
                 let mut tasks = vec![self.fetch_parked(), self.fetch_status()];
@@ -675,7 +700,15 @@ impl App {
         ];
         // Registered once the daemon has said which shortcut the settings ask for.
         if let Some(status) = &self.status {
-            subscriptions.push(parking::hotkey_subscription(status.parking_hotkey));
+            subscriptions.push(parking::hotkey_subscription(
+                status.parking_hotkey,
+                self.hotkey_attempt,
+            ));
+        }
+        if self.capturing {
+            subscriptions.push(iced::window::events().filter_map(|(_, event)| {
+                (event == iced::window::Event::Unfocused).then_some(Message::WindowUnfocused)
+            }));
         }
         Subscription::batch(subscriptions)
     }

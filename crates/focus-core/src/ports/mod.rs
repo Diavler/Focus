@@ -28,7 +28,7 @@ pub use enforcer::{EnforceError, Enforcer};
 pub use foreground::ForegroundApp;
 pub use history::{History, HistoryError, HistoryEvent, NoopHistory};
 pub use hotkey::{GlobalHotkey, HotkeyError, HotkeyGuard};
-pub use inbox::TaskInbox;
+pub use inbox::{InboxError, TaskInbox};
 pub use notifier::{NotificationSettings, Notifier, NotifyError, Silencing};
 pub use plan_source::{CalendarSource, SourceError, TaskSource};
 pub use process_list::ProcessList;

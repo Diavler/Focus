@@ -16,9 +16,10 @@ use crate::plan::{CalendarEvent, Task};
 use crate::ports::{
     Autostart, AutostartError, CalendarSource, Clock, ConfigSource, ConfigSourceError,
     EnforceError, Enforcer, ForegroundApp, GlobalHotkey, History, HistoryError, HistoryEvent,
-    HotkeyError, HotkeyGuard, NotificationSettings, Notifier, NotifyError, PersistedState,
-    ProcessList, SecretKey, Secrets, SecretsError, SettingsEditor, Silencing, SourceError,
-    StateStore, StateStoreError, TaskInbox, TaskSource, UiWatch, UiWatchError, WindowedApps,
+    HotkeyError, HotkeyGuard, InboxError, NotificationSettings, Notifier, NotifyError,
+    PersistedState, ProcessList, SecretKey, Secrets, SecretsError, SettingsEditor, Silencing,
+    SourceError, StateStore, StateStoreError, TaskInbox, TaskSource, UiWatch, UiWatchError,
+    WindowedApps,
 };
 use crate::rule::Verdict;
 use crate::time::Timestamp;
@@ -499,11 +500,13 @@ impl NotificationSettings for FakeNotificationSettings {
     }
 }
 
-/// A task inbox that keeps what it was sent, once per request id, or fails with a set error.
+/// A task inbox that keeps what it was sent, once per request id, or fails with a set error. Items
+/// whose text is set with [`FakeInbox::refuse`] are refused.
 #[derive(Debug, Default)]
 pub struct FakeInbox {
     added: Mutex<Vec<ParkedItem>>,
     failure: Mutex<Option<SourceError>>,
+    refused_text: Mutex<Option<String>>,
 }
 
 impl FakeInbox {
@@ -516,12 +519,22 @@ impl FakeInbox {
     pub fn fail_with(&self, failure: Option<SourceError>) {
         *lock(&self.failure) = failure;
     }
+
+    /// Refuses every later item whose text is `text`.
+    pub fn refuse(&self, text: &str) {
+        *lock(&self.refused_text) = Some(text.to_owned());
+    }
 }
 
 impl TaskInbox for FakeInbox {
-    fn add(&self, item: &ParkedItem) -> Result<(), SourceError> {
+    fn add(&self, item: &ParkedItem) -> Result<(), InboxError> {
         if let Some(failure) = lock(&self.failure).clone() {
-            return Err(failure);
+            return Err(failure.into());
+        }
+        if lock(&self.refused_text).as_deref() == Some(item.text.as_str()) {
+            return Err(InboxError::Refused {
+                reason: "the fake refuses it".into(),
+            });
         }
         let mut added = lock(&self.added);
         if !added

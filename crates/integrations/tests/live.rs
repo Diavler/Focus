@@ -7,7 +7,9 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use focus_core::ports::{CalendarSource, SecretKey, Secrets, SourceError, TaskInbox, TaskSource};
+use focus_core::ports::{
+    CalendarSource, InboxError, SecretKey, Secrets, SourceError, TaskInbox, TaskSource,
+};
 use focus_core::testing::{MemorySecrets, calendar_source_contract};
 use focus_core::{ParkingLot, Timestamp};
 use integrations::{IcalCalendar, TodoistInbox, TodoistTasks};
@@ -76,7 +78,7 @@ fn todoist_inbox_refuses_a_made_up_token() {
     let result = TodoistInbox::new(secrets).add(&lot.items()[0]);
     // 401/403 (not 404 or 410) shows the v1 endpoint exists and takes the token.
     assert!(
-        matches!(&result, Err(SourceError::Rejected { reason }) if reason.contains("refused the token")),
+        matches!(&result, Err(InboxError::Unavailable(SourceError::Rejected { reason })) if reason.contains("refused the token")),
         "{result:?}"
     );
 }

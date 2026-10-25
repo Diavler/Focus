@@ -11,7 +11,7 @@ import {
 } from "../src/drift";
 import type { BlockConfig } from "../src/protocol";
 import { siteOf, within } from "../src/sites";
-import { STARTUP_GRACE_MS, continueTarget, overCap } from "../src/tabcap";
+import { STARTUP_GRACE_MS, continueTarget, overCap, restoredAtStartup } from "../src/tabcap";
 
 const START = 1_000_000;
 const LATER = START + HOME_WINDOW_MS + 1;
@@ -99,12 +99,15 @@ describe("drift", () => {
 });
 
 describe("tab cap", () => {
-  it("applies over the cap, not to restored tabs, and not when off", () => {
-    const now = START + STARTUP_GRACE_MS;
-    expect(overCap(11, 10, START, now)).toBe(true);
-    expect(overCap(10, 10, START, now)).toBe(false);
-    expect(overCap(30, 0, START, now)).toBe(false);
-    expect(overCap(30, 10, START, now - 1)).toBe(false);
+  it("applies over the cap, and not when off", () => {
+    expect(overCap(11, 10)).toBe(true);
+    expect(overCap(10, 10)).toBe(false);
+    expect(overCap(30, 0)).toBe(false);
+  });
+
+  it("leaves tabs restored at browser start alone", () => {
+    expect(restoredAtStartup(START, START + STARTUP_GRACE_MS - 1)).toBe(true);
+    expect(restoredAtStartup(START, START + STARTUP_GRACE_MS)).toBe(false);
   });
 
   it("continues to the page, or a new tab page", () => {
