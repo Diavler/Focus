@@ -24,6 +24,7 @@ mod sessions;
 mod settings;
 mod style;
 mod timeline;
+mod tray;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -80,6 +81,8 @@ fn main() -> iced::Result {
             min_size: Some(MIN_WINDOW),
             position: iced::window::Position::Centered,
             icon: iced::window::icon::from_rgba(icon::rgba(64), 64, 64).ok(),
+            // Closing hides the window to the tray instead (see `Message::CloseRequested`).
+            exit_on_close_request: false,
             ..iced::window::Settings::default()
         })
         .run()
@@ -145,6 +148,8 @@ pub(crate) struct App {
     page: Page,
     /// The window's native handle, for colouring its frame; `None` until iced reports it.
     native_window: Option<u64>,
+    /// The tray icon, where there is one; closing the window hides it there.
+    tray: Option<tray::Tray>,
     /// The overlay open on top of the page, if any.
     panel: Option<Panel>,
     configs: Vec<BlockConfig>,
@@ -233,6 +238,9 @@ pub(crate) enum Message {
     Navigate(Page),
     /// The window's native handle (an HWND on Windows).
     NativeWindow(u64),
+    /// The window's close button was pressed.
+    CloseRequested,
+    Tray(tray::TrayAction),
     OpenPanel(Panel),
     ClosePanel,
     ConfigPicked(String),
@@ -293,6 +301,7 @@ impl App {
             unreachable: None,
             page: Page::Overview,
             native_window: None,
+            tray: tray::Tray::create(),
             panel: None,
             configs: Vec::new(),
             config_names: Vec::new(),
@@ -394,6 +403,19 @@ impl App {
                 self.native_window = Some(handle);
                 frame::paint(handle, &self.theme);
             }
+            Message::CloseRequested => {
+                // With nowhere to hide, it minimises instead.
+                let hidden = self.tray.is_some();
+                return iced::window::oldest().and_then(move |id| {
+                    if hidden {
+                        iced::window::set_mode(id, iced::window::Mode::Hidden)
+                    } else {
+                        iced::window::minimize(id, true)
+                    }
+                });
+            }
+            Message::Tray(tray::TrayAction::Show) => return show_window(),
+            Message::Tray(tray::TrayAction::Quit) => return iced::exit(),
             Message::OpenPanel(panel) => {
                 self.panel = Some(panel);
                 return self.open_settings();
@@ -524,6 +546,7 @@ impl App {
                 return Task::batch([
                     iced::window::oldest().and_then(|id| {
                         Task::batch([
+                            iced::window::set_mode(id, iced::window::Mode::Windowed),
                             iced::window::minimize(id, false),
                             iced::window::gain_focus(id),
                         ])
@@ -552,12 +575,7 @@ impl App {
         }
         let mut tasks = Vec::new();
         if std::fs::remove_file(&self.show_request).is_ok() {
-            tasks.push(iced::window::oldest().and_then(|id| {
-                Task::batch([
-                    iced::window::minimize(id, false),
-                    iced::window::gain_focus(id),
-                ])
-            }));
+            tasks.push(show_window());
         }
         if !self.status_pending {
             tasks.push(self.fetch_status());
@@ -804,6 +822,8 @@ impl App {
         let mut subscriptions = vec![
             iced::time::every(POLL).map(|_| Message::Poll),
             iced::system::theme_changes().map(Message::ThemeMode),
+            iced::window::close_requests().map(|_| Message::CloseRequested),
+            tray::subscription(),
         ];
         // Registered once the daemon has said which shortcut the settings ask for.
         if let Some(status) = &self.status {
@@ -1007,4 +1027,15 @@ impl App {
         )
         .into()
     }
+}
+
+/// Brings the window back from the tray or the taskbar and gives it the keyboard.
+fn show_window() -> Task<Message> {
+    iced::window::oldest().and_then(|id| {
+        Task::batch([
+            iced::window::set_mode(id, iced::window::Mode::Windowed),
+            iced::window::minimize(id, false),
+            iced::window::gain_focus(id),
+        ])
+    })
 }

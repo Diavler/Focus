@@ -24,6 +24,8 @@ iced = { workspace = true, features = ["tokio"] }
 # Colours the native title bar and border to match the theme (DWM).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+# The tray icon the window hides to when closed (DESIGN.md's choice; Linux will use `ksni`).
+tray-icon = "0.26"
 
 [build-dependencies]
 # Embeds the app icon in the Windows exe (runs the Windows SDK's resource compiler).

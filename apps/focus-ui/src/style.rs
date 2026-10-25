@@ -328,6 +328,10 @@ pub fn readout<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Me
 }
 
 /// The native title bar's colours, picked to sit with the sidebar.
+#[cfg_attr(
+    not(windows),
+    expect(dead_code, reason = "only Windows colours its frame")
+)]
 pub struct FrameColours {
     /// The title bar's background.
     pub caption: Color,
@@ -338,6 +342,10 @@ pub struct FrameColours {
 }
 
 /// The title bar and border colours for `theme`.
+#[cfg_attr(
+    not(windows),
+    expect(dead_code, reason = "only Windows colours its frame")
+)]
 pub fn frame_colours(theme: &Theme) -> FrameColours {
     let look = look(theme);
     FrameColours {
