@@ -113,6 +113,8 @@ pub struct Service {
     parking_hotkey: Hotkey,
     /// The window's theme, from the last good settings.
     theme: Theme,
+    /// Whether the session card stays on top, from the last good settings.
+    timer_on_top: bool,
     /// When parked items are sent to the task inbox next.
     inbox_schedule: InboxSchedule,
 }
@@ -154,6 +156,7 @@ impl Service {
             silencing: None,
             parking_hotkey: Hotkey::default(),
             theme: Theme::default(),
+            timer_on_top: true,
             inbox_schedule: InboxSchedule::default(),
         };
         service.reload_settings();
@@ -382,6 +385,7 @@ impl Service {
                 self.planned = planned;
                 self.parking_hotkey = desired.parking_hotkey;
                 self.theme = desired.theme;
+                self.timer_on_top = desired.timer_on_top;
             }
             Err(error) => tracing::warn!("{error}"),
         }
@@ -775,6 +779,7 @@ impl Service {
             notifications: self.state.session.running().and(self.silencing),
             parking_hotkey: self.parking_hotkey,
             theme: self.theme,
+            timer_on_top: self.timer_on_top,
         }
     }
 

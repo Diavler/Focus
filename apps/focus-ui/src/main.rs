@@ -252,6 +252,8 @@ pub(crate) enum Message {
     FullSize(iced::Size),
     /// Leave minimal mode.
     Expand,
+    /// Go back to minimal mode while a session runs.
+    Shrink,
     /// End early from the card: open the full window, where the reason is typed.
     EndFromCard,
     /// The window's close button was pressed.
@@ -387,11 +389,17 @@ impl App {
                     Ok(status) => {
                         let revision = status.parking_lot.revision;
                         let running = status.session.running().is_some();
+                        let on_top = status.timer_on_top;
+                        let on_top_changed =
+                            self.status.as_ref().map(|old| old.timer_on_top) != Some(on_top);
                         self.status = Some(status);
                         self.refresh_theme();
                         self.unreachable = None;
                         self.failed_polls = 0;
                         let mut tasks = vec![self.follow_session(running)];
+                        if on_top_changed && self.compact {
+                            tasks.push(compact::keep_on_top(on_top));
+                        }
                         if self.parked_revision != Some(revision) && !self.parked_pending {
                             self.parked_revision = Some(revision);
                             tasks.push(self.fetch_parked());
@@ -436,6 +444,7 @@ impl App {
                 }
             }
             Message::Expand => return self.expand(),
+            Message::Shrink => return self.shrink(),
             Message::EndFromCard => {
                 self.page = Page::Sessions;
                 let asked = self
@@ -747,6 +756,7 @@ impl App {
             settings::Msg::Friction(edit) => friction::apply(&mut draft.edited.friction, edit),
             settings::Msg::ParkingHotkey(hotkey) => draft.edited.parking_hotkey = hotkey,
             settings::Msg::Theme(theme) => draft.edited.theme = theme,
+            settings::Msg::TimerOnTop(on) => draft.edited.timer_on_top = on,
             settings::Msg::Save => {
                 let settings = draft.take_save();
                 draft.sent = Some(settings.clone());
@@ -922,12 +932,24 @@ impl App {
         }
         self.session_seen = running;
         if running {
-            self.compact = true;
-            self.panel = None;
-            compact::shrink_window()
+            self.shrink()
         } else {
             self.expand()
         }
+    }
+
+    /// Turns the window into the session card, if it isn't already.
+    fn shrink(&mut self) -> Task<Message> {
+        if self.compact {
+            return Task::none();
+        }
+        self.compact = true;
+        self.panel = None;
+        let on_top = self
+            .status
+            .as_ref()
+            .is_none_or(|status| status.timer_on_top);
+        compact::shrink_window(on_top)
     }
 
     /// Leaves minimal mode, if the window is the card.
@@ -1049,6 +1071,16 @@ impl App {
             }
         }
         let mut readouts = column![now_line].spacing(12);
+        // Back to the small card, while a session runs.
+        if self.session_seen {
+            readouts = readouts.push(
+                button(text("Minimal mode").size(14).width(Length::Fill).center())
+                    .width(Length::Fill)
+                    .padding([6, 12])
+                    .style(style::key)
+                    .on_press(Message::Shrink),
+            );
+        }
         if let Some(next) = self
             .status
             .as_ref()

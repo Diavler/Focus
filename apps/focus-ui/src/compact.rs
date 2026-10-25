@@ -86,10 +86,10 @@ impl App {
     }
 }
 
-/// Shrinks the window to the card in the screen's top-right corner, above other windows. Reports
-/// the window's size first, so it can grow back to it.
-pub(crate) fn shrink_window() -> Task<Message> {
-    iced::window::oldest().and_then(|id| {
+/// Shrinks the window to the card in the screen's top-right corner, above other windows if
+/// `on_top`. Reports the window's size first, so it can grow back to it.
+pub(crate) fn shrink_window(on_top: bool) -> Task<Message> {
+    iced::window::oldest().and_then(move |id| {
         iced::window::size(id)
             .map(Message::FullSize)
             .chain(Task::batch([
@@ -98,7 +98,7 @@ pub(crate) fn shrink_window() -> Task<Message> {
                 iced::window::set_min_size(id, None),
                 iced::window::resize(id, CARD),
                 iced::window::set_resizable(id, false),
-                iced::window::set_level(id, Level::AlwaysOnTop),
+                iced::window::set_level(id, card_level(on_top)),
                 iced::window::monitor_size(id).then(move |monitor| match monitor {
                     Some(screen) => iced::window::move_to(
                         id,
@@ -130,4 +130,18 @@ pub(crate) fn grow_window(full: Size) -> Task<Message> {
             }),
         ])
     })
+}
+
+/// Puts the card above other windows, or back among them.
+pub(crate) fn keep_on_top(on_top: bool) -> Task<Message> {
+    iced::window::oldest().and_then(move |id| iced::window::set_level(id, card_level(on_top)))
+}
+
+/// The card's window level for the "Keep the timer on top" setting.
+fn card_level(on_top: bool) -> Level {
+    if on_top {
+        Level::AlwaysOnTop
+    } else {
+        Level::Normal
+    }
 }

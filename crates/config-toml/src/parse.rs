@@ -90,6 +90,7 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
             friction,
             parking_hotkey: file.parking_hotkey,
             theme: file.theme,
+            timer_on_top: file.timer_on_top,
         })
     } else {
         Err(SettingsError::Invalid { problems })

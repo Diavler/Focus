@@ -58,8 +58,18 @@ pub fn editable(text: &str) -> Result<EditableSettings, SettingsError> {
         friction: file.friction.friction(),
         parking_hotkey: file.parking_hotkey,
         theme: file.theme,
+        timer_on_top: file.timer_on_top,
         revision: revision(text),
     })
+}
+
+/// Sets the top-level flag `key`, which defaults to on, written only when it changes (or is off),
+/// so a comment beside it stays.
+fn set_flag(document: &mut DocumentMut, key: &str, on: bool) {
+    let written = document.get(key).and_then(Item::as_bool);
+    if written != Some(on) && (written.is_some() || !on) {
+        document.insert(key, value(on));
+    }
 }
 
 /// Sets the top-level `key` to `wanted`, written only when it changes (or isn't `default`), so a
@@ -90,11 +100,8 @@ pub fn with_settings(text: &str, settings: &EditableSettings) -> Result<String, 
                 message: error.to_string(),
             })?;
 
-    // Written only when it changes (or isn't the default), so a comment beside it stays.
-    let written = document.get("start_at_login").and_then(Item::as_bool);
-    if written != Some(settings.start_at_login) && (written.is_some() || !settings.start_at_login) {
-        document.insert("start_at_login", value(settings.start_at_login));
-    }
+    set_flag(&mut document, "start_at_login", settings.start_at_login);
+    set_flag(&mut document, "timer_on_top", settings.timer_on_top);
 
     let lists = parent_table(&mut document, "lists");
     lists.retain(|name, _| settings.lists.iter().any(|list| list.name == name));
@@ -447,6 +454,7 @@ allow = ["docs.google.com"]
             friction: Friction::default(),
             parking_hotkey: Hotkey::default(),
             theme: Theme::default(),
+            timer_on_top: true,
             revision: String::new(),
         };
         let written = with_settings("", &settings).unwrap();
@@ -500,6 +508,22 @@ allow = ["docs.google.com"]
             !with_settings("", &settings).unwrap().contains("theme"),
             "the default isn't written"
         );
+    }
+
+    #[test]
+    fn timer_on_top_defaults_on_and_round_trips() {
+        let mut settings = editable("").unwrap();
+        assert!(settings.timer_on_top);
+        assert!(
+            !with_settings("", &settings)
+                .unwrap()
+                .contains("timer_on_top"),
+            "the default isn't written"
+        );
+        settings.timer_on_top = false;
+        let written = with_settings("", &settings).unwrap();
+        assert!(written.contains("timer_on_top = false"), "{written}");
+        assert!(!parse_settings(&written).unwrap().timer_on_top);
     }
 
     #[test]

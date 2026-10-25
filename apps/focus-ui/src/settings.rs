@@ -156,6 +156,7 @@ fn same_content<'a>(
         friction,
         parking_hotkey,
         theme,
+        timer_on_top,
         revision: _,
     } = settings;
     *start_at_login == other.start_at_login
@@ -164,6 +165,7 @@ fn same_content<'a>(
         && *friction == other.friction
         && *parking_hotkey == other.parking_hotkey
         && *theme == other.theme
+        && *timer_on_top == other.timer_on_top
         && auto_start.into_iter().eq(&other.auto_start)
 }
 
@@ -177,13 +179,14 @@ pub enum Msg {
     Friction(crate::friction::Edit),
     ParkingHotkey(focus_core::Hotkey),
     Theme(focus_core::Theme),
+    TimerOnTop(bool),
     Save,
     Reload,
 }
 
 impl App {
-    /// The Settings page: how Focus itself behaves (start at login, theme, the parking
-    /// shortcut) and the kill switch.
+    /// The Settings page: how Focus itself behaves (start at login, theme, the timer card, the
+    /// parking shortcut) and the kill switch.
     pub(crate) fn settings_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let mut header = row![
             title("Settings"),
@@ -286,6 +289,14 @@ impl App {
                         |theme| theme.to_string(),
                         |theme| Message::Settings(Msg::Theme(theme)),
                     ),
+                ),
+                setting_row(
+                    "Keep the timer on top",
+                    "During a session, the small timer card stays above other windows.",
+                    toggler(draft.edited.timer_on_top)
+                        .size(22)
+                        .style(style::switch)
+                        .on_toggle(|on| Message::Settings(Msg::TimerOnTop(on))),
                 ),
                 setting_row(
                     "Parking lot shortcut",
@@ -429,6 +440,7 @@ mod tests {
             friction: focus_core::Friction::default(),
             parking_hotkey: focus_core::Hotkey::default(),
             theme: focus_core::Theme::default(),
+            timer_on_top: true,
             revision: revision.into(),
         }
     }
