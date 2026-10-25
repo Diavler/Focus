@@ -19,7 +19,7 @@ The developer decided:
 ## Decision
 
 **Layout:**
-- A sidebar shows the brand, what's running, the pages (Sessions, Calendar, Todoist) and each source's sync status.
+- A sidebar shows the brand, what's running, the pages (Sessions, Calendar, Todoist) and each source's sync status. Polish step P1 added Overview as the first page and the one the window opens on: today's calendar as an hour grid beside overdue and today's tasks.
 - The main area scrolls and shows one page.
 - Settings is a page opened from the Sessions header, with tabs: Automatic starts, Configurations, Lists, General.
 - Each page is an `impl App` block in its own module (`sessions.rs`, `plan_pages.rs`, `settings.rs`, `configs.rs`, `rules.rs`), with shared styling in `style.rs`.

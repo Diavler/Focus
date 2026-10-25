@@ -4,6 +4,8 @@ One step per Claude Code session. Each step ends with green CI and a short summa
 
 **Windows first.** Steps 5–8 build and manually test the Windows side only. Linux keeps building and passing every automated test in CI (`ubuntu-latest`) throughout, but the KDE Plasma adapters and all manual Linux testing come together in step 9, once Windows is fully working.
 
+**Order from 2026-10-24 (ADR 0014):** after step 8 comes polish (P), then the release (step 10, Windows only), then Linux parity (step 9) after the first release. Step numbers stay as they are because code and ADRs refer to them. Keep Linux in mind meanwhile: platform code stays behind the ports, and Linux keeps building and passing CI.
+
 ## Prototype
 
 ### 0. Repository skeleton
@@ -89,7 +91,16 @@ Split in two PRs (decided 2026-10-24).
 
 **Done when:** each behaviour has unit tests (the core, or the extension's pure modules for browser-only behaviour) and a manual test note for the platform parts.
 
-### 9. Linux (KDE Plasma) parity
+### P. Polish (before the first release)
+Making the window nicer to use, one sub-step per PR.
+
+**P1. Overview and event boxes:** an Overview page, first in the sidebar and the page the window opens on, with today's calendar as an hour grid (events as boxes placed by time, overlapping ones side by side, a line at now with its time, hour labels centred on their lines) beside overdue and today's tasks. Events and tasks on the Calendar and Todoist pages sit in boxes too.
+
+**P2. Tactile look (instrument panel):** make the window feel like a physical focus device instead of a generic web app (developer's direction, 2026-10-24): an instrument-panel feel in a warmer tone, with press and hover states on every control (keys lift on hover and sink when pressed; no motion or sound for now). One shared style pass across all pages: buttons as keys, cards as raised panels, inset readouts, segmented strictness control, toggle switches, LED status dots, a timer ring or dial for the running session, and a bundled font. Direction chosen from the HTML mock-ups (2026-10-24): **field recorder** (warm aluminium keys with a solid ledge, dark LCD readouts with an orange segmented progress bar, square toggles, a segmented strictness control, IBM Plex Sans and Mono) as the light theme, with the **bakelite** warm-dark palette (amber accent) as the dark theme, following the system's light or dark mode as now. Record it in an ADR. Keep it in `style.rs` and shared widgets so pages don't hard-code colours. If it grows past about 15 files, split into P2a (shared style and widgets) and P2b (page touches, timer dial).
+
+**Done when:** layout logic has unit tests and the visual checks are listed in the PR (with screenshots of the pages that need no clicks).
+
+### 9. Linux (KDE Plasma) parity (after the first release)
 Bring KDE Plasma on Wayland up to the Windows feature set:
 - `enforce-linux-kde`: `/proc` process control, a bundled KWin script (`workspace.windowActivated`) reporting over D-Bus, and `org.freedesktop.Notifications` `Inhibit` via `zbus` 6.
 - Autostart as a systemd user service, and the parking-lot hotkey via the XDG GlobalShortcuts portal.
@@ -99,5 +110,5 @@ Bring KDE Plasma on Wayland up to the Windows feature set:
 **Done when:** the manual checklists of steps 3–8 pass on a KDE Plasma Wayland VM.
 
 ### 10. Release
-`cargo-dist`: portable zip for both OSes, MSI, `.deb`/`.rpm` (or portable only; see ADR 0004); changelog; `v0.1.0` tag.
-**Done when:** a fresh Windows VM and a fresh KDE Plasma VM can install from the release and run a session without admin rights.
+`cargo-dist`: portable zip and MSI for Windows; changelog; `v0.1.0` tag. Linux packages (`.deb`/`.rpm` or portable only; see ADR 0004) come with step 9.
+**Done when:** a fresh Windows VM can install from the release and run a session without admin rights.

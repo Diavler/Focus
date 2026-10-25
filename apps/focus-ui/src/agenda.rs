@@ -5,12 +5,12 @@ use std::fmt::Display;
 
 use chrono::{DateTime, Days, NaiveDate, NaiveTime, TimeZone};
 use focus_core::{CalendarEvent, PlanSource, PlannedStart, Task, Timestamp};
-use iced::widget::{Column, column, container, row, text};
-use iced::{Alignment, Length};
+use iced::widget::{Column, Text, column, container, row, text};
+use iced::{Alignment, Element, Length};
 use ipc_proto::PlanView;
 
 use crate::Message;
-use crate::style::{Tone, bold, caption, pill, toned};
+use crate::style::{Tone, bold, caption, entry, pill, toned};
 
 /// A titled group of rows: one day of events, or tasks due at a similar time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,23 @@ fn events_on<Z: TimeZone>(view: &PlanView, day: NaiveDate, zone: &Z) -> Vec<Row>
 where
     Z::Offset: Display,
 {
+    day_events(view, view.now, day, zone)
+        .into_iter()
+        .map(|(_, row)| row)
+        .collect()
+}
+
+/// The events on `day` in `zone`, all-day ones first, each with its row (on now or over as of
+/// `now`).
+pub fn day_events<'a, Z: TimeZone>(
+    view: &'a PlanView,
+    now: Timestamp,
+    day: NaiveDate,
+    zone: &Z,
+) -> Vec<(&'a CalendarEvent, Row)>
+where
+    Z::Offset: Display,
+{
     let (from, to) = (midnight(day, zone), midnight(day + Days::new(1), zone));
     let mut events: Vec<&CalendarEvent> = view
         .events
@@ -82,20 +99,21 @@ where
             } else {
                 format!("{}–{}", clock(event.start, zone), clock(event.end, zone))
             };
-            let now = !event.all_day && event.start <= view.now && view.now < event.end;
+            let on_now = !event.all_day && event.start <= now && now < event.end;
             let planned = view.upcoming.iter().find(|start| {
                 start.source == PlanSource::Calendar
                     && start.starts_at == event.start
                     && start.title == event.title
             });
-            Row {
+            let row = Row {
                 when,
                 title: event.title.clone(),
-                note: now.then(|| "On now".to_owned()),
+                note: on_now.then(|| "On now".to_owned()),
                 starts: planned.map(starts),
-                past: event.end <= view.now,
+                past: event.end <= now,
                 warning: false,
-            }
+            };
+            (event, row)
         })
         .collect()
 }
@@ -106,29 +124,76 @@ pub fn task_groups<Z: TimeZone>(view: &PlanView, zone: &Z) -> Vec<Group>
 where
     Z::Offset: Display,
 {
-    let today = local(view.now, zone).date_naive();
-    let tomorrow = today + Days::new(1);
-    let mut due: Vec<(NaiveDate, &Task)> = view
-        .tasks
-        .iter()
-        .filter_map(|task| Some((due_day(task, zone)?, task)))
-        .collect();
-    due.sort_by_key(|(day, task)| (*day, task.due_at.is_none(), task.due_at, task.title.clone()));
-    let group = |title: &str, detail: Option<NaiveDate>, keep: &dyn Fn(NaiveDate) -> bool| Group {
-        title: title.to_owned(),
-        detail: detail.map(|day| day.format("%A %-d %B").to_string()),
-        rows: due
-            .iter()
-            .filter(|(day, _)| keep(*day))
-            .map(|(day, task)| task_row(view, task, *day, today, zone))
-            .collect(),
-    };
+    let due = TasksDue::new(view, zone);
+    let (today, tomorrow) = (due.today, due.today + Days::new(1));
     vec![
-        group("Overdue", None, &|day| day < today),
-        group("Today", Some(today), &|day| day == today),
-        group("Tomorrow", Some(tomorrow), &|day| day == tomorrow),
-        group("Later this week", None, &|day| day > tomorrow),
+        due.group("Overdue", None, |day| day < today),
+        due.group("Today", Some(today), |day| day == today),
+        due.group("Tomorrow", Some(tomorrow), |day| day == tomorrow),
+        due.group("Later this week", None, |day| day > tomorrow),
     ]
+}
+
+/// Just the Overdue and Today groups of [`task_groups`].
+pub fn overdue_and_today<Z: TimeZone>(view: &PlanView, zone: &Z) -> (Group, Group)
+where
+    Z::Offset: Display,
+{
+    let due = TasksDue::new(view, zone);
+    let today = due.today;
+    (
+        due.group("Overdue", None, |day| day < today),
+        due.group("Today", Some(today), |day| day == today),
+    )
+}
+
+/// Tasks with a due day, sorted, ready to be split into groups.
+struct TasksDue<'a, Z: TimeZone> {
+    view: &'a PlanView,
+    zone: &'a Z,
+    today: NaiveDate,
+    due: Vec<(NaiveDate, &'a Task)>,
+}
+
+impl<'a, Z: TimeZone> TasksDue<'a, Z>
+where
+    Z::Offset: Display,
+{
+    fn new(view: &'a PlanView, zone: &'a Z) -> Self {
+        let mut due: Vec<(NaiveDate, &Task)> = view
+            .tasks
+            .iter()
+            .filter_map(|task| Some((due_day(task, zone)?, task)))
+            .collect();
+        due.sort_by_key(|(day, task)| {
+            (*day, task.due_at.is_none(), task.due_at, task.title.clone())
+        });
+        Self {
+            view,
+            zone,
+            today: local(view.now, zone).date_naive(),
+            due,
+        }
+    }
+
+    /// The tasks due on days `keep` accepts.
+    fn group(
+        &self,
+        title: &str,
+        detail: Option<NaiveDate>,
+        keep: impl Fn(NaiveDate) -> bool,
+    ) -> Group {
+        Group {
+            title: title.to_owned(),
+            detail: detail.map(|day| day.format("%A %-d %B").to_string()),
+            rows: self
+                .due
+                .iter()
+                .filter(|(day, _)| keep(*day))
+                .map(|(day, task)| task_row(self.view, task, *day, self.today, self.zone))
+                .collect(),
+        }
+    }
 }
 
 fn task_row<Z: TimeZone>(
@@ -188,7 +253,8 @@ fn starts(start: &PlannedStart) -> String {
     format!("Starts {} ({})", start.config, start.strictness)
 }
 
-fn local<Z: TimeZone>(at: Timestamp, zone: &Z) -> DateTime<Z> {
+/// `at` as a date and time in `zone`.
+pub fn local<Z: TimeZone>(at: Timestamp, zone: &Z) -> DateTime<Z> {
     let millis = i64::try_from(at.as_millis()).unwrap_or(i64::MAX);
     DateTime::from_timestamp_millis(millis)
         .unwrap_or_default()
@@ -204,7 +270,7 @@ where
 }
 
 /// The start of `day` in `zone` (the first such instant if clocks change at midnight).
-fn midnight<Z: TimeZone>(day: NaiveDate, zone: &Z) -> Timestamp {
+pub fn midnight<Z: TimeZone>(day: NaiveDate, zone: &Z) -> Timestamp {
     let start = zone
         .from_local_datetime(&day.and_time(NaiveTime::MIN))
         .earliest()
@@ -212,19 +278,13 @@ fn midnight<Z: TimeZone>(day: NaiveDate, zone: &Z) -> Timestamp {
     Timestamp::from_millis(u64::try_from(start).unwrap_or(0))
 }
 
-/// The rows of a group, one line each: when, title (with labels underneath), and a pill for the
+/// The rows of a group, one box each: when, title (with labels underneath), and a pill for the
 /// session it starts.
 pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
-    let mut list = column![].spacing(10);
-    for item in rows {
-        let tone = if item.warning { Tone::Bad } else { Tone::Quiet };
-        let when = container(toned(item.when, tone).size(14)).width(Length::Fixed(120.0));
-        let title = if item.past {
-            text(item.title).size(15).style(text::secondary)
-        } else {
-            bold(item.title).size(15)
-        };
-        let mut detail = column![title].spacing(2);
+    boxes(rows, |item| {
+        let when = container(toned(item.when.clone(), item.when_tone()).size(14))
+            .width(Length::Fixed(110.0));
+        let mut detail = column![item_title(item.title, item.past)].spacing(2);
         if let Some(note) = item.note {
             detail = detail.push(caption(note));
         }
@@ -234,9 +294,62 @@ pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
         if let Some(starts) = item.starts {
             line = line.push(pill(starts, Tone::Good));
         }
-        list = list.push(line);
+        line.into()
+    })
+}
+
+/// The rows as narrow boxes, for a column beside something else: the title first, then when
+/// and the labels, then the session it starts.
+pub fn compact_rows_view(rows: Vec<Row>) -> Column<'static, Message> {
+    boxes(rows, |item| {
+        let mut details = row![toned(item.when.clone(), item.when_tone()).size(13)].spacing(8);
+        if let Some(note) = item.note {
+            details = details.push(caption(note));
+        }
+        let mut body = column![item_title(item.title, item.past), details].spacing(4);
+        if let Some(starts) = item.starts {
+            body = body.push(pill(starts, Tone::Good));
+        }
+        body.into()
+    })
+}
+
+/// Each row laid out by `layout`, in its box.
+fn boxes(
+    rows: Vec<Row>,
+    layout: impl Fn(Row) -> Element<'static, Message>,
+) -> Column<'static, Message> {
+    rows.into_iter().fold(column![].spacing(8), |list, item| {
+        let (tone, past) = (item.tone(), item.past);
+        list.push(entry(layout(item), tone, past, Length::Shrink))
+    })
+}
+
+impl Row {
+    /// The colour of its box: red if it needs attention, green if it starts a session.
+    pub fn tone(&self) -> Tone {
+        if self.warning {
+            Tone::Bad
+        } else if self.starts.is_some() {
+            Tone::Good
+        } else {
+            Tone::Quiet
+        }
     }
-    list
+
+    /// The colour of its time: red if it needs attention.
+    pub fn when_tone(&self) -> Tone {
+        if self.warning { Tone::Bad } else { Tone::Quiet }
+    }
+}
+
+/// A row's title: bold, or grey once it's over.
+pub fn item_title(title: String, past: bool) -> Text<'static> {
+    if past {
+        text(title).size(15).style(text::secondary)
+    } else {
+        bold(title).size(15)
+    }
 }
 
 #[cfg(test)]
