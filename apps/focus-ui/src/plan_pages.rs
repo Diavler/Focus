@@ -10,7 +10,7 @@ use ipc_proto::{SourceState, SourceStatus, StatusReport};
 
 use crate::agenda::{self, Group};
 use crate::help::{info, tip};
-use crate::style::{Tone, caption, card, dot, heading, pill, title, toned};
+use crate::style::{self, Tone, caption, card, dot, heading, pill, title, toned};
 use crate::{App, Message};
 
 /// How many days the Calendar page shows.
@@ -108,10 +108,10 @@ impl App {
                         .secure(true)
                         .on_input(move |value| Message::SecretInput(key, value))
                         .on_submit_maybe(save.clone()),
-                    button("Save").on_press_maybe(save),
+                    button("Save").style(style::key_accent).on_press_maybe(save),
                     tip(
                         button("Remove")
-                            .style(button::secondary)
+                            .style(style::key)
                             .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
                         "Deletes the saved address or token, and the events or tasks kept \
                          from it."

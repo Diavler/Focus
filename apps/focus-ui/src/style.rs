@@ -1,48 +1,170 @@
-//! The window's look: Focus's own colour palette (a "night" and a "day" version, following the
-//! system's light or dark mode), cards, the sidebar, headings, coloured status pills and the boxes
-//! events and tasks sit in. Widgets
-//! take their colours from the theme's palette, so both versions work everywhere.
+//! The window's look, an instrument panel: keys with a ledge that lift on hover and sink when
+//! pressed, raised panels, dark readouts, square switches and LED status dots. It comes in a warm
+//! light "field recorder" version and a warm dark "bakelite" one, following the system's light or
+//! dark mode. Widgets take their colours from the theme, so both versions work everywhere.
+
+use std::f32::consts::PI;
 
 use iced::gradient::Linear;
 use iced::theme::{Mode, Palette};
-use iced::widget::{Button, Container, Text, button, container, rule, space, stack, text};
+use iced::widget::{
+    Button, Container, Text, button, container, row, rule, space, stack, text, toggler,
+};
 use iced::{
-    Background, Border, Color, Element, Font, Gradient, Length, Padding, Radians, Theme, font,
+    Alignment, Background, Border, Color, Element, Font, Gradient, Length, Padding, Radians,
+    Shadow, Theme, Vector, font,
 };
 
-/// Focus's dark palette: deep navy with a violet accent, mint, amber and rose.
-const NIGHT: Palette = Palette {
-    background: Color::from_rgb8(0x12, 0x14, 0x20),
-    text: Color::from_rgb8(0xE8, 0xE6, 0xF3),
-    primary: Color::from_rgb8(0x8B, 0x7C, 0xF6),
-    success: Color::from_rgb8(0x34, 0xD3, 0x99),
-    warning: Color::from_rgb8(0xFB, 0xBF, 0x24),
-    danger: Color::from_rgb8(0xFB, 0x71, 0x85),
+use crate::Message;
+
+/// The text font (bundled, so the window looks the same on every machine).
+pub const SANS: Font = Font::with_name("IBM Plex Sans");
+
+/// The font of readouts.
+const MONO: Font = Font {
+    weight: font::Weight::Medium,
+    ..Font::with_name("IBM Plex Mono")
 };
 
-/// Focus's light palette: the same accents, deeper so they read on a pale lavender background.
-const DAY: Palette = Palette {
-    background: Color::from_rgb8(0xF7, 0xF6, 0xFC),
-    text: Color::from_rgb8(0x1D, 0x1A, 0x2E),
-    primary: Color::from_rgb8(0x6D, 0x4A, 0xE8),
-    success: Color::from_rgb8(0x10, 0x9F, 0x7A),
-    warning: Color::from_rgb8(0xC2, 0x6A, 0x05),
-    danger: Color::from_rgb8(0xE1, 0x1D, 0x48),
+/// The bundled font files, loaded at start (IBM Plex, SIL Open Font License; see `fonts/OFL.txt`).
+pub const FONTS: [&[u8]; 3] = [
+    include_bytes!("../fonts/IBMPlexSans-Regular.ttf"),
+    include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf"),
+    include_bytes!("../fonts/IBMPlexMono-Medium.ttf"),
+];
+
+/// The light palette ("field recorder"): warm aluminium with a burnt-orange accent.
+const FIELD: Palette = Palette {
+    background: Color::from_rgb8(0xE6, 0xE0, 0xD5),
+    text: Color::from_rgb8(0x2A, 0x25, 0x20),
+    primary: Color::from_rgb8(0xB4, 0x41, 0x0C),
+    success: Color::from_rgb8(0x27, 0x6B, 0x32),
+    warning: Color::from_rgb8(0x7A, 0x55, 0x00),
+    danger: Color::from_rgb8(0xA6, 0x1B, 0x29),
 };
 
-/// The second colour of the running session's gradient (the first is the accent).
-const CYAN_NIGHT: Color = Color::from_rgb8(0x22, 0xD3, 0xEE);
-const CYAN_DAY: Color = Color::from_rgb8(0x0E, 0xA5, 0xE9);
+/// The dark palette ("bakelite"): warm brown-black with an amber accent.
+const BAKELITE: Palette = Palette {
+    background: Color::from_rgb8(0x1B, 0x16, 0x12),
+    text: Color::from_rgb8(0xF1, 0xE6, 0xD6),
+    primary: Color::from_rgb8(0xF2, 0xA3, 0x3A),
+    success: Color::from_rgb8(0x8F, 0xCB, 0x7F),
+    warning: Color::from_rgb8(0xE8, 0xC5, 0x47),
+    danger: Color::from_rgb8(0xF0, 0x7A, 0x63),
+};
+
+/// The colours a palette doesn't derive: key faces, ledges, panels and readouts.
+struct Look {
+    /// Top and bottom of a key's face, and its edge and ledge.
+    key: (Color, Color),
+    key_edge: Color,
+    ledge: Color,
+    /// The same when the pointer is over the key.
+    hover: (Color, Color),
+    hover_edge: Color,
+    hover_ledge: Color,
+    /// A pressed (or selected) key's face, and the shade at its top that makes it look sunk.
+    pressed: Color,
+    shade: Color,
+    /// A key that can't be pressed: face and label.
+    disabled: Color,
+    disabled_text: Color,
+    /// Top and bottom of a raised panel, its edge and the shadow under it.
+    panel: (Color, Color),
+    panel_edge: Color,
+    panel_shadow: Color,
+    /// The sidebar's background.
+    sidebar: Color,
+    /// A readout's glass, its edge and its digits.
+    glass: Color,
+    glass_edge: Color,
+    digits: Color,
+    /// A switch's track, and an LED that's off.
+    well: Color,
+    unlit: Color,
+    /// Whether LEDs glow (they only show it on a dark panel).
+    glow: bool,
+}
+
+/// What `FIELD` needs besides its palette.
+const FIELD_LOOK: Look = Look {
+    key: (
+        Color::from_rgb8(0xFB, 0xF8, 0xF2),
+        Color::from_rgb8(0xED, 0xE7, 0xDC),
+    ),
+    key_edge: Color::from_rgb8(0xC9, 0xBF, 0xAE),
+    ledge: Color::from_rgb8(0xBF, 0xB5, 0xA3),
+    hover: (Color::WHITE, Color::from_rgb8(0xF4, 0xEF, 0xE6)),
+    hover_edge: Color::from_rgb8(0xB0, 0xA5, 0x92),
+    hover_ledge: Color::from_rgb8(0xB0, 0xA5, 0x92),
+    pressed: Color::from_rgb8(0xE3, 0xDC, 0xCF),
+    shade: Color::from_rgba8(0x50, 0x3C, 0x1E, 0.18),
+    disabled: Color::from_rgb8(0xE6, 0xE0, 0xD5),
+    disabled_text: Color::from_rgb8(0x7A, 0x70, 0x64),
+    panel: (
+        Color::from_rgb8(0xF8, 0xF5, 0xEF),
+        Color::from_rgb8(0xF4, 0xF0, 0xE8),
+    ),
+    panel_edge: Color::from_rgb8(0xCF, 0xC6, 0xB6),
+    panel_shadow: Color::from_rgba8(0x50, 0x3C, 0x1E, 0.12),
+    sidebar: Color::from_rgb8(0xDC, 0xD5, 0xC8),
+    glass: Color::from_rgb8(0x2B, 0x2A, 0x26),
+    glass_edge: Color::from_rgb8(0x1F, 0x1E, 0x1B),
+    digits: Color::from_rgb8(0xFF, 0x8A, 0x3D),
+    well: Color::from_rgb8(0xD6, 0xCE, 0xC0),
+    unlit: Color::from_rgb8(0xB9, 0xAF, 0x9F),
+    glow: false,
+};
+
+/// What `BAKELITE` needs besides its palette.
+const BAKELITE_LOOK: Look = Look {
+    key: (
+        Color::from_rgb8(0x3A, 0x30, 0x28),
+        Color::from_rgb8(0x2C, 0x24, 0x1D),
+    ),
+    key_edge: Color::from_rgb8(0x4A, 0x3D, 0x31),
+    ledge: Color::from_rgb8(0x0D, 0x0A, 0x08),
+    hover: (
+        Color::from_rgb8(0x46, 0x39, 0x2E),
+        Color::from_rgb8(0x36, 0x2C, 0x23),
+    ),
+    hover_edge: Color::from_rgb8(0x5A, 0x4B, 0x3D),
+    hover_ledge: Color::from_rgb8(0x0D, 0x0A, 0x08),
+    pressed: Color::from_rgb8(0x22, 0x1B, 0x15),
+    shade: Color::from_rgba8(0, 0, 0, 0.55),
+    disabled: Color::from_rgb8(0x24, 0x1D, 0x17),
+    disabled_text: Color::from_rgb8(0x8C, 0x7D, 0x6B),
+    panel: (
+        Color::from_rgb8(0x2C, 0x24, 0x1D),
+        Color::from_rgb8(0x26, 0x1F, 0x19),
+    ),
+    panel_edge: Color::from_rgb8(0x3A, 0x30, 0x28),
+    panel_shadow: Color::from_rgba8(0, 0, 0, 0.45),
+    sidebar: Color::from_rgb8(0x1F, 0x19, 0x14),
+    glass: Color::from_rgb8(0x12, 0x0E, 0x0B),
+    glass_edge: Color::from_rgb8(0x2E, 0x26, 0x1F),
+    digits: Color::from_rgb8(0xF2, 0xA3, 0x3A),
+    well: Color::from_rgb8(0x12, 0x0E, 0x0B),
+    unlit: Color::from_rgb8(0x4A, 0x3D, 0x31),
+    glow: true,
+};
 
 /// The theme for the system's `mode` (dark unless the system says light).
 pub fn theme(mode: Mode) -> Theme {
     match mode {
-        Mode::Light => Theme::custom("Focus Day", DAY),
-        Mode::Dark | Mode::None => Theme::custom("Focus Night", NIGHT),
+        Mode::Light => Theme::custom("Focus Field Recorder", FIELD),
+        Mode::Dark | Mode::None => Theme::custom("Focus Bakelite", BAKELITE),
     }
 }
 
-use crate::Message;
+/// The extra colours for `theme`.
+fn look(theme: &Theme) -> &'static Look {
+    if theme.extended_palette().is_dark {
+        &BAKELITE_LOOK
+    } else {
+        &FIELD_LOOK
+    }
+}
 
 /// How good or bad a status is, for its colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +182,8 @@ pub enum Tone {
 /// Bold text.
 pub fn bold<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     text(content).font(Font {
-        weight: font::Weight::Bold,
-        ..Font::DEFAULT
+        weight: font::Weight::Semibold,
+        ..SANS
     })
 }
 
@@ -80,7 +202,12 @@ pub fn caption<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     text(content).size(13).style(text::secondary)
 }
 
-/// `content` in a rounded card that fills the width.
+/// Text in the readout font, for times and counts on a [`readout`].
+pub fn mono<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
+    text(content).font(MONO)
+}
+
+/// `content` on a raised panel that fills the width.
 pub fn card<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
     container(content)
         .padding(18)
@@ -89,44 +216,44 @@ pub fn card<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Messa
 }
 
 fn card_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+    let look = look(theme);
     container::Style {
-        background: Some(Background::Color(palette.background.weak.color)),
-        text_color: Some(palette.background.weak.text),
+        background: Some(vertical(look.panel.0, look.panel.1)),
+        text_color: Some(theme.extended_palette().background.base.text),
         border: Border {
             radius: 12.0.into(),
             width: 1.0,
-            color: palette.background.strong.color,
+            color: look.panel_edge,
+        },
+        shadow: Shadow {
+            color: look.panel_shadow,
+            offset: Vector::new(0.0, 6.0),
+            blur_radius: 14.0,
         },
         ..container::Style::default()
     }
 }
 
-/// A card that stands out, for the running session: a violet-to-cyan gradient.
+/// The panel for the running session: a card with more room.
 pub fn hero<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
-    container(content)
-        .padding(24)
-        .width(Length::Fill)
-        .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
-            let cyan = if palette.is_dark {
-                CYAN_NIGHT
-            } else {
-                CYAN_DAY
-            };
-            let gradient = Linear::new(Radians(2.2))
-                .add_stop(0.0, palette.primary.strong.color)
-                .add_stop(1.0, cyan);
-            container::Style {
-                background: Some(Background::Gradient(Gradient::Linear(gradient))),
-                text_color: Some(Color::WHITE),
-                border: Border {
-                    radius: 16.0.into(),
-                    ..Border::default()
-                },
-                ..container::Style::default()
-            }
-        })
+    card(content).padding(24)
+}
+
+/// `content` behind the dark glass of a readout, in its glowing digit colour.
+pub fn readout<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
+    container(content).padding([10, 12]).style(|theme: &Theme| {
+        let look = look(theme);
+        container::Style {
+            background: Some(sunk(look.glass, look.shade)),
+            text_color: Some(look.digits),
+            border: Border {
+                radius: 6.0.into(),
+                width: 1.0,
+                color: look.glass_edge,
+            },
+            ..container::Style::default()
+        }
+    })
 }
 
 /// The sidebar's background.
@@ -135,82 +262,204 @@ pub fn sidebar<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Me
         .padding(18)
         .width(Length::Fixed(210.0))
         .height(Length::Fill)
-        .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
-            // A faint violet tint from top to bottom, so the sidebar reads as its own place.
-            let tint = Color {
-                a: if palette.is_dark { 0.16 } else { 0.10 },
-                ..palette.primary.base.color
-            };
-            let gradient = Linear::new(Radians(std::f32::consts::PI))
-                .add_stop(0.0, blend(palette.background.weaker.color, tint))
-                .add_stop(1.0, palette.background.weaker.color);
-            container::Style {
-                background: Some(Background::Gradient(Gradient::Linear(gradient))),
-                ..container::Style::default()
-            }
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(look(theme).sidebar)),
+            ..container::Style::default()
         })
 }
 
-/// A sidebar entry, highlighted when `selected`.
+/// A sidebar entry: a key that stays down, with its LED lit, while its page is `selected`.
 pub fn nav<'a>(label: &'a str, selected: bool, on_press: Message) -> Button<'a, Message> {
-    button(text(label).size(15))
+    let mut content = row![text(label).size(15), space::horizontal()].align_y(Alignment::Center);
+    if selected {
+        content = content.push(led(|theme| theme.extended_palette().primary.base.color));
+    }
+    button(content)
         .width(Length::Fill)
-        .padding([9, 12])
+        .padding([10, 12])
         .on_press(on_press)
-        .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
-            let background = match (selected, status) {
-                (true, _) => Some(palette.primary.base.color),
-                (false, button::Status::Hovered | button::Status::Pressed) => {
-                    Some(palette.background.strong.color)
-                }
-                _ => None,
-            };
-            button::Style {
-                background: background.map(Background::Color),
-                text_color: if selected {
-                    palette.primary.base.text
-                } else {
-                    palette.background.base.text
-                },
-                border: Border {
-                    radius: 10.0.into(),
-                    ..Border::default()
-                },
-                ..button::Style::default()
-            }
-        })
+        .style(move |theme: &Theme, status| key_style(theme, status, Face::Plain, selected))
 }
 
-/// A tab in a row of tabs, highlighted when `selected`.
+/// A tab in a row of tabs: lit in the accent and held down when `selected`.
 pub fn tab<'a>(label: &'a str, selected: bool, on_press: Message) -> Button<'a, Message> {
+    let face = if selected { Face::Accent } else { Face::Plain };
     button(text(label).size(14))
         .padding([7, 14])
         .on_press(on_press)
-        .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
-            let background = match (selected, status) {
-                (true, _) => Some(palette.primary.base.color),
-                (false, button::Status::Hovered | button::Status::Pressed) => {
-                    Some(palette.background.strong.color)
-                }
-                _ => Some(palette.background.weak.color),
+        .style(move |theme: &Theme, status| key_style(theme, status, face, selected))
+}
+
+/// An ordinary key: lifts on hover, sinks when pressed.
+pub fn key(theme: &Theme, status: button::Status) -> button::Style {
+    key_style(theme, status, Face::Plain, false)
+}
+
+/// A key in the accent colour, for the main action on a page or card.
+pub fn key_accent(theme: &Theme, status: button::Status) -> button::Style {
+    key_style(theme, status, Face::Accent, false)
+}
+
+/// A red key, for actions that end, stop or delete something.
+pub fn key_danger(theme: &Theme, status: button::Status) -> button::Style {
+    key_style(theme, status, Face::Danger, false)
+}
+
+/// A key with no face, like a link: only its label shows until the pointer is over it.
+pub fn key_flat(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let background = match status {
+        button::Status::Hovered => Some(Background::Color(look(theme).hover.1)),
+        button::Status::Pressed => Some(Background::Color(look(theme).pressed)),
+        button::Status::Active | button::Status::Disabled => None,
+    };
+    button::Style {
+        background,
+        text_color: if status == button::Status::Disabled {
+            look(theme).disabled_text
+        } else {
+            palette.background.base.text
+        },
+        border: Border {
+            radius: 8.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// The colour of a key's face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Face {
+    Plain,
+    Accent,
+    Danger,
+}
+
+/// A key's look for `status`; `held` keys look pressed whatever the pointer does.
+fn key_style(theme: &Theme, status: button::Status, face: Face, held: bool) -> button::Style {
+    let look = look(theme);
+    let palette = theme.extended_palette();
+    let (rest, hover, edge, hover_edge, ledge, hover_ledge, pressed, label) = match face {
+        Face::Plain => (
+            look.key,
+            look.hover,
+            look.key_edge,
+            look.hover_edge,
+            look.ledge,
+            look.hover_ledge,
+            look.pressed,
+            palette.background.base.text,
+        ),
+        Face::Accent | Face::Danger => {
+            let pair = if face == Face::Accent {
+                palette.primary.base
+            } else {
+                palette.danger.base
             };
-            button::Style {
-                background: background.map(Background::Color),
-                text_color: if selected {
-                    palette.primary.base.text
-                } else {
-                    palette.background.base.text
-                },
-                border: Border {
-                    radius: 20.0.into(),
-                    ..Border::default()
-                },
-                ..button::Style::default()
-            }
-        })
+            let lit = blend(pair.color, Color::WHITE.scale_alpha(0.12));
+            let dark = darken(pair.color);
+            (
+                (pair.color, pair.color),
+                (lit, pair.color),
+                dark,
+                dark,
+                dark,
+                dark,
+                pair.color,
+                pair.text,
+            )
+        }
+    };
+    let status = if held && status != button::Status::Disabled {
+        button::Status::Pressed
+    } else {
+        status
+    };
+    let (background, border, ledge, height) = match status {
+        button::Status::Active => (vertical(rest.0, rest.1), edge, ledge, 3.0),
+        button::Status::Hovered => (vertical(hover.0, hover.1), hover_edge, hover_ledge, 4.0),
+        button::Status::Pressed => (sunk(pressed, look.shade), edge, Color::TRANSPARENT, 0.0),
+        button::Status::Disabled => (
+            Background::Color(look.disabled),
+            look.key_edge,
+            Color::TRANSPARENT,
+            0.0,
+        ),
+    };
+    button::Style {
+        background: Some(background),
+        text_color: if status == button::Status::Disabled {
+            look.disabled_text
+        } else {
+            label
+        },
+        border: Border {
+            radius: 8.0.into(),
+            width: 1.0,
+            color: border,
+        },
+        // The ledge: a hard shadow straight down, taller as the key lifts, gone once it's down.
+        shadow: Shadow {
+            color: ledge,
+            offset: Vector::new(0.0, height),
+            blur_radius: 0.0,
+        },
+        ..button::Style::default()
+    }
+}
+
+/// A square on/off switch: the knob slides right and lights in the accent when on.
+pub fn switch(theme: &Theme, status: toggler::Status) -> toggler::Style {
+    let look = look(theme);
+    let palette = theme.extended_palette();
+    let (on, hovered, disabled) = match status {
+        toggler::Status::Active { is_toggled } => (is_toggled, false, false),
+        toggler::Status::Hovered { is_toggled } => (is_toggled, true, false),
+        toggler::Status::Disabled { is_toggled } => (is_toggled, false, true),
+    };
+    let knob = if on {
+        palette.primary.base.color
+    } else {
+        look.key.0
+    };
+    let alpha = if disabled { 0.5 } else { 1.0 };
+    toggler::Style {
+        background: sunk(look.well, look.shade),
+        background_border_width: 1.0,
+        background_border_color: if hovered {
+            look.hover_edge
+        } else {
+            look.key_edge
+        },
+        foreground: Background::Color(knob.scale_alpha(alpha)),
+        foreground_border_width: if on { 0.0 } else { 1.0 },
+        foreground_border_color: look.key_edge,
+        text_color: None,
+        border_radius: Some(4.0.into()),
+        padding_ratio: 0.12,
+    }
+}
+
+/// A gradient from `top` to `bottom`.
+fn vertical(top: Color, bottom: Color) -> Background {
+    // In iced, an angle of π runs from the top edge down.
+    Background::Gradient(Gradient::Linear(
+        Linear::new(Radians(PI))
+            .add_stop(0.0, top)
+            .add_stop(1.0, bottom),
+    ))
+}
+
+/// `face` with `shade` along its top edge, so it looks sunk into the panel (iced has no inset
+/// shadows, so a short gradient stands in for one).
+fn sunk(face: Color, shade: Color) -> Background {
+    Background::Gradient(Gradient::Linear(
+        Linear::new(Radians(PI))
+            .add_stop(0.0, blend(face, shade))
+            .add_stop(0.3, face)
+            .add_stop(1.0, face),
+    ))
 }
 
 /// `tint` painted over `base` (which is opaque), as an opaque colour.
@@ -223,29 +472,33 @@ fn blend(base: Color, tint: Color) -> Color {
     )
 }
 
-/// The app's name in the sidebar, in the accent colour.
-pub fn brand<'a>() -> Text<'a> {
-    bold("Focus").size(26).style(text::primary)
+/// `color` at 60% brightness, for the ledge under a coloured key.
+fn darken(color: Color) -> Color {
+    Color::from_rgb(color.r * 0.6, color.g * 0.6, color.b * 0.6)
 }
 
-/// A small coloured label, e.g. "Synced" or "Offline".
+/// The app's name in the sidebar.
+pub fn brand<'a>() -> Text<'a> {
+    bold("Focus").size(22)
+}
+
+/// A small label outlined in its tone, e.g. "Synced" or "Offline".
 pub fn pill<'a>(label: impl text::IntoFragment<'a>, tone: Tone) -> Element<'a, Message> {
     container(text(label).size(12))
-        .padding([3, 10])
+        .padding([2, 8])
         .style(move |theme: &Theme| {
             let palette = theme.extended_palette();
-            let pair = match tone {
-                Tone::Good => palette.success.weak,
-                Tone::Warn => palette.warning.weak,
-                Tone::Bad => palette.danger.weak,
-                Tone::Quiet => palette.background.strong,
+            let color = match tone {
+                Tone::Quiet => palette.background.base.text.scale_alpha(0.7),
+                _ => tone_color(theme, tone),
             };
             container::Style {
-                background: Some(Background::Color(pair.color)),
-                text_color: Some(pair.text),
+                background: Some(Background::Color(color.scale_alpha(0.10))),
+                text_color: Some(color),
                 border: Border {
-                    radius: 10.0.into(),
-                    ..Border::default()
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color,
                 },
                 ..container::Style::default()
             }
@@ -253,19 +506,38 @@ pub fn pill<'a>(label: impl text::IntoFragment<'a>, tone: Tone) -> Element<'a, M
         .into()
 }
 
-/// A coloured dot for a status line.
-pub fn dot<'a>(tone: Tone) -> Text<'a> {
-    text("●").size(11).style(move |theme: &Theme| {
-        let palette = theme.extended_palette();
-        text::Style {
-            color: Some(match tone {
-                Tone::Good => palette.success.base.color,
-                Tone::Warn => palette.warning.base.color,
-                Tone::Bad => palette.danger.base.color,
-                Tone::Quiet => palette.background.strongest.color,
-            }),
-        }
+/// An LED for a status line, unlit for Quiet.
+pub fn dot<'a>(tone: Tone) -> Container<'a, Message> {
+    led(move |theme| match tone {
+        Tone::Quiet => look(theme).unlit,
+        _ => tone_color(theme, tone),
     })
+}
+
+/// A round LED in the colour `color` picks from the theme, glowing on a dark panel.
+fn led<'a>(color: impl Fn(&Theme) -> Color + 'a) -> Container<'a, Message> {
+    container(space::horizontal().width(Length::Fixed(8.0)))
+        .height(Length::Fixed(8.0))
+        .style(move |theme: &Theme| {
+            let lit = color(theme);
+            container::Style {
+                background: Some(Background::Color(lit)),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Border::default()
+                },
+                shadow: if look(theme).glow && lit != look(theme).unlit {
+                    Shadow {
+                        color: lit.scale_alpha(0.7),
+                        offset: Vector::ZERO,
+                        blur_radius: 6.0,
+                    }
+                } else {
+                    Shadow::default()
+                },
+                ..container::Style::default()
+            }
+        })
 }
 
 /// Text coloured by `tone` (Quiet is the normal colour).
@@ -310,18 +582,14 @@ pub fn entry<'a>(
         .height(height)
         .clip(true)
         .style(move |theme: &Theme| {
-            let palette = theme.extended_palette();
             let tint = Color {
                 a: if faded { 0.05 } else { 0.14 },
                 ..tone_color(theme, tone)
             };
             container::Style {
-                background: Some(Background::Color(blend(
-                    palette.background.base.color,
-                    tint,
-                ))),
+                background: Some(Background::Color(blend(look(theme).panel.1, tint))),
                 border: Border {
-                    radius: 8.0.into(),
+                    radius: 6.0.into(),
                     ..Border::default()
                 },
                 ..container::Style::default()

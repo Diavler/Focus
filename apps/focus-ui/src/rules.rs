@@ -159,7 +159,7 @@ pub fn view<'a>(drafts: &'a [Draft], configs: &'a [String]) -> Element<'a, Messa
         section = section.push(card(index, draft, configs));
     }
     let add = (!configs.is_empty()).then_some(Message::Rule(Edit::Add));
-    section = section.push(button("Add rule").on_press_maybe(add));
+    section = section.push(button("Add rule").style(style::key).on_press_maybe(add));
     if configs.is_empty() {
         section = section.push(caption(
             "Create a configuration first (Configurations tab).",
@@ -193,7 +193,7 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
         ),
         container(
             button("Remove")
-                .style(button::danger)
+                .style(style::key_danger)
                 .on_press(Message::Rule(Edit::Remove(index)))
         )
         .align_right(Length::Fill),
@@ -257,7 +257,7 @@ pub(crate) fn entries<'a>(
     for (at, entry) in entries.iter().enumerate() {
         chips = chips.push(tip(
             button(text(format!("{entry}  ×")).size(13))
-                .style(button::secondary)
+                .style(style::key)
                 .on_press(on_remove(at)),
             "Click to remove.",
         ));
@@ -270,7 +270,7 @@ pub(crate) fn entries<'a>(
             text_input(placeholder, typed)
                 .on_input(on_type)
                 .on_submit_maybe(add.clone()),
-            button("Add").on_press_maybe(add),
+            button("Add").style(style::key).on_press_maybe(add),
         ]
         .spacing(8),
     ]

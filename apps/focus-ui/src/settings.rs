@@ -11,7 +11,7 @@ use crate::configs::{self, Target};
 use crate::help::info;
 use crate::rules;
 use crate::sessions::{format_duration, login_line, pending_summary};
-use crate::style::{Tone, caption, card, dot, heading, tab, title, toned};
+use crate::style::{self, Tone, caption, card, dot, heading, tab, title, toned};
 use crate::{App, Message, Page};
 
 /// The tabs of the Settings page.
@@ -164,7 +164,7 @@ impl App {
     pub(crate) fn settings_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let header = row![
             button(text("← Sessions").size(14))
-                .style(button::text)
+                .style(style::key_flat)
                 .on_press(Message::Navigate(Page::Sessions)),
             title("Settings"),
             info(
@@ -238,7 +238,7 @@ impl App {
                 .size(14),
                 caption("Fix the file by hand (Stop Focus under General still works), then:"),
                 button("Try again")
-                    .style(button::secondary)
+                    .style(style::key)
                     .on_press(Message::Settings(Msg::Reload)),
             ]
             .spacing(10),
@@ -263,17 +263,17 @@ impl App {
         if draft.error.is_some() {
             bar = bar.push(
                 button("Reload from file")
-                    .style(button::secondary)
+                    .style(style::key)
                     .on_press(Message::Settings(Msg::Reload)),
             );
         }
         bar = bar
             .push(
                 button("Discard")
-                    .style(button::secondary)
+                    .style(style::key)
                     .on_press_maybe(dirty.then_some(Message::Settings(Msg::Discard))),
             )
-            .push(button("Save").style(button::success).on_press_maybe(save));
+            .push(button("Save").style(style::key_accent).on_press_maybe(save));
         let mut column = column![bar].spacing(8);
         if let Some(error) = &draft.error {
             column = column.push(toned(error.as_str(), Tone::Bad).size(14));
@@ -302,6 +302,8 @@ impl App {
                 .align_y(Alignment::Center),
                 toggler(draft.edited.start_at_login)
                     .label("Start Focus when I log in")
+                    .size(22)
+                    .style(style::switch)
                     .on_toggle(|on| Message::Settings(Msg::StartAtLogin(on))),
                 row![dot(login.tone), toned(login.text, login.tone).size(14)]
                     .spacing(8)
@@ -362,7 +364,7 @@ impl App {
                     "Ends any session and closes Focus until you open it again or log in again."
                 ),
                 button("Stop Focus…")
-                    .style(button::danger)
+                    .style(style::key_danger)
                     .on_press_maybe(self.idle_then(Message::RequestStop)),
             ]
             .spacing(10)
@@ -377,7 +379,7 @@ impl App {
                 )
                 .size(15),
                 button("Cancel")
-                    .style(button::secondary)
+                    .style(style::key)
                     .on_press_maybe(self.idle_then(Message::CancelStop)),
             ]
             .spacing(10)
@@ -416,10 +418,10 @@ impl App {
                     .push(
                         row![
                             button("Stop Focus now")
-                                .style(button::danger)
+                                .style(style::key_danger)
                                 .on_press_maybe(confirm),
                             button("Keep Focus running")
-                                .style(button::secondary)
+                                .style(style::key)
                                 .on_press_maybe(self.idle_then(Message::CancelStop)),
                         ]
                         .spacing(10),

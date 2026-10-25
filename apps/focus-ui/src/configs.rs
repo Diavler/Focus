@@ -12,7 +12,7 @@ use iced::{Alignment, Element, Length};
 
 use crate::help::info;
 use crate::rules::entries;
-use crate::style::{Tone, caption, card, heading, toned};
+use crate::style::{self, Tone, caption, card, heading, toned};
 use crate::{Message, settings};
 
 /// Which kind of thing an editor edits.
@@ -343,7 +343,9 @@ pub fn view<'a>(
             .on_input(move |name| wrap(Edit::NewName(name)))
             .on_submit_maybe(create.clone())
             .width(Length::Fixed(200.0)),
-        button("Create").on_press_maybe(create),
+        button("Create")
+            .style(style::key_accent)
+            .on_press_maybe(create),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -377,10 +379,10 @@ pub fn view<'a>(
         row![
             toned(format!("Delete \"{name}\"?"), Tone::Bad).size(14),
             button("Delete")
-                .style(button::danger)
+                .style(style::key_danger)
                 .on_press(wrap(Edit::ConfirmDelete(true))),
             button("Keep")
-                .style(button::secondary)
+                .style(style::key)
                 .on_press(wrap(Edit::ConfirmDelete(false))),
         ]
         .spacing(8)
@@ -388,7 +390,7 @@ pub fn view<'a>(
         .into()
     } else {
         button("Delete")
-            .style(button::danger)
+            .style(style::key_danger)
             .on_press(wrap(Edit::Delete))
             .into()
     };

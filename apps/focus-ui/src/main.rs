@@ -57,17 +57,21 @@ fn main() -> iced::Result {
     // Started by a dry-run daemon: restart it as a dry run too.
     let dry_run = args.iter().any(|arg| arg == "--dry-run");
     let _ = std::fs::remove_file(&paths.ui_show);
-    iced::application(
+    let mut app = iced::application(
         move || App::new(install.clone(), minimized, dry_run),
         App::update,
         App::view,
-    )
-    .title("Focus")
-    .subscription(App::subscription)
-    .theme(App::theme)
-    .window_size((1040.0, 760.0))
-    .centered()
-    .run()
+    );
+    for font in style::FONTS {
+        app = app.font(font);
+    }
+    app.default_font(style::SANS)
+        .title("Focus")
+        .subscription(App::subscription)
+        .theme(App::theme)
+        .window_size((1040.0, 760.0))
+        .centered()
+        .run()
 }
 
 /// How often (in polls, about seconds) a shortcut another app held is tried again.
@@ -763,17 +767,15 @@ impl App {
             .as_ref()
             .and_then(|status| Some((status, status.session.running()?)))
         {
-            Some((status, running)) => row![
-                dot(Tone::Good),
-                text(format!(
-                    "{} · {}",
-                    running.spec().config.name,
-                    sessions::format_duration(running.time_left(status.now))
-                ))
-                .size(13),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
+            Some((status, running)) => style::readout(
+                row![
+                    style::mono(running.spec().config.name.as_str()).size(13),
+                    space::horizontal(),
+                    style::mono(sessions::format_duration(running.time_left(status.now))).size(13),
+                ]
+                .spacing(6),
+            )
+            .width(Length::Fill)
             .into(),
             None => caption("Not in a session").into(),
         };
