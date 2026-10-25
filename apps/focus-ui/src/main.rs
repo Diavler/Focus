@@ -3,8 +3,8 @@
 
 //! Iced desktop UI. Talks only to `focus-daemon` over IPC, so closing the window never ends a session.
 //!
-//! The window has a sidebar with three pages (Sessions, Calendar, Todoist) and a Settings page
-//! opened from Sessions. Each page lives in its own module as an `impl App` block; this file holds
+//! The window has a sidebar with four pages (Overview, Sessions, Calendar, Todoist) and a
+//! Settings page opened from Sessions. Each page lives in its own module as an `impl App` block; this file holds
 //! the state, the messages and how they change the state.
 
 mod agenda;
@@ -12,12 +12,14 @@ mod configs;
 mod daemon;
 mod friction;
 mod help;
+mod overview;
 mod parking;
 mod plan_pages;
 mod rules;
 mod sessions;
 mod settings;
 mod style;
+mod timeline;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -89,6 +91,8 @@ const RESTART_DAEMON_AFTER: u32 = 3;
 /// The pages of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
+    /// Today's calendar and tasks; the window opens on it.
+    Overview,
     Sessions,
     Calendar,
     Todoist,
@@ -237,7 +241,7 @@ impl App {
             dry_run,
             status: None,
             unreachable: None,
-            page: Page::Sessions,
+            page: Page::Overview,
             configs: Vec::new(),
             config_names: Vec::new(),
             selected: None,
@@ -729,6 +733,7 @@ impl App {
             .into(),
             (None, None) => style::title("Connecting to Focus…").into(),
             (Some(status), None) => match self.page {
+                Page::Overview => self.overview_page(status),
                 Page::Sessions => self.sessions_page(status),
                 Page::Calendar => self.calendar_page(status),
                 Page::Todoist => self.todoist_page(status),
@@ -798,6 +803,11 @@ impl App {
                 style::brand(),
                 now_line,
                 space::vertical().height(Length::Fixed(12.0)),
+                nav(
+                    "Overview",
+                    self.page == Page::Overview,
+                    Message::Navigate(Page::Overview)
+                ),
                 nav("Sessions", on_sessions, Message::Navigate(Page::Sessions)),
                 nav(
                     "Calendar",

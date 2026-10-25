@@ -1,10 +1,11 @@
 //! The window's look: Focus's own colour palette (a "night" and a "day" version, following the
-//! system's light or dark mode), cards, the sidebar, headings and coloured status pills. Widgets
+//! system's light or dark mode), cards, the sidebar, headings, coloured status pills and the boxes
+//! events and tasks sit in. Widgets
 //! take their colours from the theme's palette, so both versions work everywhere.
 
 use iced::gradient::Linear;
 use iced::theme::{Mode, Palette};
-use iced::widget::{Button, Container, Text, button, container, text};
+use iced::widget::{Button, Container, Text, button, container, row, rule, space, text};
 use iced::{Background, Border, Color, Element, Font, Gradient, Length, Radians, Theme, font};
 
 /// Focus's dark palette: deep navy with a violet accent, mint, amber and rose.
@@ -273,5 +274,70 @@ pub fn toned<'a>(content: impl text::IntoFragment<'a>, tone: Tone) -> Text<'a> {
         Tone::Warn => label.style(text::warning),
         Tone::Bad => label.style(text::danger),
         Tone::Quiet => label,
+    }
+}
+
+/// One event or task in a box with a coloured bar down its left side (the accent for Quiet),
+/// faded once it's over.
+pub fn entry<'a>(
+    content: impl Into<Element<'a, Message>>,
+    tone: Tone,
+    faded: bool,
+) -> Container<'a, Message> {
+    let bar = container(space::horizontal().width(Length::Fixed(4.0)))
+        .height(Length::Fill)
+        .style(move |theme: &Theme| container::Style {
+            background: Some(Background::Color(fade(tone_color(theme, tone), faded, 0.4))),
+            ..container::Style::default()
+        });
+    let body = container(content).padding([7, 12]).width(Length::Fill);
+    container(row![bar, body])
+        .width(Length::Fill)
+        .clip(true)
+        .style(move |theme: &Theme| {
+            let palette = theme.extended_palette();
+            let tint = Color {
+                a: if faded { 0.05 } else { 0.14 },
+                ..tone_color(theme, tone)
+            };
+            container::Style {
+                background: Some(Background::Color(blend(
+                    palette.background.base.color,
+                    tint,
+                ))),
+                border: Border {
+                    radius: 8.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }
+        })
+}
+
+/// The line across the day's grid at the current time.
+pub fn now_rule(theme: &Theme) -> rule::Style {
+    rule::Style {
+        color: theme.extended_palette().danger.base.color,
+        ..rule::default(theme)
+    }
+}
+
+/// The strong colour of `tone`, with the accent standing in for Quiet.
+fn tone_color(theme: &Theme, tone: Tone) -> Color {
+    let palette = theme.extended_palette();
+    match tone {
+        Tone::Good => palette.success.base.color,
+        Tone::Warn => palette.warning.base.color,
+        Tone::Bad => palette.danger.base.color,
+        Tone::Quiet => palette.primary.base.color,
+    }
+}
+
+/// `color` at `alpha` if `faded`, else as it is.
+fn fade(color: Color, faded: bool, alpha: f32) -> Color {
+    if faded {
+        Color { a: alpha, ..color }
+    } else {
+        color
     }
 }

@@ -5,12 +5,12 @@ use std::fmt::Display;
 
 use chrono::{DateTime, Days, NaiveDate, NaiveTime, TimeZone};
 use focus_core::{CalendarEvent, PlanSource, PlannedStart, Task, Timestamp};
-use iced::widget::{Column, column, container, row, text};
+use iced::widget::{Column, Text, column, container, row, text};
 use iced::{Alignment, Length};
 use ipc_proto::PlanView;
 
 use crate::Message;
-use crate::style::{Tone, bold, caption, pill, toned};
+use crate::style::{Tone, bold, caption, entry, pill, toned};
 
 /// A titled group of rows: one day of events, or tasks due at a similar time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,21 @@ fn events_on<Z: TimeZone>(view: &PlanView, day: NaiveDate, zone: &Z) -> Vec<Row>
 where
     Z::Offset: Display,
 {
+    day_events(view, day, zone)
+        .into_iter()
+        .map(|(_, row)| row)
+        .collect()
+}
+
+/// The events on `day` in `zone`, all-day ones first, each with its row.
+pub fn day_events<'a, Z: TimeZone>(
+    view: &'a PlanView,
+    day: NaiveDate,
+    zone: &Z,
+) -> Vec<(&'a CalendarEvent, Row)>
+where
+    Z::Offset: Display,
+{
     let (from, to) = (midnight(day, zone), midnight(day + Days::new(1), zone));
     let mut events: Vec<&CalendarEvent> = view
         .events
@@ -88,14 +103,15 @@ where
                     && start.starts_at == event.start
                     && start.title == event.title
             });
-            Row {
+            let row = Row {
                 when,
                 title: event.title.clone(),
                 note: now.then(|| "On now".to_owned()),
                 starts: planned.map(starts),
                 past: event.end <= view.now,
                 warning: false,
-            }
+            };
+            (event, row)
         })
         .collect()
 }
@@ -188,7 +204,8 @@ fn starts(start: &PlannedStart) -> String {
     format!("Starts {} ({})", start.config, start.strictness)
 }
 
-fn local<Z: TimeZone>(at: Timestamp, zone: &Z) -> DateTime<Z> {
+/// `at` as a date and time in `zone`.
+pub fn local<Z: TimeZone>(at: Timestamp, zone: &Z) -> DateTime<Z> {
     let millis = i64::try_from(at.as_millis()).unwrap_or(i64::MAX);
     DateTime::from_timestamp_millis(millis)
         .unwrap_or_default()
@@ -212,19 +229,15 @@ fn midnight<Z: TimeZone>(day: NaiveDate, zone: &Z) -> Timestamp {
     Timestamp::from_millis(u64::try_from(start).unwrap_or(0))
 }
 
-/// The rows of a group, one line each: when, title (with labels underneath), and a pill for the
+/// The rows of a group, one box each: when, title (with labels underneath), and a pill for the
 /// session it starts.
 pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
-    let mut list = column![].spacing(10);
+    let mut list = column![].spacing(8);
     for item in rows {
-        let tone = if item.warning { Tone::Bad } else { Tone::Quiet };
-        let when = container(toned(item.when, tone).size(14)).width(Length::Fixed(120.0));
-        let title = if item.past {
-            text(item.title).size(15).style(text::secondary)
-        } else {
-            bold(item.title).size(15)
-        };
-        let mut detail = column![title].spacing(2);
+        let tone = item.tone();
+        let when_tone = if item.warning { Tone::Bad } else { Tone::Quiet };
+        let when = container(toned(item.when, when_tone).size(14)).width(Length::Fixed(110.0));
+        let mut detail = column![item_title(item.title, item.past)].spacing(2);
         if let Some(note) = item.note {
             detail = detail.push(caption(note));
         }
@@ -234,9 +247,51 @@ pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
         if let Some(starts) = item.starts {
             line = line.push(pill(starts, Tone::Good));
         }
-        list = list.push(line);
+        list = list.push(entry(line, tone, item.past));
     }
     list
+}
+
+/// The rows as narrow boxes, for a column beside something else: the title first, then when
+/// and the labels, then the session it starts.
+pub fn compact_rows_view(rows: Vec<Row>) -> Column<'static, Message> {
+    let mut list = column![].spacing(8);
+    for item in rows {
+        let tone = item.tone();
+        let when_tone = if item.warning { Tone::Bad } else { Tone::Quiet };
+        let mut details = row![toned(item.when, when_tone).size(13)].spacing(8);
+        if let Some(note) = item.note {
+            details = details.push(caption(note));
+        }
+        let mut body = column![item_title(item.title, item.past), details].spacing(4);
+        if let Some(starts) = item.starts {
+            body = body.push(pill(starts, Tone::Good));
+        }
+        list = list.push(entry(body, tone, item.past));
+    }
+    list
+}
+
+impl Row {
+    /// The colour of its box: red if it needs attention, green if it starts a session.
+    pub fn tone(&self) -> Tone {
+        if self.warning {
+            Tone::Bad
+        } else if self.starts.is_some() {
+            Tone::Good
+        } else {
+            Tone::Quiet
+        }
+    }
+}
+
+/// A row's title: bold, or grey once it's over.
+pub fn item_title(title: String, past: bool) -> Text<'static> {
+    if past {
+        text(title).size(15).style(text::secondary)
+    } else {
+        bold(title).size(15)
+    }
 }
 
 #[cfg(test)]
