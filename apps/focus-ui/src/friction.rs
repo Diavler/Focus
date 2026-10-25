@@ -57,7 +57,7 @@ pub fn view<'a>(
     let (minutes_low, minutes_high) = Friction::UNLOCK_MINUTES;
     let mut body: Column<'a, Message> = column![
         row![
-            heading("Friction"),
+            heading("Limits"),
             info(
                 "Limits that make escaping a session slow. Stricter applies now; looser waits 24 hours."
             ),

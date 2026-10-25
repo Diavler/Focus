@@ -949,14 +949,6 @@ fn darken(color: Color) -> Color {
     Color::from_rgb(color.r * 0.6, color.g * 0.6, color.b * 0.6)
 }
 
-/// The app's name in the sidebar, with a model number like a device's badge.
-pub fn brand<'a>() -> Element<'a, Message> {
-    row![bold("focus").size(18), mono("FX-1").size(11).style(muted),]
-        .spacing(6)
-        .align_y(Alignment::End)
-        .into()
-}
-
 /// A small label outlined in its tone, e.g. "Synced" or "Offline".
 pub fn pill<'a>(label: impl text::IntoFragment<'a>, tone: Tone) -> Element<'a, Message> {
     container(text(label).size(12))
