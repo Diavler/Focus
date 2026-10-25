@@ -294,7 +294,7 @@ impl App {
 }
 
 /// `14:00` today, or `Sun 25 · 14:00`; `Now` if it has started.
-fn when_label(at: Timestamp, now: Timestamp) -> String {
+pub(crate) fn when_label(at: Timestamp, now: Timestamp) -> String {
     if at <= now {
         return "Now".to_owned();
     }
