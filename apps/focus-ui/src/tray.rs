@@ -20,10 +20,6 @@ pub(crate) enum TrayAction {
 }
 
 /// The icon in the notification area; it goes away when this is dropped.
-#[cfg_attr(
-    not(windows),
-    expect(dead_code, reason = "no tray outside Windows until step 9")
-)]
 pub(crate) struct Tray {
     #[cfg(windows)]
     _icon: tray_icon::TrayIcon,

@@ -256,6 +256,10 @@ pub(crate) enum Message {
     EndFromCard,
     /// The window's close button was pressed.
     CloseRequested,
+    #[cfg_attr(
+        not(windows),
+        expect(dead_code, reason = "no tray outside Windows until step 9")
+    )]
     Tray(tray::TrayAction),
     OpenPanel(Panel),
     ClosePanel,
