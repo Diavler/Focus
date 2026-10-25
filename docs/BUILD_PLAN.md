@@ -94,9 +94,11 @@ Split in two PRs (decided 2026-10-24).
 ### P. Polish (before the first release)
 Making the window nicer to use, one sub-step per PR.
 
-**P1. Overview and event boxes:** an Overview page, first in the sidebar and the page the window opens on, with today's calendar as an hour grid (events as boxes placed by time, overlapping ones side by side, a line at now) beside overdue and today's tasks. Events and tasks on the Calendar and Todoist pages sit in boxes too.
+**P1. Overview and event boxes:** an Overview page, first in the sidebar and the page the window opens on, with today's calendar as an hour grid (events as boxes placed by time, overlapping ones side by side, a line at now with its time, hour labels centred on their lines) beside overdue and today's tasks. Events and tasks on the Calendar and Todoist pages sit in boxes too.
 
-**Done when:** layout logic has unit tests and the visual checks are listed in the PR.
+**P2. Tactile look (instrument panel):** make the window feel like a physical focus device instead of a generic web app (developer's direction, 2026-10-24): an instrument-panel feel in a warmer tone, with press and hover states on every control (keys lift on hover and sink when pressed; no motion or sound for now). One shared style pass across all pages: buttons as keys, cards as raised panels, inset readouts, segmented strictness control, toggle switches, LED status dots, a timer ring or dial for the running session, and a bundled font. The developer picks a direction from the HTML mock-ups first (bakelite, field recorder, night console); record the choice in an ADR. Keep it in `style.rs` and shared widgets so pages don't hard-code colours. If it grows past about 15 files, split into P2a (shared style and widgets) and P2b (page touches, timer dial).
+
+**Done when:** layout logic has unit tests and the visual checks are listed in the PR (with screenshots of the pages that need no clicks).
 
 ### 9. Linux (KDE Plasma) parity (after the first release)
 Bring KDE Plasma on Wayland up to the Windows feature set:
