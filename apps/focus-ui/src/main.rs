@@ -739,7 +739,8 @@ impl App {
                 if let Some(draft) = &mut self.settings {
                     draft.error = None;
                 }
-                if tab == settings::Tab::Configs {
+                // Both editors offer the apps that are open now.
+                if matches!(tab, settings::Tab::Configs | settings::Tab::Lists) {
                     return self.fetch_apps();
                 }
                 return Task::none();
@@ -797,7 +798,10 @@ impl App {
 
     fn open_settings(&mut self) -> Task<Message> {
         let mut tasks = vec![self.fetch_settings()];
-        if self.settings_tab == settings::Tab::Configs {
+        if matches!(
+            self.settings_tab,
+            settings::Tab::Configs | settings::Tab::Lists
+        ) {
             tasks.push(self.fetch_apps());
         }
         Task::batch(tasks)

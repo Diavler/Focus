@@ -559,6 +559,7 @@ mod tests {
         draft.edited.start_at_login = false;
         let mut elsewhere = settings("2");
         elsewhere.lists.push(focus_core::ListEntry {
+            apps: Vec::new(),
             name: "social".into(),
             patterns: focus_core::RulePatterns::default(),
         });

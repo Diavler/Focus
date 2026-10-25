@@ -358,6 +358,7 @@ pub fn settings_editor_contract(editor: &dyn SettingsEditor, source: &dyn Config
 
     let mut edited = original.clone();
     edited.lists.push(ListEntry {
+        apps: Vec::new(),
         name: "focus-contract-list".into(),
         patterns: RulePatterns {
             block: vec!["contract-list.example".into()],
