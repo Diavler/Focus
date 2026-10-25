@@ -327,6 +327,26 @@ pub fn readout<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Me
     })
 }
 
+/// The native title bar's colours, picked to sit with the sidebar.
+pub struct FrameColours {
+    /// The title bar's background.
+    pub caption: Color,
+    /// The window title.
+    pub text: Color,
+    /// The thin border round the window.
+    pub border: Color,
+}
+
+/// The title bar and border colours for `theme`.
+pub fn frame_colours(theme: &Theme) -> FrameColours {
+    let look = look(theme);
+    FrameColours {
+        caption: look.sidebar,
+        text: look.muted,
+        border: look.panel_edge,
+    }
+}
+
 /// The sidebar's background.
 pub fn sidebar<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
     container(content)

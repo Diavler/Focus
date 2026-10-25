@@ -20,3 +20,11 @@ ipc-transport.workspace = true
 chrono.workspace = true
 # `tokio` runs the async IPC calls and provides `iced::time::every` for polling.
 iced = { workspace = true, features = ["tokio"] }
+
+# Colours the native title bar and border to match the theme (DWM).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+
+[build-dependencies]
+# Embeds the app icon in the Windows exe (runs the Windows SDK's resource compiler).
+winresource = { version = "0.1.34", default-features = false }

@@ -11,8 +11,10 @@
 mod agenda;
 mod configs;
 mod daemon;
+mod frame;
 mod friction;
 mod help;
+mod icon;
 mod overview;
 mod parking;
 mod plan_pages;
@@ -77,6 +79,7 @@ fn main() -> iced::Result {
             size: iced::Size::new(1120.0, 780.0),
             min_size: Some(MIN_WINDOW),
             position: iced::window::Position::Centered,
+            icon: iced::window::icon::from_rgba(icon::rgba(64), 64, 64).ok(),
             ..iced::window::Settings::default()
         })
         .run()
@@ -140,6 +143,8 @@ pub(crate) struct App {
     /// Why the daemon can't be reached, if it can't.
     unreachable: Option<String>,
     page: Page,
+    /// The window's native handle, for colouring its frame; `None` until iced reports it.
+    native_window: Option<u64>,
     /// The overlay open on top of the page, if any.
     panel: Option<Panel>,
     configs: Vec<BlockConfig>,
@@ -226,6 +231,8 @@ pub(crate) enum Message {
     /// Boxed: the plan is much larger than the other messages.
     PlanLoaded(Box<Result<PlanView, String>>),
     Navigate(Page),
+    /// The window's native handle (an HWND on Windows).
+    NativeWindow(u64),
     OpenPanel(Panel),
     ClosePanel,
     ConfigPicked(String),
@@ -285,6 +292,7 @@ impl App {
             status: None,
             unreachable: None,
             page: Page::Overview,
+            native_window: None,
             panel: None,
             configs: Vec::new(),
             config_names: Vec::new(),
@@ -328,6 +336,9 @@ impl App {
             app.fetch_configs(),
             app.fetch_plan(),
             iced::system::theme().map(Message::ThemeMode),
+            iced::window::oldest()
+                .and_then(iced::window::raw_id::<Message>)
+                .map(Message::NativeWindow),
         ];
         if minimized {
             boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
@@ -378,6 +389,10 @@ impl App {
             Message::Navigate(page) => {
                 self.page = page;
                 self.panel = None;
+            }
+            Message::NativeWindow(handle) => {
+                self.native_window = Some(handle);
+                frame::paint(handle, &self.theme);
             }
             Message::OpenPanel(panel) => {
                 self.panel = Some(panel);
@@ -827,6 +842,9 @@ impl App {
         if mode != self.theme_mode {
             self.theme_mode = mode;
             self.theme = style::theme(mode);
+            if let Some(handle) = self.native_window {
+                frame::paint(handle, &self.theme);
+            }
         }
     }
 
