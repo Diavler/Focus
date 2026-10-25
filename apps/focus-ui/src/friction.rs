@@ -116,7 +116,7 @@ pub fn view<'a>(
         limit(
             "Drift prompt",
             "When a tab hops this many times away from the sites you started on (those of a \
-             session's first 5 minutes, plus allowed sites), Focus shows the trail and offers a \
+             session's first 5 min, plus allowed sites), Focus shows the trail and offers a \
              way back.",
             Some(switch(friction.drift_hops > 0, move |on| {
                 wrap(Edit::DriftHopsOn(on))

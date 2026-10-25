@@ -20,7 +20,7 @@ impl App {
         let mut header = row![
             title("Rules"),
             info(
-                "What sessions restrict and what starts them. Edits to configurations in use \
+                "What sessions block and what starts them. Edits to profiles in use \
                  wait 24 hours (cooling off)."
             ),
             space::horizontal(),
@@ -36,9 +36,9 @@ impl App {
             self.settings_tab,
             |tab| {
                 match tab {
-                    Tab::Configs => "Configurations",
+                    Tab::Configs => "Profiles",
                     Tab::Lists => "Lists",
-                    Tab::AutoStarts => "Automatic starts",
+                    Tab::AutoStarts => "Schedule",
                     Tab::Limits => "Limits",
                 }
                 .to_string()

@@ -275,9 +275,16 @@ impl App {
                             .style(style::switch)
                             .on_toggle(|on| Message::Settings(Msg::StartAtLogin(on))),
                     ),
-                    row![dot(login.tone), toned(login.text, login.tone).size(13)]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
+                    // "Starts at login" says nothing the switch doesn't; only warnings show.
+                    if login.tone == Tone::Good {
+                        column![]
+                    } else {
+                        column![
+                            row![dot(login.tone), toned(login.text, login.tone).size(13)]
+                                .spacing(8)
+                                .align_y(Alignment::Center)
+                        ]
+                    },
                 ]
                 .spacing(6),
                 setting_row(
@@ -324,7 +331,7 @@ impl App {
             heading("Stop Focus"),
             info(
                 "Ends any session, lifts blocking and closes Focus. With no session it closes at \
-                 once; during one it waits 1 minute first (5 and a reason when Locked). Focus \
+                 once; during one it waits 1 min first (5 and a reason when Locked). Focus \
                  starts again at login or when opened."
             ),
         ]

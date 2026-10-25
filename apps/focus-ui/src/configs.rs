@@ -84,7 +84,7 @@ pub struct Editor {
 enum Choice {
     /// One that exists, by name.
     Existing(String),
-    /// Make a new one; holds the noun ("configuration" or "list").
+    /// Make a new one; holds the noun ("profile" or "list").
     New(&'static str),
 }
 
@@ -375,13 +375,13 @@ pub fn view<'a>(
     let current = selected(settings, editor, target);
     let (noun, explanation) = match target {
         Target::Configs => (
-            "configuration",
-            "What a session runs: which sites are restricted and which apps are closed. To \
+            "profile",
+            "What a session runs: which sites are blocked and which apps are closed. To \
              rename one, create a new one and delete the old.",
         ),
         Target::Lists => (
             "list",
-            "A group of sites (say, social media) that several configurations can include.",
+            "A group of sites (say, social media) that several profiles can include.",
         ),
     };
     // The dropdown lists the existing ones, then a way to make another.
@@ -536,7 +536,7 @@ fn mode_and_includes<'a>(
             move |mode| wrap(Edit::Mode(mode)),
         ),
         info(
-            "Blocklist: everything opens except what's restricted below. Allowlist: only the \
+            "Blocklist: everything opens except what's blocked below. Allowlist: only the \
              Allow sites open."
         ),
         space::horizontal().width(Length::Fixed(16.0)),
@@ -556,11 +556,9 @@ fn mode_and_includes<'a>(
                 .on_toggle(move |on| wrap(Edit::Include(name.clone(), on))),
         );
     }
-    line.push(info(
-        "Shared lists whose sites this configuration uses too.",
-    ))
-    .wrap()
-    .into()
+    line.push(info("Shared lists whose sites this profile uses too."))
+        .wrap()
+        .into()
 }
 
 /// One box for a site, what it does, and Add.
@@ -687,7 +685,7 @@ fn try_url<'a>(
             text_input("reddit.com/r/rust/comments/abc", &editor.try_url)
                 .style(style::field)
                 .on_input(move |url| wrap(Edit::TryUrl(url))),
-            info("What this configuration does with the address, unsaved edits included."),
+            info("What this profile does with the address, unsaved edits included."),
         ]
         .spacing(10)
         .align_y(Alignment::Center),

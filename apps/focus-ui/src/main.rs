@@ -1121,6 +1121,10 @@ impl App {
                     SourceState::NotConfigured => ("not connected", Tone::Quiet),
                     SourceState::Unknown => ("checking", Tone::Quiet),
                 };
+                // Synced (and still checking) needs no line; only problems show.
+                if matches!(source.state, SourceState::Ok | SourceState::Unknown) {
+                    continue;
+                }
                 sources = sources.push(
                     row![dot(tone), caption(format!("{name} {label}")).size(13)]
                         .spacing(6)
@@ -1129,6 +1133,9 @@ impl App {
             }
             // Which browsers the extension protects (a browser without it is closed in sessions).
             for line in sessions::browser_lines(status) {
+                if line.tone == Tone::Good {
+                    continue;
+                }
                 sources = sources.push(
                     row![dot(line.tone), caption(line.text).size(13)]
                         .spacing(6)
@@ -1164,12 +1171,12 @@ impl App {
                 readouts,
                 space::vertical().height(Length::Fixed(12.0)),
                 nav(
-                    "Overview",
+                    "Today",
                     self.page == Page::Overview,
                     Message::Navigate(Page::Overview)
                 ),
                 nav(
-                    "Sessions",
+                    "Session",
                     self.page == Page::Sessions,
                     Message::Navigate(Page::Sessions)
                 ),

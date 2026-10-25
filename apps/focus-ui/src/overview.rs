@@ -18,7 +18,7 @@ impl App {
             .format("%A %-d %B")
             .to_string();
         let header = row![
-            title("Overview"),
+            title("Today"),
             info("Today at a glance. Green events start sessions; the red line is now."),
             space::horizontal(),
             caption(date),

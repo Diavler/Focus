@@ -141,6 +141,6 @@ fn stop_label(running: bool) -> &'static str {
     if running {
         "Stop Focus…"
     } else {
-        "Close Focus"
+        "Close Focus…"
     }
 }

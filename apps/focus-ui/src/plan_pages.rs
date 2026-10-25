@@ -24,11 +24,17 @@ impl App {
             SecretKey::CalendarUrl,
             source,
             source_line("Calendar", "events", source, status.now),
-            "Paste your calendar's secret iCal address",
-            "In Google Calendar on the web: Settings → click your calendar under \"Settings for \
-             my calendars\" → Integrate calendar → \"Secret address in iCal format\" → copy. \
-             Anyone with this address can read your calendar, so Focus keeps it in Windows \
-             Credential Manager, not in settings.toml.",
+            Paste {
+                placeholder: "Paste your calendar's secret iCal address",
+                steps: &[
+                    "Open Google Calendar on the web and go to Settings.",
+                    "Under \"Settings for my calendars\", click your calendar.",
+                    "In Integrate calendar, copy \"Secret address in iCal format\".",
+                    "Paste it above and press Save.",
+                ],
+                note: "Anyone with this address can read your calendar, so Focus keeps it in \
+                       Windows Credential Manager.",
+            },
             &self.calendar_input,
         );
         let groups = self
@@ -47,7 +53,7 @@ impl App {
             "Calendar",
             source,
             "Your calendar for the coming week. Events marked \"Starts ...\" begin a session by \
-             themselves; set that up in Rules → Automatic starts.",
+             themselves; set that up in Rules → Schedule.",
             groups,
             "Nothing on the calendar.",
             connection,
@@ -61,9 +67,16 @@ impl App {
             SecretKey::TodoistToken,
             source,
             source_line("Todoist", "tasks", source, status.now),
-            "Paste your Todoist API token",
-            "In Todoist: Settings → Integrations → Developer → copy the API token. It lets Focus \
-             read your tasks (never change them). It's kept in Windows Credential Manager.",
+            Paste {
+                placeholder: "Paste your Todoist API token",
+                steps: &[
+                    "In Todoist, open Settings → Integrations → Developer.",
+                    "Copy the API token.",
+                    "Paste it above and press Save.",
+                ],
+                note: "Focus only reads your tasks, never changes them. The token is kept in \
+                       Windows Credential Manager.",
+            },
             &self.token_input,
         );
         let groups: Vec<Group> = self
@@ -92,8 +105,7 @@ impl App {
         key: SecretKey,
         source: &SourceStatus,
         line: Line,
-        placeholder: &'a str,
-        how_to: &'a str,
+        paste: Paste<'a>,
         value: &'a str,
     ) -> Element<'a, Message> {
         let connected = !matches!(source.state, SourceState::NotConfigured);
@@ -138,7 +150,7 @@ impl App {
             .then_some(Message::SaveSecret(key))
             .and_then(|message| self.idle_then(message));
         let mut form = row![
-            text_input(placeholder, value)
+            text_input(paste.placeholder, value)
                 .secure(true)
                 .style(style::field)
                 .on_input(move |value| Message::SecretInput(key, value))
@@ -156,23 +168,38 @@ impl App {
         }
         card(
             column![
-                row![
-                    heading(if connected {
-                        "Change connection"
-                    } else {
-                        "Connect"
-                    }),
-                    info(how_to)
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+                heading(if connected {
+                    "Change connection"
+                } else {
+                    "Connect"
+                }),
                 status,
                 form,
+                how_to(paste),
             ]
             .spacing(12),
         )
         .into()
     }
+}
+
+/// What to paste to connect a source, and how to find it.
+struct Paste<'a> {
+    /// The text box's placeholder.
+    placeholder: &'a str,
+    /// Where to find the address or token, step by step.
+    steps: &'a [&'a str],
+    /// How it's kept.
+    note: &'a str,
+}
+
+/// Numbered steps for finding the address or token, then a note on how it's kept.
+fn how_to(paste: Paste<'_>) -> Element<'_, Message> {
+    let mut list = column![].spacing(4);
+    for (number, step) in paste.steps.iter().enumerate() {
+        list = list.push(caption(format!("{}. {step}", number + 1)));
+    }
+    column![list, caption(paste.note)].spacing(8).into()
 }
 
 /// A plan page: title and status, the groups as cards, and the connection card (first if the

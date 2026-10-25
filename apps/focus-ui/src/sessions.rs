@@ -22,7 +22,7 @@ impl App {
     /// The Sessions page.
     pub(crate) fn sessions_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let header = row![
-            title("Sessions"),
+            title("Session"),
             info("Sessions run in the background; closing this window doesn't end them."),
         ]
         .spacing(12)
@@ -186,7 +186,7 @@ impl App {
                 )
                 .style(style::picker)
                 .menu_style(style::menu),
-                info("Which sites and apps are restricted. Edit in Rules → Configurations."),
+                info("Which sites and apps are blocked. Edit in Rules → Profiles."),
             ]
         }
         .spacing(10)
@@ -361,7 +361,7 @@ fn browser_name(heartbeat: &str) -> String {
 /// Says there's no configuration to start a session with, with a key to make one.
 pub(crate) fn no_configurations<'a>() -> Element<'a, Message> {
     row![
-        caption("No configurations yet: they say what a session blocks."),
+        caption("No profiles yet: they say what a session blocks."),
         button(text("Create one").size(14))
             .style(style::key_accent)
             .on_press(Message::CreateConfig),
