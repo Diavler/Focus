@@ -4,7 +4,7 @@ One step per Claude Code session. Each step ends with green CI and a short summa
 
 **Windows first.** Steps 5–8 build and manually test the Windows side only. Linux keeps building and passing every automated test in CI (`ubuntu-latest`) throughout, but the KDE Plasma adapters and all manual Linux testing come together in step 9, once Windows is fully working.
 
-**Order from 2026-10-24:** after step 8 comes polish (P), then the release (step 10, Windows only), then Linux parity (step 9) after the first release. Step numbers stay as they are because code and ADRs refer to them. Keep Linux in mind meanwhile: platform code stays behind the ports, and Linux keeps building and passing CI.
+**Order from 2026-10-24 (ADR 0014):** after step 8 comes polish (P), then the release (step 10, Windows only), then Linux parity (step 9) after the first release. Step numbers stay as they are because code and ADRs refer to them. Keep Linux in mind meanwhile: platform code stays behind the ports, and Linux keeps building and passing CI.
 
 ## Prototype
 

@@ -36,7 +36,7 @@ impl App {
         let tasks: Element<'a, Message> = match (&status.plan.tasks.state, &self.plan) {
             (SourceState::NotConfigured, _) => not_connected("Todoist", Page::Todoist),
             (_, None) => caption("Loading…").into(),
-            (_, Some(plan)) => due_today(agenda::task_groups(plan, zone)),
+            (_, Some(plan)) => due_today(agenda::overdue_and_today(plan, zone)),
         };
         column![
             header,
@@ -53,20 +53,19 @@ impl App {
 }
 
 /// Overdue tasks (if any), then today's.
-fn due_today(groups: Vec<Group>) -> Element<'static, Message> {
+fn due_today((overdue, today): (Group, Group)) -> Element<'static, Message> {
     let mut list: Column<'static, Message> = column![].spacing(14);
-    for group in groups {
-        match group.title.as_str() {
-            "Overdue" if !group.rows.is_empty() => {}
-            "Today" if group.rows.is_empty() => {
-                list = list.push(caption("Nothing due today."));
-                continue;
-            }
-            "Today" => {}
-            _ => continue,
+    for group in [overdue, today] {
+        let empty = group.rows.is_empty();
+        if empty && group.title == "Overdue" {
+            continue;
         }
-        list = list
-            .push(column![caption(group.title), agenda::compact_rows_view(group.rows)].spacing(6));
+        let body: Element<'static, Message> = if empty {
+            caption("Nothing due today.").into()
+        } else {
+            agenda::compact_rows_view(group.rows).into()
+        };
+        list = list.push(column![caption(group.title), body].spacing(6));
     }
     list.into()
 }

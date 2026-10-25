@@ -5,8 +5,10 @@
 
 use iced::gradient::Linear;
 use iced::theme::{Mode, Palette};
-use iced::widget::{Button, Container, Text, button, container, row, rule, space, text};
-use iced::{Background, Border, Color, Element, Font, Gradient, Length, Radians, Theme, font};
+use iced::widget::{Button, Container, Text, button, container, rule, space, stack, text};
+use iced::{
+    Background, Border, Color, Element, Font, Gradient, Length, Padding, Radians, Theme, font,
+};
 
 /// Focus's dark palette: deep navy with a violet accent, mint, amber and rose.
 const NIGHT: Palette = Palette {
@@ -277,12 +279,13 @@ pub fn toned<'a>(content: impl text::IntoFragment<'a>, tone: Tone) -> Text<'a> {
     }
 }
 
-/// One event or task in a box with a coloured bar down its left side (the accent for Quiet),
-/// faded once it's over.
+/// One event or task in a box `height` tall (`Shrink` to fit its content) with a coloured bar
+/// down its left side (the accent for Quiet), faded once it's over.
 pub fn entry<'a>(
     content: impl Into<Element<'a, Message>>,
     tone: Tone,
     faded: bool,
+    height: Length,
 ) -> Container<'a, Message> {
     let bar = container(space::horizontal().width(Length::Fixed(4.0)))
         .height(Length::Fill)
@@ -290,9 +293,21 @@ pub fn entry<'a>(
             background: Some(Background::Color(fade(tone_color(theme, tone), faded, 0.4))),
             ..container::Style::default()
         });
-    let body = container(content).padding([7, 12]).width(Length::Fill);
-    container(row![bar, body])
+    let body = container(content)
+        .padding(Padding {
+            top: 7.0,
+            right: 12.0,
+            bottom: 7.0,
+            left: 16.0,
+        })
         .width(Length::Fill)
+        .height(height);
+    // A stack takes its size from its first layer, so the box fits (or fills) as the content
+    // does and the Fill-height bar laid over it is exactly as tall. In a row, the bar would make
+    // the box Fill-height, or get no height at all.
+    container(stack![body, bar])
+        .width(Length::Fill)
+        .height(height)
         .clip(true)
         .style(move |theme: &Theme| {
             let palette = theme.extended_palette();

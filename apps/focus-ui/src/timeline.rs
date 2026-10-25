@@ -1,45 +1,55 @@
 //! Today's events on an hour grid: which hours to show, where each event's box goes, and lanes
 //! side by side for events that overlap. Pure layout first (tested), then how the grid looks.
+//!
+//! Positions are real minutes since midnight, not clock readings, so a day when the clocks change
+//! has 23 or 25 hours and its hour labels say what the clock shows.
 
 use std::cmp::Reverse;
 use std::fmt::Display;
-use std::ops::Range;
+use std::time::Duration;
 
-use chrono::{NaiveDate, TimeZone, Timelike};
+use chrono::{Days, TimeZone};
 use focus_core::Timestamp;
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, column, container, row, rule, space, stack};
-use iced::{Element, Length};
+use iced::{Alignment, Element, Length, Padding};
 use ipc_proto::PlanView;
 
 use crate::Message;
 use crate::agenda::{self, Row};
-use crate::style::{bold, caption, entry, now_rule, pill};
+use crate::style::{Tone, bold, caption, entry, now_rule, pill, toned};
 
-/// Minutes in a day.
-const DAY: u32 = 24 * 60;
 /// The hours always shown, even on an empty day: 08:00 to 18:00.
 const WORKDAY: (u32, u32) = (8, 18);
-/// No box is drawn shorter than this many minutes, so its title fits.
+/// No box is drawn shorter than this many minutes, so its title fits (except at the very end of
+/// the day).
 const MIN_MINUTES: u32 = 25;
 /// Height of one hour on the grid, in pixels.
 const HOUR_HEIGHT: f32 = 52.0;
 /// Width of the hour labels down the left.
 const LABEL_WIDTH: f32 = 46.0;
+/// Height of an hour label; labels are centred on their line, so the grid starts half of it down.
+const LABEL_HEIGHT: f32 = 16.0;
+/// An hour label this close to now (in minutes) is hidden, so the now line's time shows instead.
+const LABEL_CLEARANCE: u32 = 12;
 
 /// One day as an hour grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timeline {
-    /// The first hour shown.
+    /// The first line, in hours since midnight.
     pub from_hour: u32,
-    /// The hour the grid ends at (not shown itself; at most 24).
+    /// The last line, in hours since midnight (24 on most days).
     pub to_hour: u32,
+    /// What the clock shows at each line, `from_hour` to `to_hour` inclusive.
+    pub labels: Vec<String>,
     /// All-day events, shown above the grid.
     pub all_day: Vec<Row>,
     /// The timed events, in groups that overlap each other, in time order.
     pub clusters: Vec<Cluster>,
     /// Now, in minutes since midnight.
     pub now: u32,
+    /// Now on the clock, e.g. `14:05`.
+    pub now_label: String,
 }
 
 /// Events that overlap, directly or through each other, in lanes drawn side by side.
@@ -64,47 +74,60 @@ pub struct Block {
     pub row: Row,
 }
 
-/// The events of the day `now` falls on in `zone`, from `view`.
+/// The events of the day `now` falls on in `zone`, from `view`, marked on now or over as of `now`.
 pub fn today<Z: TimeZone>(view: &PlanView, now: Timestamp, zone: &Z) -> Timeline
 where
     Z::Offset: Display,
 {
     let day = agenda::local(now, zone).date_naive();
-    let (all_day, timed): (Vec<_>, Vec<_>) = agenda::day_events(view, day, zone)
+    let midnight = agenda::midnight(day, zone);
+    let day_length = minutes_between(midnight, agenda::midnight(day + Days::new(1), zone));
+    let minute = |at: Timestamp| minutes_between(midnight, at).min(day_length);
+
+    let (all_day, timed): (Vec<_>, Vec<_>) = agenda::day_events(view, now, day, zone)
         .into_iter()
         .partition(|(event, _)| event.all_day);
     let blocks: Vec<Block> = timed
         .into_iter()
         .map(|(event, row)| {
-            let start = minute_of_day(event.start, day, zone).min(DAY - MIN_MINUTES);
-            let end = minute_of_day(event.end, day, zone).clamp(start + MIN_MINUTES, DAY);
+            let start = minute(event.start);
+            let end = minute(event.end).max(start + MIN_MINUTES).min(day_length);
             Block { start, end, row }
         })
         .collect();
-    let now = minute_of_day(now, day, zone);
+
+    let now_minute = minute(now);
     let earliest = blocks.iter().map(|block| block.start / 60).min();
     let latest = blocks.iter().map(|block| block.end.div_ceil(60)).max();
+    let from_hour = earliest
+        .unwrap_or(WORKDAY.0)
+        .min(WORKDAY.0)
+        .min(now_minute / 60);
+    let to_hour = latest
+        .unwrap_or(WORKDAY.1)
+        .max(WORKDAY.1)
+        .max(now_minute / 60 + 1)
+        .min(day_length.div_ceil(60));
+    let labels = (from_hour..=to_hour)
+        .map(|hour| {
+            let at = midnight.saturating_add(Duration::from_secs(u64::from(hour) * 3600));
+            agenda::clock(at, zone)
+        })
+        .collect();
     Timeline {
-        from_hour: earliest.unwrap_or(WORKDAY.0).min(WORKDAY.0).min(now / 60),
-        to_hour: latest
-            .unwrap_or(WORKDAY.1)
-            .max(WORKDAY.1)
-            .max(now / 60 + 1)
-            .min(24),
+        from_hour,
+        to_hour,
+        labels,
         all_day: all_day.into_iter().map(|(_, row)| row).collect(),
         clusters: clusters(blocks),
-        now,
+        now: now_minute,
+        now_label: agenda::clock(now, zone),
     }
 }
 
-/// Minutes since the start of `day` on the wall clock in `zone`, clamped to the day.
-fn minute_of_day<Z: TimeZone>(at: Timestamp, day: NaiveDate, zone: &Z) -> u32 {
-    let local = agenda::local(at, zone);
-    match local.date_naive().cmp(&day) {
-        std::cmp::Ordering::Less => 0,
-        std::cmp::Ordering::Greater => DAY,
-        std::cmp::Ordering::Equal => local.hour() * 60 + local.minute(),
-    }
+/// Whole minutes from `from` to `to` (0 if `to` is earlier).
+fn minutes_between(from: Timestamp, to: Timestamp) -> u32 {
+    u32::try_from(to.saturating_duration_since(from).as_secs() / 60).unwrap_or(u32::MAX)
 }
 
 /// Groups overlapping blocks, putting each in the first lane that's free by its start.
@@ -141,81 +164,112 @@ impl Cluster {
 
 /// The day: all-day events in a strip, then the hour grid with a line at now.
 pub fn view(timeline: Timeline) -> Column<'static, Message> {
-    let Timeline {
-        from_hour,
-        to_hour,
-        all_day,
-        clusters,
-        now,
-    } = timeline;
     let mut page = column![].spacing(12);
-    if !all_day.is_empty() {
+    if !timeline.all_day.is_empty() {
         let mut strip = column![caption("All day")].spacing(6);
-        for item in all_day {
-            let tone = item.tone();
-            strip = strip.push(entry(bold(item.title).size(13), tone, item.past));
+        for item in &timeline.all_day {
+            let title = bold(item.title.clone()).size(13);
+            strip = strip.push(entry(title, item.tone(), item.past, Length::Shrink));
         }
         page = page.push(strip);
     }
-    page.push(grid(from_hour..to_hour, now, clusters))
+    page.push(grid(timeline))
 }
 
-/// Hour lines underneath, the events' lanes over them, and the now line on top.
-fn grid(hours: Range<u32>, now: u32, clusters: Vec<Cluster>) -> Element<'static, Message> {
-    let origin = hours.start * 60;
-    let end = hours.end * 60;
-    let mut lines = column![];
-    for hour in hours {
-        lines = lines.push(
-            row![
-                container(caption(format!("{hour:02}:00"))).width(Length::Fixed(LABEL_WIDTH)),
-                column![rule::horizontal(1)].width(Length::Fill),
-            ]
-            .height(Length::Fixed(HOUR_HEIGHT)),
+/// Hour lines and labels underneath, the events' lanes over them, and the now line on top.
+fn grid(timeline: Timeline) -> Element<'static, Message> {
+    let Timeline {
+        from_hour,
+        to_hour,
+        labels,
+        clusters,
+        now,
+        now_label,
+        ..
+    } = timeline;
+    let origin = from_hour * 60;
+    let top = LABEL_HEIGHT / 2.0;
+    let now_shown = (origin..=to_hour * 60).contains(&now);
+
+    let mut lines = column![gap(top)];
+    for _ in from_hour..to_hour {
+        lines = lines.push(line_row().height(Length::Fixed(HOUR_HEIGHT)));
+    }
+    lines = lines.push(line_row());
+    let height = 2.0 * top + pixels(origin, to_hour * 60);
+
+    let mut hour_labels = column![];
+    for (hour, label) in (from_hour..).zip(labels) {
+        let near_now = now_shown && (hour * 60).abs_diff(now) < LABEL_CLEARANCE;
+        let label = if near_now { String::new() } else { label };
+        hour_labels = hour_labels.push(
+            container(caption(label))
+                .height(Length::Fixed(LABEL_HEIGHT))
+                .align_y(Alignment::Center),
         );
+        hour_labels = hour_labels.push(gap(HOUR_HEIGHT - LABEL_HEIGHT));
     }
 
     let mut events = column![];
     let mut at = origin;
     for cluster in clusters {
-        events = events.push(gap(cluster.start.saturating_sub(at)));
+        events = events.push(gap(pixels(at, cluster.start)));
         let mut lanes = row![].spacing(4);
         for lane in cluster.lanes {
             let mut boxes = column![];
             let mut lane_at = cluster.start;
             for block in lane {
-                boxes = boxes.push(gap(block.start.saturating_sub(lane_at)));
+                boxes = boxes.push(gap(pixels(lane_at, block.start)));
                 lane_at = block.end;
                 boxes = boxes.push(block_view(block));
             }
             lanes = lanes.push(boxes.width(Length::Fill));
         }
-        events = events.push(lanes.height(Length::Fixed(pixels(cluster.end - cluster.start))));
+        events = events.push(lanes.height(Length::Fixed(pixels(cluster.start, cluster.end))));
         at = cluster.end;
     }
-    let events = row![
-        space::horizontal().width(Length::Fixed(LABEL_WIDTH + 4.0)),
-        events.width(Length::Fill)
+    let events = column![
+        gap(top),
+        row![
+            space::horizontal().width(Length::Fixed(LABEL_WIDTH + 4.0)),
+            events.width(Length::Fill)
+        ]
     ];
 
-    let mut layers: Vec<Element<'static, Message>> = vec![lines.into(), events.into()];
-    if (origin..end).contains(&now) {
+    let mut layers: Vec<Element<'static, Message>> = vec![
+        lines.height(Length::Fixed(height)).into(),
+        hour_labels.into(),
+        events.into(),
+    ];
+    if now_shown {
+        let tag = container(toned(now_label, Tone::Bad).size(11))
+            .width(Length::Fixed(LABEL_WIDTH))
+            .height(Length::Fixed(LABEL_HEIGHT))
+            .align_y(Alignment::Center);
         let now_line = column![
-            gap(now - origin),
-            row![
-                space::horizontal().width(Length::Fixed(LABEL_WIDTH)),
-                rule::horizontal(2).style(now_rule),
-            ],
+            gap(top + pixels(origin, now) - LABEL_HEIGHT / 2.0),
+            row![tag, rule::horizontal(2).style(now_rule)]
+                .height(Length::Fixed(LABEL_HEIGHT))
+                .align_y(Alignment::Center),
         ];
         layers.push(now_line.into());
     }
     stack(layers).width(Length::Fill).into()
 }
 
-/// One event's box: its title, then its times and the session it starts if there's room.
+/// An hour line, starting after the labels.
+fn line_row() -> iced::widget::Row<'static, Message> {
+    row![
+        space::horizontal().width(Length::Fixed(LABEL_WIDTH)),
+        column![rule::horizontal(1)].width(Length::Fill),
+    ]
+}
+
+/// One event's box, as tall as its time on the grid less a small gap below so boxes that follow
+/// each other don't touch: its title, then its times and the session it starts if there's room.
 fn block_view(block: Block) -> Element<'static, Message> {
-    // A small gap below, so boxes that follow each other don't touch.
-    let height = pixels(block.end - block.start) - 2.0;
+    let span = pixels(block.start, block.end);
+    let height = span - 2.0;
     let item = block.row;
     let tone = item.tone();
     let mut body = column![
@@ -230,22 +284,24 @@ fn block_view(block: Block) -> Element<'static, Message> {
     if let Some(starts) = item.starts.filter(|_| height >= 70.0) {
         body = body.push(pill(starts, tone));
     }
-    entry(body, tone, item.past)
-        .height(Length::Fixed(height.max(1.0)))
+    // The slot keeps the full span, so the next box in the lane starts where its time says.
+    container(entry(body, tone, item.past, Length::Fill))
+        .height(Length::Fixed(span))
+        .padding(Padding::ZERO.bottom(2.0))
         .into()
 }
 
-/// Empty space `minutes` tall.
-fn gap(minutes: u32) -> Element<'static, Message> {
+/// Empty space `height` pixels tall.
+fn gap(height: f32) -> Element<'static, Message> {
     space::vertical()
-        .height(Length::Fixed(pixels(minutes)))
+        .height(Length::Fixed(height.max(0.0)))
         .into()
 }
 
-/// How tall `minutes` are on the grid.
-fn pixels(minutes: u32) -> f32 {
+/// How tall the time from minute `from` to minute `to` is on the grid (0 if `to` is earlier).
+fn pixels(from: u32, to: u32) -> f32 {
     // Minutes in a day fit an f32 exactly.
-    minutes as f32 * HOUR_HEIGHT / 60.0
+    to.saturating_sub(from) as f32 * HOUR_HEIGHT / 60.0
 }
 
 #[cfg(test)]
@@ -300,11 +356,36 @@ mod tests {
             .collect()
     }
 
+    /// Every block, in lane order.
+    fn blocks(timeline: &Timeline) -> Vec<&Block> {
+        timeline
+            .clusters
+            .iter()
+            .flat_map(|cluster| cluster.lanes.iter().flatten())
+            .collect()
+    }
+
+    /// Every block's start and end.
+    fn spans(timeline: &Timeline) -> Vec<(u32, u32)> {
+        blocks(timeline)
+            .iter()
+            .map(|block| (block.start, block.end))
+            .collect()
+    }
+
     #[test]
     fn an_empty_day_shows_the_working_hours() {
-        let timeline = today(&view(Vec::new()), at(24, 11, 0), &zone());
+        let timeline = today(&view(Vec::new()), at(24, 11, 7), &zone());
         assert_eq!((timeline.from_hour, timeline.to_hour), (8, 18));
-        assert_eq!(timeline.now, 11 * 60);
+        assert_eq!(timeline.labels.first().map(String::as_str), Some("08:00"));
+        assert_eq!(timeline.labels.last().map(String::as_str), Some("18:00"));
+        assert_eq!(
+            timeline.labels.len(),
+            11,
+            "a label for every line, the last included"
+        );
+        assert_eq!(timeline.now, 11 * 60 + 7);
+        assert_eq!(timeline.now_label, "11:07");
         assert!(timeline.clusters.is_empty());
     }
 
@@ -319,6 +400,7 @@ mod tests {
 
         let late = today(&view(Vec::new()), at(24, 23, 30), &zone());
         assert_eq!((late.from_hour, late.to_hour), (8, 24));
+        assert_eq!(late.labels.last().map(String::as_str), Some("00:00"));
     }
 
     #[test]
@@ -357,6 +439,20 @@ mod tests {
     }
 
     #[test]
+    fn a_short_event_late_at_night_stays_where_it_is() {
+        let events = vec![
+            event("Wind down", at(24, 23, 0), at(24, 23, 40), false),
+            event("Lights out", at(24, 23, 50), at(24, 23, 55), false),
+        ];
+        let timeline = today(&view(events), at(24, 11, 0), &zone());
+        assert_eq!(
+            spans(&timeline),
+            [(23 * 60, 23 * 60 + 40), (23 * 60 + 50, 24 * 60)]
+        );
+        assert_eq!(timeline.clusters.len(), 2, "they don't overlap");
+    }
+
+    #[test]
     fn events_crossing_midnight_are_cut_to_today() {
         let events = vec![
             event("Night shift", at(23, 22, 0), at(24, 2, 0), false),
@@ -364,15 +460,35 @@ mod tests {
             event("Holiday", at(24, 0, 0), at(25, 0, 0), true),
         ];
         let timeline = today(&view(events), at(24, 11, 0), &zone());
-        let blocks: Vec<(u32, u32)> = timeline
-            .clusters
-            .iter()
-            .flat_map(|cluster| cluster.lanes.iter().flatten())
-            .map(|block| (block.start, block.end))
-            .collect();
-        assert_eq!(blocks, [(0, 2 * 60), (23 * 60, DAY)]);
+        assert_eq!(spans(&timeline), [(0, 2 * 60), (23 * 60, 24 * 60)]);
         assert_eq!((timeline.from_hour, timeline.to_hour), (0, 24));
         assert_eq!(timeline.all_day.len(), 1);
         assert_eq!(timeline.all_day[0].title, "Holiday");
+    }
+
+    #[test]
+    fn over_and_on_now_follow_the_given_now_not_the_plans() {
+        let events = vec![
+            event("Lecture", at(24, 9, 0), at(24, 10, 0), false),
+            event("Lab", at(24, 10, 0), at(24, 12, 0), false),
+        ];
+        // The plan was fetched at 09:30; it's 10:05 now.
+        let mut plan = view(events);
+        plan.now = at(24, 9, 30);
+        let timeline = today(&plan, at(24, 10, 5), &zone());
+        let rows: Vec<(&str, bool, Option<&str>)> = blocks(&timeline)
+            .iter()
+            .map(|block| {
+                (
+                    block.row.title.as_str(),
+                    block.row.past,
+                    block.row.note.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [("Lecture", true, None), ("Lab", false, Some("On now"))]
+        );
     }
 }
