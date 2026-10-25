@@ -3,15 +3,19 @@
 
 //! Iced desktop UI. Talks only to `focus-daemon` over IPC, so closing the window never ends a session.
 //!
-//! The window has a sidebar with four pages (Overview, Sessions, Calendar, Todoist) and a
-//! Settings page opened from Sessions. Each page lives in its own module as an `impl App` block; this file holds
-//! the state, the messages and how they change the state.
+//! The window has a sidebar with four pages (Overview, Sessions, Calendar, Todoist), and Rules and
+//! Settings keys at its foot that open as an overlay on top of the page. Each page lives in its own
+//! module as an `impl App` block; this file holds the state, the messages and how they change the
+//! state.
 
 mod agenda;
+mod compact;
 mod configs;
 mod daemon;
+mod frame;
 mod friction;
 mod help;
+mod icon;
 mod overview;
 mod parking;
 mod plan_pages;
@@ -21,6 +25,7 @@ mod sessions;
 mod settings;
 mod style;
 mod timeline;
+mod tray;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -28,7 +33,9 @@ use std::time::{Duration, Instant};
 use focus_core::ports::SecretKey;
 use focus_core::{BlockConfig, EditableSettings, ParkedItem, Strictness};
 use focus_install::{InstanceLock, Paths};
-use iced::widget::{Column, column, container, row, scrollable, space, text};
+use iced::widget::{
+    Column, button, center, column, container, opaque, row, scrollable, space, stack, text,
+};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use ipc_proto::{PlanView, Request, SourceState, StatusReport};
 use ipc_transport::Endpoint;
@@ -71,18 +78,24 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .window(iced::window::Settings {
-            size: iced::Size::new(1120.0, 780.0),
+            size: FULL_WINDOW,
             min_size: Some(MIN_WINDOW),
             position: iced::window::Position::Centered,
+            icon: iced::window::icon::from_rgba(icon::rgba(64), 64, 64).ok(),
+            // Closing hides the window to the tray instead (see `Message::CloseRequested`).
+            exit_on_close_request: false,
             ..iced::window::Settings::default()
         })
         .run()
 }
 
+/// The window's size when it opens.
+const FULL_WINDOW: iced::Size = iced::Size::new(1120.0, 780.0);
+
 /// The smallest the window can be made. The width keeps the Sessions start card's strictness
 /// keys and Start key on one line beside the parking lot (sidebar 210 + padding + a 3:2 split);
 /// the height keeps the sidebar's readouts, pages and status lines clear of each other.
-const MIN_WINDOW: iced::Size = iced::Size::new(1080.0, 640.0);
+pub(crate) const MIN_WINDOW: iced::Size = iced::Size::new(1080.0, 640.0);
 
 /// How often (in polls, about seconds) a shortcut another app held is tried again.
 const HOTKEY_RETRY_POLLS: u32 = 30;
@@ -108,11 +121,16 @@ pub(crate) enum Page {
     /// Today's calendar and tasks; the window opens on it.
     Overview,
     Sessions,
-    /// Configurations, lists, automatic starts and limits.
-    Rules,
     Calendar,
     Todoist,
-    /// Focus's own settings, from the foot of the sidebar.
+}
+
+/// What opens on top of the page, from the keys at the sidebar's foot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Panel {
+    /// Configurations, lists, automatic starts and limits.
+    Rules,
+    /// Focus's own settings.
     Settings,
 }
 
@@ -132,6 +150,18 @@ pub(crate) struct App {
     /// Why the daemon can't be reached, if it can't.
     unreachable: Option<String>,
     page: Page,
+    /// The window's native handle, for colouring its frame; `None` until iced reports it.
+    native_window: Option<u64>,
+    /// The tray icon, where there is one; closing the window hides it there.
+    tray: Option<tray::Tray>,
+    /// Minimal mode: the window is the small session card.
+    compact: bool,
+    /// Whether the last status had a session running, to notice sessions starting and ending.
+    session_seen: bool,
+    /// The window's size before it became the card, to grow back to.
+    full_size: Option<iced::Size>,
+    /// The overlay open on top of the page, if any.
+    panel: Option<Panel>,
     configs: Vec<BlockConfig>,
     config_names: Vec<String>,
     selected: Option<String>,
@@ -216,6 +246,25 @@ pub(crate) enum Message {
     /// Boxed: the plan is much larger than the other messages.
     PlanLoaded(Box<Result<PlanView, String>>),
     Navigate(Page),
+    /// The window's native handle (an HWND on Windows).
+    NativeWindow(u64),
+    /// The window's size, reported just before it becomes the card.
+    FullSize(iced::Size),
+    /// Leave minimal mode.
+    Expand,
+    /// Go back to minimal mode while a session runs.
+    Shrink,
+    /// End early from the card: open the full window, where the reason is typed.
+    EndFromCard,
+    /// The window's close button was pressed.
+    CloseRequested,
+    #[cfg_attr(
+        not(windows),
+        expect(dead_code, reason = "no tray outside Windows until step 9")
+    )]
+    Tray(tray::TrayAction),
+    OpenPanel(Panel),
+    ClosePanel,
     ConfigPicked(String),
     StrictnessPicked(Strictness),
     MinutesChanged(u16),
@@ -273,6 +322,12 @@ impl App {
             status: None,
             unreachable: None,
             page: Page::Overview,
+            native_window: None,
+            tray: tray::Tray::create(),
+            compact: false,
+            session_seen: false,
+            full_size: None,
+            panel: None,
             configs: Vec::new(),
             config_names: Vec::new(),
             selected: None,
@@ -315,6 +370,9 @@ impl App {
             app.fetch_configs(),
             app.fetch_plan(),
             iced::system::theme().map(Message::ThemeMode),
+            iced::window::oldest()
+                .and_then(iced::window::raw_id::<Message>)
+                .map(Message::NativeWindow),
         ];
         if minimized {
             boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
@@ -330,14 +388,23 @@ impl App {
                 match *result {
                     Ok(status) => {
                         let revision = status.parking_lot.revision;
+                        let running = status.session.running().is_some();
+                        let on_top = status.timer_on_top;
+                        let on_top_changed =
+                            self.status.as_ref().map(|old| old.timer_on_top) != Some(on_top);
                         self.status = Some(status);
                         self.refresh_theme();
                         self.unreachable = None;
                         self.failed_polls = 0;
+                        let mut tasks = vec![self.follow_session(running)];
+                        if on_top_changed && self.compact {
+                            tasks.push(compact::keep_on_top(on_top));
+                        }
                         if self.parked_revision != Some(revision) && !self.parked_pending {
                             self.parked_revision = Some(revision);
-                            return self.fetch_parked();
+                            tasks.push(self.fetch_parked());
                         }
+                        return Task::batch(tasks);
                     }
                     Err(problem) => {
                         self.unreachable = Some(problem.message);
@@ -364,10 +431,51 @@ impl App {
             }
             Message::Navigate(page) => {
                 self.page = page;
-                if matches!(page, Page::Rules | Page::Settings) {
-                    return self.open_settings();
+                self.panel = None;
+            }
+            Message::NativeWindow(handle) => {
+                self.native_window = Some(handle);
+                frame::paint(handle, &self.theme);
+            }
+            Message::FullSize(size) => {
+                // Not the card's own size, if it was already the card.
+                if size.width >= MIN_WINDOW.width {
+                    self.full_size = Some(size);
                 }
             }
+            Message::Expand => return self.expand(),
+            Message::Shrink => return self.shrink(),
+            Message::EndFromCard => {
+                self.page = Page::Sessions;
+                let asked = self
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.session.running())
+                    .is_some_and(|running| running.end_allowed_at().is_some());
+                let expand = self.expand();
+                if asked {
+                    return expand;
+                }
+                return Task::batch([expand, self.act(Request::EndSession)]);
+            }
+            Message::CloseRequested => {
+                // With nowhere to hide, it minimises instead.
+                let hidden = self.tray.is_some();
+                return iced::window::oldest().and_then(move |id| {
+                    if hidden {
+                        iced::window::set_mode(id, iced::window::Mode::Hidden)
+                    } else {
+                        iced::window::minimize(id, true)
+                    }
+                });
+            }
+            Message::Tray(tray::TrayAction::Show) => return show_window(),
+            Message::Tray(tray::TrayAction::Quit) => return iced::exit(),
+            Message::OpenPanel(panel) => {
+                self.panel = Some(panel);
+                return self.open_settings();
+            }
+            Message::ClosePanel => self.panel = None,
             Message::ConfigPicked(name) => self.selected = Some(name),
             Message::StrictnessPicked(strictness) => self.strictness = strictness,
             Message::MinutesChanged(minutes) => {
@@ -488,10 +596,13 @@ impl App {
             }
             Message::HotkeyPressed => {
                 self.page = Page::Sessions;
+                self.panel = None;
                 self.capturing = true;
                 return Task::batch([
+                    self.expand(),
                     iced::window::oldest().and_then(|id| {
                         Task::batch([
+                            iced::window::set_mode(id, iced::window::Mode::Windowed),
                             iced::window::minimize(id, false),
                             iced::window::gain_focus(id),
                         ])
@@ -520,12 +631,7 @@ impl App {
         }
         let mut tasks = Vec::new();
         if std::fs::remove_file(&self.show_request).is_ok() {
-            tasks.push(iced::window::oldest().and_then(|id| {
-                Task::batch([
-                    iced::window::minimize(id, false),
-                    iced::window::gain_focus(id),
-                ])
-            }));
+            tasks.push(show_window());
         }
         if !self.status_pending {
             tasks.push(self.fetch_status());
@@ -650,6 +756,7 @@ impl App {
             settings::Msg::Friction(edit) => friction::apply(&mut draft.edited.friction, edit),
             settings::Msg::ParkingHotkey(hotkey) => draft.edited.parking_hotkey = hotkey,
             settings::Msg::Theme(theme) => draft.edited.theme = theme,
+            settings::Msg::TimerOnTop(on) => draft.edited.timer_on_top = on,
             settings::Msg::Save => {
                 let settings = draft.take_save();
                 draft.sent = Some(settings.clone());
@@ -772,6 +879,8 @@ impl App {
         let mut subscriptions = vec![
             iced::time::every(POLL).map(|_| Message::Poll),
             iced::system::theme_changes().map(Message::ThemeMode),
+            iced::window::close_requests().map(|_| Message::CloseRequested),
+            tray::subscription(),
         ];
         // Registered once the daemon has said which shortcut the settings ask for.
         if let Some(status) = &self.status {
@@ -779,6 +888,15 @@ impl App {
                 status.parking_hotkey,
                 self.hotkey_attempt,
             ));
+        }
+        if self.panel.is_some() {
+            subscriptions.push(iced::keyboard::listen().filter_map(|event| match event {
+                iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                } => Some(Message::ClosePanel),
+                _ => None,
+            }));
         }
         if self.capturing {
             subscriptions.push(iced::window::events().filter_map(|(_, event)| {
@@ -801,10 +919,52 @@ impl App {
         if mode != self.theme_mode {
             self.theme_mode = mode;
             self.theme = style::theme(mode);
+            if let Some(handle) = self.native_window {
+                frame::paint(handle, &self.theme);
+            }
         }
     }
 
+    /// Enters minimal mode when a session starts and leaves it when the session ends.
+    fn follow_session(&mut self, running: bool) -> Task<Message> {
+        if running == self.session_seen {
+            return Task::none();
+        }
+        self.session_seen = running;
+        if running {
+            self.shrink()
+        } else {
+            self.expand()
+        }
+    }
+
+    /// Turns the window into the session card, if it isn't already.
+    fn shrink(&mut self) -> Task<Message> {
+        if self.compact {
+            return Task::none();
+        }
+        self.compact = true;
+        self.panel = None;
+        let on_top = self
+            .status
+            .as_ref()
+            .is_none_or(|status| status.timer_on_top);
+        compact::shrink_window(on_top)
+    }
+
+    /// Leaves minimal mode, if the window is the card.
+    fn expand(&mut self) -> Task<Message> {
+        if !self.compact {
+            return Task::none();
+        }
+        self.compact = false;
+        compact::grow_window(self.full_size.unwrap_or(FULL_WINDOW))
+    }
+
     fn view(&self) -> Element<'_, Message> {
+        if let Some(status) = self.status.as_ref().filter(|_| self.compact) {
+            return self.compact_card(status);
+        }
         let content: Element<'_, Message> = match (&self.status, &self.unreachable) {
             (_, Some(problem)) => column![
                 style::title("Can't reach the Focus daemon"),
@@ -819,22 +979,44 @@ impl App {
                 Page::Sessions => self.sessions_page(status),
                 Page::Calendar => self.calendar_page(status),
                 Page::Todoist => self.todoist_page(status),
-                Page::Rules => self.rules_page(status),
-                Page::Settings => self.settings_page(status),
             },
         };
+        let page = self.scrolling(content);
+        let Some((panel, status)) = self.panel.zip(self.status.as_ref()) else {
+            return row![self.sidebar(), page].into();
+        };
+        let content = match panel {
+            Panel::Rules => self.rules_page(status),
+            Panel::Settings => self.settings_page(status),
+        };
+        // Over the page only, so the sidebar still works. `opaque` stops clicks and hovers
+        // reaching the page underneath.
+        let overlay = opaque(style::scrim(
+            center(style::sheet(self.scrolling(content))).padding([24, 28]),
+        ));
+        row![self.sidebar(), stack![page, overlay]].into()
+    }
+
+    /// `content` with any error under it, scrolling in the space beside the sidebar.
+    fn scrolling<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let mut main: Column<'_, Message> = column![content].spacing(18);
         if let Some(error) = &self.error {
             main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
         }
-        row![
-            self.sidebar(),
-            scrollable(container(main).padding([28, 32]).width(Length::Fill))
-                .style(style::scrollbar)
-                .height(Length::Fill)
-                .width(Length::Fill),
-        ]
-        .into()
+        scrollable(container(main).padding([28, 32]).width(Length::Fill))
+            .style(style::scrollbar)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
+    }
+
+    /// The key that closes the open overlay (Escape does too).
+    pub(crate) fn close_panel_key(&self) -> Element<'_, Message> {
+        button(text("Close").size(14))
+            .padding([6, 12])
+            .on_press(Message::ClosePanel)
+            .style(style::key)
+            .into()
     }
 
     /// The app name, what's happening now, the pages, and the sources' sync status.
@@ -889,6 +1071,16 @@ impl App {
             }
         }
         let mut readouts = column![now_line].spacing(12);
+        // Back to the small card, while a session runs.
+        if self.session_seen {
+            readouts = readouts.push(
+                button(text("Minimal mode").size(14).width(Length::Fill).center())
+                    .width(Length::Fill)
+                    .padding([6, 12])
+                    .style(style::key)
+                    .on_press(Message::Shrink),
+            );
+        }
         if let Some(next) = self
             .status
             .as_ref()
@@ -912,11 +1104,6 @@ impl App {
                     Message::Navigate(Page::Sessions)
                 ),
                 nav(
-                    "Rules",
-                    self.page == Page::Rules,
-                    Message::Navigate(Page::Rules)
-                ),
-                nav(
                     "Calendar",
                     self.page == Page::Calendar,
                     Message::Navigate(Page::Calendar)
@@ -928,14 +1115,33 @@ impl App {
                 ),
                 space::vertical(),
                 sources,
-                nav(
-                    "Settings",
-                    self.page == Page::Settings,
-                    Message::Navigate(Page::Settings)
-                ),
+                row![
+                    style::foot_key(
+                        "Rules",
+                        self.panel == Some(Panel::Rules),
+                        Message::OpenPanel(Panel::Rules)
+                    ),
+                    style::foot_key(
+                        "Settings",
+                        self.panel == Some(Panel::Settings),
+                        Message::OpenPanel(Panel::Settings)
+                    ),
+                ]
+                .spacing(8),
             ]
             .spacing(8),
         )
         .into()
     }
+}
+
+/// Brings the window back from the tray or the taskbar and gives it the keyboard.
+fn show_window() -> Task<Message> {
+    iced::window::oldest().and_then(|id| {
+        Task::batch([
+            iced::window::set_mode(id, iced::window::Mode::Windowed),
+            iced::window::minimize(id, false),
+            iced::window::gain_focus(id),
+        ])
+    })
 }

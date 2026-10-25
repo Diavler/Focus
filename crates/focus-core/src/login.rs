@@ -27,6 +27,8 @@ pub struct Settings {
     pub parking_hotkey: Hotkey,
     /// Whether the window is light, dark or follows the system.
     pub theme: Theme,
+    /// Whether minimal mode's session card stays above other windows.
+    pub timer_on_top: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +41,7 @@ impl Default for Settings {
             friction: Friction::default(),
             parking_hotkey: Hotkey::default(),
             theme: Theme::default(),
+            timer_on_top: true,
         }
     }
 }

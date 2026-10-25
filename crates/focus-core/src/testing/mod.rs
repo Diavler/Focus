@@ -76,6 +76,7 @@ mod tests {
             friction: crate::Friction::default(),
             parking_hotkey: crate::Hotkey::default(),
             theme: crate::Theme::default(),
+            timer_on_top: true,
             revision: String::new(),
         });
         settings_editor_contract(&settings, &settings);

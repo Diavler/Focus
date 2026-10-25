@@ -139,6 +139,7 @@ mod tests {
             },
             parking_hotkey: Hotkey::Off,
             theme: Theme::Dark,
+            timer_on_top: true,
             revision: "abc".into(),
         }
     }
@@ -248,6 +249,7 @@ mod tests {
                 notifications: Some(Silencing::AskUser),
                 parking_hotkey: Hotkey::CtrlAltP,
                 theme: Theme::Light,
+                timer_on_top: true,
                 plan: PlanStatus {
                     calendar: SourceStatus {
                         state: SourceState::Failing {

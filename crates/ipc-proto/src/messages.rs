@@ -241,6 +241,8 @@ pub struct StatusReport {
     /// Whether the window is light, dark or follows the system.
     #[serde(default)]
     pub theme: Theme,
+    /// Whether minimal mode's session card stays above other windows, from the settings.
+    pub timer_on_top: bool,
 }
 
 /// The parking lot at a glance.

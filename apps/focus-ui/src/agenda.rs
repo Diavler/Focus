@@ -143,6 +143,28 @@ where
     ]
 }
 
+/// What to work on now: the calendar event under way, else the first task due today, else the
+/// first overdue one.
+pub fn current_focus<Z: TimeZone>(view: &PlanView, zone: &Z) -> Option<String>
+where
+    Z::Offset: Display,
+{
+    if let Some(event) = view
+        .events
+        .iter()
+        .find(|event| !event.all_day && event.start <= view.now && view.now < event.end)
+    {
+        return Some(event.title.clone());
+    }
+    let (overdue, today) = overdue_and_today(view, zone);
+    today
+        .rows
+        .into_iter()
+        .chain(overdue.rows)
+        .next()
+        .map(|row| row.title)
+}
+
 /// Just the Overdue and Today groups of [`task_groups`].
 pub fn overdue_and_today<Z: TimeZone>(view: &PlanView, zone: &Z) -> (Group, Group)
 where
@@ -565,5 +587,21 @@ mod tests {
         assert_eq!(today.rows[0].priority, TaskPriority::P1);
         assert_eq!(today.rows[0].project.as_deref(), Some("Home"));
         assert_eq!(today.rows[0].section.as_deref(), Some("Errands"));
+    }
+
+    #[test]
+    fn current_focus_is_the_event_under_way_then_todays_task() {
+        let mut plan = view();
+        assert_eq!(
+            current_focus(&plan, &zone()).as_deref(),
+            Some("Deep work #focus")
+        );
+        plan.events.clear();
+        assert_eq!(
+            current_focus(&plan, &zone()).as_deref(),
+            Some("Write the report")
+        );
+        plan.tasks.retain(|task| task.title == "Old chore");
+        assert_eq!(current_focus(&plan, &zone()).as_deref(), Some("Old chore"));
     }
 }

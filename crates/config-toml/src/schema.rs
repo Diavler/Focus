@@ -23,6 +23,8 @@ pub(crate) struct SettingsFile {
     pub(crate) parking_hotkey: Hotkey,
     #[serde(default)]
     pub(crate) theme: Theme,
+    #[serde(default = "timer_on_top_default")]
+    pub(crate) timer_on_top: bool,
 }
 
 /// `[friction]`: unlocks, the tab cap and the drift prompt. Read as plain integers, so an
@@ -161,6 +163,11 @@ fn groups<'a>(
 
 /// Start at login unless the settings say otherwise: it's what brings Focus back after a reboot.
 fn start_at_login_default() -> bool {
+    true
+}
+
+/// Minimal mode's card stays on top unless the settings say otherwise.
+fn timer_on_top_default() -> bool {
     true
 }
 

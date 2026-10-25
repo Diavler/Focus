@@ -10,6 +10,7 @@ all-features = true
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste: via wgpu's Metal backend (iced renderer); no safe upgrade" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: via cosmic-text/fontdb (iced text); no safe upgrade" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: via gtk, tray-icon's Linux backend, which Focus never builds (tray-icon is Windows-only here)" },
 ]
 
 [licenses]
@@ -33,6 +34,8 @@ confidence-threshold = 0.8
 exceptions = [
     { name = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
     { name = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+    # Via `dirs`, which tray-icon uses only on Linux, where Focus doesn't use tray-icon.
+    { name = "option-ext", allow = ["MPL-2.0"] },
 ]
 unused-allowed-license = "allow"
 private = { ignore = true }

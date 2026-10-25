@@ -32,6 +32,9 @@ pub struct EditableSettings {
     /// Whether the window is light, dark or follows the system.
     #[serde(default)]
     pub theme: Theme,
+    /// Whether minimal mode's session card stays above other windows.
+    #[serde(default = "on_top_default")]
+    pub timer_on_top: bool,
     /// Identifies the text these were read from, so saving can refuse to overwrite edits made to
     /// the file in the meantime.
     pub revision: String,
@@ -144,6 +147,11 @@ impl EditableSettings {
     }
 }
 
+/// The session card stays on top unless the settings say otherwise.
+fn on_top_default() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +181,7 @@ mod tests {
             friction: Friction::default(),
             parking_hotkey: Hotkey::default(),
             theme: Theme::default(),
+            timer_on_top: true,
             revision: "1".into(),
         }
     }

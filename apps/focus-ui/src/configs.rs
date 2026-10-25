@@ -721,6 +721,7 @@ mod tests {
             friction: focus_core::Friction::default(),
             parking_hotkey: focus_core::Hotkey::default(),
             theme: focus_core::Theme::default(),
+            timer_on_top: true,
             revision: "1".into(),
         }
     }

@@ -183,6 +183,7 @@ impl ConfigSource for FakeSettingsFile {
             friction: settings.friction,
             parking_hotkey: settings.parking_hotkey,
             theme: settings.theme,
+            timer_on_top: settings.timer_on_top,
         })
     }
 }
