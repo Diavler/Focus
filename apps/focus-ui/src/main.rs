@@ -792,7 +792,9 @@ impl App {
         self.failed_polls = 0;
         let args: &[&str] = if self.dry_run { &["--dry-run"] } else { &[] };
         if let Err(error) = focus_install::spawn_sibling(&self.install, "focus-daemon", args) {
-            self.error = Some(format!("couldn't start the Focus daemon: {error}"));
+            self.error = Some(format!(
+                "couldn't start Focus's background service: {error}"
+            ));
         }
     }
 
@@ -967,7 +969,7 @@ impl App {
         }
         let content: Element<'_, Message> = match (&self.status, &self.unreachable) {
             (_, Some(problem)) => column![
-                style::title("Can't reach the Focus daemon"),
+                style::title("Focus's background service isn't responding"),
                 text("Starting it again; this window reconnects by itself."),
                 caption(problem.as_str()),
             ]
@@ -1045,8 +1047,8 @@ impl App {
         let mut sources = column![].spacing(6);
         if let Some(status) = &self.status {
             for (name, source) in [
-                ("Cal ", &status.plan.calendar),
-                ("Todo", &status.plan.tasks),
+                ("Calendar", &status.plan.calendar),
+                ("Todoist", &status.plan.tasks),
             ] {
                 let (label, tone) = match &source.state {
                     SourceState::Ok => ("synced", Tone::Good),
@@ -1074,11 +1076,16 @@ impl App {
         // Back to the small card, while a session runs.
         if self.session_seen {
             readouts = readouts.push(
-                button(text("Minimal mode").size(14).width(Length::Fill).center())
-                    .width(Length::Fill)
-                    .padding([6, 12])
-                    .style(style::key)
-                    .on_press(Message::Shrink),
+                button(
+                    text("Shrink to timer")
+                        .size(14)
+                        .width(Length::Fill)
+                        .center(),
+                )
+                .width(Length::Fill)
+                .padding([6, 12])
+                .style(style::key)
+                .on_press(Message::Shrink),
             );
         }
         if let Some(next) = self
@@ -1090,7 +1097,6 @@ impl App {
         }
         style::sidebar(
             column![
-                style::brand(),
                 readouts,
                 space::vertical().height(Length::Fixed(12.0)),
                 nav(

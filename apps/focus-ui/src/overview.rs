@@ -38,9 +38,10 @@ impl App {
         column![
             header,
             row![
-                card(column![heading("Calendar"), calendar].spacing(12))
+                card(column![heading("Today's calendar"), calendar].spacing(12))
                     .width(Length::FillPortion(3)),
-                card(column![heading("Tasks"), tasks].spacing(12)).width(Length::FillPortion(2)),
+                card(column![heading("Today's tasks"), tasks].spacing(12))
+                    .width(Length::FillPortion(2)),
             ]
             .spacing(18),
         ]
@@ -49,21 +50,30 @@ impl App {
     }
 }
 
-/// Overdue tasks (if any), then today's.
+/// Overdue tasks (if any), then today's. The card's heading already says today, so today's
+/// tasks only get their own caption to set them apart from overdue ones.
 fn due_today((overdue, today): (Group, Group)) -> Element<'static, Message> {
     let mut list: Column<'static, Message> = column![].spacing(14);
-    for group in [overdue, today] {
-        let empty = group.rows.is_empty();
-        if empty && group.title == "Overdue" {
-            continue;
-        }
-        let body: Element<'static, Message> = if empty {
-            caption("Nothing due today.").into()
-        } else {
-            agenda::compact_rows_view(group.rows).into()
-        };
-        list = list.push(column![caption(group.title), body].spacing(6));
+    let any_overdue = !overdue.rows.is_empty();
+    if any_overdue {
+        list = list.push(
+            column![
+                caption(overdue.title),
+                agenda::compact_rows_view(overdue.rows)
+            ]
+            .spacing(6),
+        );
     }
+    let body: Element<'static, Message> = if today.rows.is_empty() {
+        caption("Nothing due today.").into()
+    } else {
+        agenda::compact_rows_view(today.rows).into()
+    };
+    list = list.push(if any_overdue {
+        column![caption(today.title), body].spacing(6)
+    } else {
+        column![body]
+    });
     list.into()
 }
 

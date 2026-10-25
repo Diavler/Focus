@@ -45,7 +45,16 @@ impl App {
         let mut side = column![self.parking_card(status)].spacing(18);
         if let Some(pending) = pending_summary(status) {
             side = side.push(card(
-                column![heading("Cooling off"), caption(pending)].spacing(8),
+                column![
+                    row![
+                        heading("Cooling off"),
+                        info("Changes that loosen the rules wait 24 hours before they apply."),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    caption(pending)
+                ]
+                .spacing(8),
             ));
         }
         page.push(
@@ -241,7 +250,7 @@ impl App {
                 caption("Locked: this session can't be ended early.").into()
             }
             EndEarlyPolicy::WaitAndReason { .. } => match running.end_allowed_at() {
-                None => button("Ask to end early")
+                None => button("End early…")
                     .style(style::key)
                     .on_press_maybe(self.idle_then(Message::EndEarly))
                     .into(),

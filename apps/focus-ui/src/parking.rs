@@ -10,7 +10,7 @@ use iced::widget::{Column, button, column, row, space, text};
 use iced::{Alignment, Element, Subscription};
 use ipc_proto::{SourceState, StatusReport};
 
-use crate::help::info;
+use crate::help::{info, tip};
 use crate::style::{self, Tone, caption, card, heading, pill, toned};
 use crate::{App, Message};
 
@@ -179,9 +179,12 @@ fn item_row(item: &ParkedItem, idle: bool) -> Element<'_, Message> {
         words,
         space::horizontal(),
         place,
-        button(text("×").size(14))
-            .style(style::key_flat)
-            .on_press_maybe(idle.then_some(Message::Unpark(item.id))),
+        tip(
+            button(text("×").size(14))
+                .style(style::key_flat)
+                .on_press_maybe(idle.then_some(Message::Unpark(item.id))),
+            "Remove from the parking lot",
+        ),
     ]
     .spacing(10)
     .align_y(Alignment::Center)

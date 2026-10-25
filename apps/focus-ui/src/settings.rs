@@ -190,7 +190,7 @@ impl App {
     pub(crate) fn settings_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let mut header = row![
             title("Settings"),
-            info("Saved to settings.toml in Focus's data folder."),
+            info("Changes save automatically."),
             space::horizontal(),
         ]
         .spacing(12)
@@ -222,7 +222,7 @@ impl App {
                     Tone::Bad
                 )
                 .size(14),
-                caption("Fix the file by hand (Stop Focus under General still works), then:"),
+                caption("Fix the file by hand (Stop Focus below still works), then:"),
                 button("Try again")
                     .style(style::key)
                     .on_press(Message::Settings(Msg::Reload)),

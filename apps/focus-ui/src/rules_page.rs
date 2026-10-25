@@ -48,7 +48,16 @@ impl App {
         let mut page: Column<'a, Message> = column![header, tabs].spacing(18);
         if let Some(pending) = pending_summary(status) {
             page = page.push(card(
-                column![heading("Cooling off"), caption(pending)].spacing(8),
+                column![
+                    row![
+                        heading("Cooling off"),
+                        info("Changes that loosen the rules wait 24 hours before they apply."),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    caption(pending)
+                ]
+                .spacing(8),
             ));
         }
         let Some(draft) = &self.settings else {
