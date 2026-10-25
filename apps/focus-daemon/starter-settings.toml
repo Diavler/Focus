@@ -8,6 +8,10 @@
 # Start Focus when you log in. Turning this off also waits 24 hours, like loosening a config.
 start_at_login = true
 
+# The shortcut that brings up the parking lot from any app: "ctrl+alt+space" (default),
+# "ctrl+shift+space", "ctrl+alt+p" or "off".
+# parking_hotkey = "ctrl+alt+space"
+
 # Friction (Settings > General in the window). Stricter values apply at once; looser ones wait
 # 24 hours. These are the defaults:
 #

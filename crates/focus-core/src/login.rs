@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::auto_start::AutoStartRule;
 use crate::config::BlockConfig;
 use crate::friction::Friction;
+use crate::hotkey::Hotkey;
 use crate::time::Timestamp;
 
 /// Everything the settings file says.
@@ -21,6 +22,8 @@ pub struct Settings {
     pub auto_start: Vec<AutoStartRule>,
     /// The friction limits the settings ask for.
     pub friction: Friction,
+    /// The shortcut that opens the parking lot.
+    pub parking_hotkey: Hotkey,
 }
 
 impl Default for Settings {
@@ -31,6 +34,7 @@ impl Default for Settings {
             start_at_login: true,
             auto_start: Vec::new(),
             friction: Friction::default(),
+            parking_hotkey: Hotkey::default(),
         }
     }
 }

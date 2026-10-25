@@ -37,15 +37,16 @@ import {
   actionOf,
   frictionFromStatus,
   isStopped,
+  parkRefusal,
   sessionFromStatus,
   unlockRefusal,
   type Friction,
   type RunningSession,
   type Verdict,
 } from "./protocol";
-import { NEW_TAB_URL, browserName } from "./platform/chromium";
+import { NEW_TAB_URL, browserName } from "./platform";
 import { siteOf } from "./sites";
-import { continueTarget, overCap } from "./tabcap";
+import { continueTarget, overCap, restoredAtStartup } from "./tabcap";
 
 /** How often to send a heartbeat and refresh rules while the worker is awake. */
 const HEARTBEAT_MS = 5000;
@@ -131,16 +132,21 @@ async function syncRules(session: RunningSession | null): Promise<boolean> {
   return true;
 }
 
-/** Drops rules whose regex Chrome can't compile, so one bad pattern doesn't sink the rest. */
+/**
+ * Drops rules whose regex the browser can't compile, so one bad pattern doesn't sink the rest.
+ * A browser without `isRegexSupported` gets every rule.
+ */
 async function supportedOnly(rules: DnrRule[]): Promise<DnrRule[]> {
+  const dnr = browser.declarativeNetRequest as Partial<typeof browser.declarativeNetRequest>;
+  if (typeof dnr.isRegexSupported !== "function") return rules;
   const kept: DnrRule[] = [];
   for (const rule of rules) {
-    const { isSupported, reason } = await browser.declarativeNetRequest.isRegexSupported({
+    const { isSupported, reason } = await dnr.isRegexSupported({
       regex: rule.condition.regexFilter,
       isCaseSensitive: false,
     });
     if (isSupported) kept.push(rule);
-    else console.warn(`focus: skipping a rule Chrome can't use (${reason}): ${rule.condition.regexFilter}`);
+    else console.warn(`focus: skipping a rule the browser can't use (${reason}): ${rule.condition.regexFilter}`);
   }
   return kept;
 }
@@ -276,6 +282,41 @@ async function grantAndGo(tabId: number, url: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Later: parks `url` (with `title`, if known) in Focus's parking lot, which sends it to the
+ * Todoist inbox when it can, then closes the tab. Returns why it failed, or null.
+ */
+async function later(tabId: number, url: string, title: string): Promise<string | null> {
+  if (siteOf(url) === null) return "Only web pages can be saved for later.";
+  let response;
+  try {
+    response = await client.request({ type: "park", text: title, url });
+  } catch {
+    return "Saving for later needs the Focus app running.";
+  }
+  const refusal = parkRefusal(response);
+  if (refusal === null) await browser.tabs.remove(tabId).catch(() => undefined);
+  return refusal;
+}
+
+/**
+ * Shows on the toolbar button why Later failed. An alarm clears it (a timer could die with a
+ * suspended background), and so does the next click.
+ */
+async function flagLaterFailure(tabId: number, why: string): Promise<void> {
+  await browser.action.setBadgeText({ tabId, text: "!" });
+  await browser.action.setTitle({ tabId, title: why });
+  browser.alarms.create(`badge:${tabId}`, { delayInMinutes: 0.5 });
+}
+
+async function clearLaterFailure(tabId: number): Promise<void> {
+  await browser.action.setBadgeText({ tabId, text: "" }).catch(() => undefined);
+  await browser.action.setTitle({ tabId, title: LATER_TITLE }).catch(() => undefined);
+}
+
+/** The toolbar button's tooltip. */
+const LATER_TITLE = "Later: save this page to Focus's parking lot and close it";
+
 /** Drift tracking for the running session (fresh when the session changed). */
 async function driftState(session: RunningSession): Promise<DriftState> {
   const { drift } = (await browser.storage.session.get("drift")) as { drift?: DriftState };
@@ -314,14 +355,43 @@ async function browserStartedAt(): Promise<number> {
   return now;
 }
 
-/** Sends a tab opened over the cap to the tab-cap page, which asks to close one first. */
-async function capTab(tab: { id?: number; pendingUrl?: string; url?: string }): Promise<void> {
-  if (tab.id === undefined || !(await knownSession())) return;
+/**
+ * A tab was opened. Chromium says up front which page it's opening (`pendingUrl`), so the cap is
+ * checked now; Firefox doesn't, so the tab waits for its first page load (`capOnLoad`). Runs in
+ * the `serially` queue, like `capOnLoad`, so a tab is always recorded before its first load is
+ * looked at.
+ */
+async function capTab(tab: { id?: number; pendingUrl?: string }): Promise<void> {
+  const tabId = tab.id;
+  if (tabId === undefined || restoredAtStartup(await browserStartedAt(), Date.now())) return;
+  if (tab.pendingUrl) {
+    await capIfOver(tabId, tab.pendingUrl);
+    return;
+  }
+  await browser.storage.session.set({ newTabs: [...(await newTabs()), tabId] });
+}
+
+/** Tabs opened whose first page load hasn't happened yet. */
+async function newTabs(): Promise<number[]> {
+  const { newTabs } = (await browser.storage.session.get("newTabs")) as { newTabs?: number[] };
+  return newTabs ?? [];
+}
+
+/** A new tab's first page load: checked against the cap as it stands now. */
+async function capOnLoad(tabId: number, url: string): Promise<void> {
+  const pending = await newTabs();
+  if (!pending.includes(tabId)) return;
+  await browser.storage.session.set({ newTabs: pending.filter((id) => id !== tabId) });
+  await capIfOver(tabId, url);
+}
+
+/** Sends the tab to the tab-cap page if a session is running and the browser is over the cap. */
+async function capIfOver(tabId: number, intended: string): Promise<void> {
+  if (!(await knownSession())) return;
   const { friction } = await knownFriction();
   const open = (await browser.tabs.query({})).length;
-  if (!overCap(open, friction.tab_cap, await browserStartedAt(), Date.now())) return;
-  const intended = tab.pendingUrl || tab.url || "";
-  await browser.tabs.update(tab.id, { url: `${base}interstitial.html?a=tabs#${intended}` });
+  if (!overCap(open, friction.tab_cap)) return;
+  await browser.tabs.update(tabId, { url: `${base}interstitial.html?a=tabs#${intended}` });
 }
 
 /** The other open tabs, for the tab-cap page. */
@@ -349,7 +419,8 @@ type Message =
   | { kind: "tabs" }
   | { kind: "close-tab"; id: number }
   | { kind: "tab-cap" }
-  | { kind: "tab-continue"; url: string };
+  | { kind: "tab-continue"; url: string }
+  | { kind: "later"; url: string };
 
 browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.MessageSender) => {
   const request = message as Message;
@@ -379,6 +450,10 @@ browser.runtime.onMessage.addListener((message: unknown, sender: Runtime.Message
         () => true,
         () => false,
       );
+    case "later":
+      return tabId === undefined
+        ? Promise.resolve("No tab to close.")
+        : later(tabId, request.url, "").catch(() => "Focus couldn't save this for later.");
     case "tab-cap":
       return knownFriction().then(({ friction }) => friction.tab_cap);
     case "tab-continue":
@@ -414,13 +489,29 @@ browser.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabI
 });
 
 browser.tabs.onRemoved.addListener((tabId) => {
-  void serially(() => changeDrift((state) => forgetTab(state, tabId)));
+  void serially(async () => {
+    await changeDrift((state) => forgetTab(state, tabId));
+    const pending = await newTabs();
+    if (pending.includes(tabId)) await browser.storage.session.set({ newTabs: pending.filter((id) => id !== tabId) });
+  });
 });
 
-browser.tabs.onCreated.addListener((tab) => void capTab(tab));
+browser.webNavigation.onBeforeNavigate.addListener(({ tabId, frameId, url }) => {
+  if (frameId === 0 && siteOf(url) !== null) void serially(() => capOnLoad(tabId, url));
+});
+
+browser.tabs.onCreated.addListener((tab) => void serially(() => capTab(tab)));
+
+browser.action.onClicked.addListener(async (tab) => {
+  if (tab.id === undefined) return;
+  await clearLaterFailure(tab.id);
+  const why = await later(tab.id, tab.url ?? "", tab.title ?? "").catch(() => "Focus couldn't save this for later.");
+  if (why !== null) await flagLaterFailure(tab.id, why);
+});
 
 browser.alarms.onAlarm.addListener(({ name }) => {
   if (name.startsWith("grant:")) void endGrant(Number(name.slice("grant:".length)));
+  else if (name.startsWith("badge:")) void clearLaterFailure(Number(name.slice("badge:".length)));
   else if (name === "tick") void tick();
 });
 

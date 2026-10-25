@@ -8,6 +8,7 @@ use crate::cooling::ConfigState;
 use crate::delay::DelayLadder;
 use crate::friction::FrictionSetting;
 use crate::login::LoginSetting;
+use crate::parking::ParkingLot;
 use crate::plan::PlanCache;
 use crate::session::SessionState;
 use crate::unlock::UnlockLedger;
@@ -38,6 +39,9 @@ pub struct PersistedState {
     /// Visits to Delay sites during the running session.
     #[serde(default)]
     pub delays: DelayLadder,
+    /// Parked thoughts and links, sent or still waiting for the task inbox.
+    #[serde(default)]
+    pub parking_lot: ParkingLot,
 }
 
 /// Saves and loads [`PersistedState`].

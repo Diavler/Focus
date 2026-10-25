@@ -23,9 +23,14 @@ function element<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T;
 }
 
+/** Back to the page before, or closes the tab if there's none. Closing goes through the tabs
+ * API, since browsers (Firefox) may refuse `window.close()` for a tab the page didn't open. */
 function goBack(): void {
-  if (history.length > stepsBack) history.go(-stepsBack);
-  else window.close();
+  if (history.length > stepsBack) {
+    history.go(-stepsBack);
+    return;
+  }
+  void browser.tabs.getCurrent().then((tab) => (tab?.id === undefined ? undefined : browser.tabs.remove(tab.id)));
 }
 
 async function continueToSite(): Promise<void> {
@@ -169,8 +174,23 @@ async function showTabCap(): Promise<void> {
   await render();
 }
 
+/** Later: saves the page to the parking lot and closes the tab (or says why it couldn't). */
+async function saveForLater(): Promise<void> {
+  const refusal = (await browser.runtime
+    .sendMessage({ kind: "later", url: target })
+    .catch(() => "Reload the Focus extension to save pages for later.")) as string | null;
+  if (refusal !== null) {
+    const note = element("later-note");
+    note.textContent = refusal;
+    note.hidden = false;
+  }
+}
+
 element("site").textContent = target;
 for (const back of document.querySelectorAll("[data-back]")) back.addEventListener("click", goBack);
+for (const button of document.querySelectorAll("[data-later]")) {
+  button.addEventListener("click", () => void saveForLater());
+}
 
 if (action === "ask") {
   show("ask")

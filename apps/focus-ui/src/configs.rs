@@ -571,6 +571,7 @@ mod tests {
             }],
             auto_start: Vec::new(),
             friction: focus_core::Friction::default(),
+            parking_hotkey: focus_core::Hotkey::default(),
             revision: "1".into(),
         }
     }

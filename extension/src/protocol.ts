@@ -54,7 +54,8 @@ export type Request =
   | { type: "heartbeat"; browser: string; incognito_allowed: boolean }
   | { type: "rules_for"; url: string; config: string | null }
   | { type: "unlock"; url: string; reason: string }
-  | { type: "delay_visit"; url: string };
+  | { type: "delay_visit"; url: string }
+  | { type: "park"; text: string; url: string | null };
 
 /** The daemon's answers. */
 export type Response =
@@ -118,6 +119,20 @@ export function unlockRefusal(response: Response): string {
       : `No unlocks left. The next one comes back at ${new Date(nextAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`;
   }
   return response.error.message ?? "Focus couldn't unlock this page.";
+}
+
+/** Why parking failed, in words for the page or the toolbar button; null when it worked. */
+export function parkRefusal(response: Response): string | null {
+  if (response.type === "done") return null;
+  if (response.type === "error" && response.error.kind === "unreachable") return "Saving for later needs the Focus app running.";
+  if (response.type === "error" && response.error.message) return response.error.message;
+  if (response.type === "error" && response.error.kind === "park") {
+    const reason = response.error.error;
+    if (reason === "empty") return "There's nothing to save.";
+    if (typeof reason === "object" && reason !== null && "full" in reason) return "Focus's parking lot is full; clear some in the Focus window.";
+    if (typeof reason === "object" && reason !== null && "too_long" in reason) return "That link is too long to save.";
+  }
+  return "Focus couldn't save this for later.";
 }
 
 /** Whether the answer says Focus was stopped with its kill switch (no session, no daemon). */

@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use focus_core::KnownBrowser;
 use focus_core::ports::{
-    Autostart, AutostartError, EnforceError, Enforcer, ForegroundApp, Notifier, NotifyError,
-    ProcessList, WindowedApps,
+    Autostart, AutostartError, EnforceError, Enforcer, ForegroundApp, NotificationSettings,
+    Notifier, NotifyError, ProcessList, Silencing, WindowedApps,
 };
 
 /// No enforcement yet: closes nothing, sees no apps, leaves notifications alone and doesn't
@@ -49,12 +49,22 @@ impl ForegroundApp for PendingEnforcer {
 }
 
 impl Notifier for PendingEnforcer {
-    fn silence(&self) -> Result<(), NotifyError> {
+    /// Unsupported, so the window offers no Do Not Disturb button. KDE will silence notifications
+    /// by itself (`Notifications.Inhibit`) in step 9.
+    fn silence(&self) -> Result<Silencing, NotifyError> {
         self.warn_once();
-        Ok(())
+        Ok(Silencing::Unsupported)
     }
 
     fn restore(&self) -> Result<(), NotifyError> {
+        Ok(())
+    }
+}
+
+impl NotificationSettings for PendingEnforcer {
+    /// Never asked for, since silencing doesn't ask the user; logs if it is.
+    fn open(&self) -> Result<(), NotifyError> {
+        tracing::info!("no notification settings page to open on Linux yet");
         Ok(())
     }
 }
@@ -85,8 +95,9 @@ pub fn known_browsers() -> Vec<KnownBrowser> {
 #[cfg(test)]
 mod tests {
     use focus_core::testing::{
-        autostart_contract, enforcer_contract, foreground_app_contract, notifier_contract,
-        process_list_contract, windowed_apps_contract,
+        autostart_contract, enforcer_contract, foreground_app_contract,
+        notification_settings_contract, notifier_contract, process_list_contract,
+        windowed_apps_contract,
     };
 
     use super::*;
@@ -98,6 +109,7 @@ mod tests {
         process_list_contract(&pending);
         foreground_app_contract(&pending);
         notifier_contract(&pending);
+        notification_settings_contract(&pending);
         autostart_contract(&pending);
         windowed_apps_contract(&pending);
     }

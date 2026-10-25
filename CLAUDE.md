@@ -30,7 +30,7 @@ Offline-first focus app (Rust, Iced) for Windows and KDE Plasma on Wayland. It b
 - Time comes from the `Clock` port, never `SystemTime::now()` in the core, so session logic is testable.
 - Persisted files (state JSON) are written atomically: temp file, then rename.
 - Public items get a one-line doc comment. Keep functions small; prefer pure functions in the core.
-- Platform code uses `#[cfg(windows)]` / `#[cfg(target_os = "linux")]` only inside the `enforce-*` crates, `win-user` (Windows user/SID helpers), `focus-install` (starting sibling processes without a console window), `secrets-keyring` (the OS keychain), the daemon's wiring, the apps' `windows_subsystem` attribute and `ipc-transport`'s endpoint security (`windows_security.rs` and the endpoint code that calls it).
+- Platform code uses `#[cfg(windows)]` / `#[cfg(target_os = "linux")]` only inside the `enforce-*` crates, `win-user` (Windows user/SID helpers), `focus-install` (starting sibling processes without a console window), `secrets-keyring` (the OS keychain), `focus-hotkey` (system-wide shortcuts), the daemon's wiring, the apps' `windows_subsystem` attribute and `ipc-transport`'s endpoint security (`windows_security.rs` and the endpoint code that calls it).
 - Don't add a dependency without saying why in your summary; prefer well-maintained crates already in `docs/DESIGN.md`.
 
 ## Testing
@@ -44,9 +44,30 @@ Offline-first focus app (Rust, Iced) for Windows and KDE Plasma on Wayland. It b
 
 - Start each task by restating the goal and listing the files you'll touch; ask if the step in `docs/BUILD_PLAN.md` is ambiguous.
 - Small, reviewable changes. Conventional commit messages (`feat(core): ...`, `fix(nmh): ...`).
-- Work on a feature branch, never directly on `main`. When a step's checks pass, commit, push, open the PR, then run `/code-review --comment` on it. Otherwise commit only when asked.
-- At the end of a task, summarise what changed, what's tested, what needs manual testing, and anything you deferred.
+- Work on a feature branch, never directly on `main`. When a step's checks pass, commit, push and open the PR. Don't run `/code-review` unless the developer asks for it. Otherwise commit only when asked.
+- One build step (or sub-step) per PR. If a step needs more than about 15 files or several crates plus the extension, propose splitting it before starting. Don't add extra work (another browser, a refactor) to an open step; suggest it as its own step.
+- At the end of a task, summarise briefly what changed, what's tested, what needs manual testing, and anything you deferred.
 - The developer is a CS student learning Rust: briefly explain non-obvious Rust (lifetimes, trait objects, async, `Send`/`Sync`) in your summary when you use it.
+
+## Keeping usage down
+
+The developer has a limited usage budget. Prefer the cheaper path:
+
+- While iterating, run only the affected crate's tests (`cargo test -p <crate>`), or `npm test` for the extension. Run the full command list below once, before committing.
+- Read files in parts (`grep -n`, then the relevant lines), not whole large files. Don't re-read a file you just edited.
+- Don't try to drive or click the UI window. A screenshot of a page that needs no clicks is fine if it's quick; otherwise list the visual checks for the developer.
+- Keep PR descriptions, ADRs and summaries short: bullet points, no repeated detail. The manual checklist belongs in the PR, not repeated in chat.
+- Don't investigate things outside the task (old logs, unrelated machine state) unless they block it; mention them in one line instead.
+- Keep command output short; it stays in the context for the rest of the session. Use `cargo test -q 2>&1 | tail -30`, `cargo clippy ... --message-format short 2>&1 | head -50`, `npm test -- --reporter=dot`, and `| tail`/`| head` on builds and logs. Rerun without the filter only if the short output hides the failure.
+- Make fewer, bigger tool calls: all of a file's edits at once, and independent reads, searches and commands in parallel. Don't re-check what a tool already reported as done.
+
+## Handoff
+
+Each sub-step gets its own session. When the PR is open and CI has passed:
+
+1. Update the build-progress memory: the step and PR number, what's merged, the manual checks left for the developer, and any gotchas the next session needs (anything not in the code, the PR or the ADRs).
+2. Tell the developer it's ready to merge, and to start the next step with `/clear` and then "Read build-progress and continue."
+3. Stop. Don't start the next step in the same session.
 
 ## Commands
 

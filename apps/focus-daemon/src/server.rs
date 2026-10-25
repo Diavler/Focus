@@ -44,6 +44,7 @@ pub async fn serve(listener: Listener, service: Service, shutdown: impl Future<O
     let mut tasks = JoinSet::new();
     tasks.spawn(tick_forever(Arc::clone(&shared)));
     tasks.spawn(sync_forever(Arc::clone(&shared)));
+    tasks.spawn(send_parked_forever(Arc::clone(&shared)));
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -197,6 +198,36 @@ async fn sync_forever(shared: Shared) {
         .await;
         if let Err(error) = stored {
             tracing::error!("storing the plan panicked: {error}");
+        }
+    }
+}
+
+/// Sends parked items to the task inbox whenever the service says a send is due. Like the plan
+/// fetch, the send runs on the blocking pool without the service's lock.
+async fn send_parked_forever(shared: Shared) {
+    let mut interval = tokio::time::interval(SYNC_CHECK);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let due = Arc::clone(&shared);
+        let send = tokio::task::spawn_blocking(move || {
+            lock(&due).as_mut().and_then(Service::inbox_send_due)
+        })
+        .await;
+        let Ok(Some(send)) = send else { continue };
+        let Ok(sent) = tokio::task::spawn_blocking(move || send.run()).await else {
+            tracing::error!("sending parked items panicked");
+            continue;
+        };
+        let store = Arc::clone(&shared);
+        let stored = tokio::task::spawn_blocking(move || {
+            if let Some(service) = lock(&store).as_mut() {
+                service.store_sent(&sent);
+            }
+        })
+        .await;
+        if let Err(error) = stored {
+            tracing::error!("storing what was sent panicked: {error}");
         }
     }
 }

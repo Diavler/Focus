@@ -3,7 +3,7 @@
 //! daemon, which writes `settings.toml`.
 
 use focus_core::{AutoStartRule, EditableSettings};
-use iced::widget::{Column, button, column, row, space, text, text_input, toggler};
+use iced::widget::{Column, button, column, pick_list, row, space, text, text_input, toggler};
 use iced::{Alignment, Element, Length};
 use ipc_proto::StatusReport;
 
@@ -134,12 +134,14 @@ fn same_content<'a>(
         configs,
         auto_start: _,
         friction,
+        parking_hotkey,
         revision: _,
     } = settings;
     *start_at_login == other.start_at_login
         && *lists == other.lists
         && *configs == other.configs
         && *friction == other.friction
+        && *parking_hotkey == other.parking_hotkey
         && auto_start.into_iter().eq(&other.auto_start)
 }
 
@@ -151,6 +153,7 @@ pub enum Msg {
     List(configs::Edit),
     StartAtLogin(bool),
     Friction(crate::friction::Edit),
+    ParkingHotkey(focus_core::Hotkey),
     Save,
     Discard,
     Reload,
@@ -310,9 +313,34 @@ impl App {
             &draft.edited.friction,
             status.friction_loosen_after.map(|at| (at, status.now)),
         );
-        column![start_at_login, friction, self.kill_switch_card(status)]
-            .spacing(16)
-            .into()
+        let shortcut = card(
+            column![
+                row![
+                    heading("Parking lot shortcut"),
+                    info(
+                        "Pressed in any app, it brings up Focus with the parking lot ready to \
+                         type into; Enter parks the thought and puts Focus away again. Pick \
+                         another if an app you use already has this one."
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                pick_list(
+                    focus_core::Hotkey::ALL,
+                    Some(draft.edited.parking_hotkey),
+                    |hotkey| Message::Settings(Msg::ParkingHotkey(hotkey)),
+                ),
+            ]
+            .spacing(12),
+        );
+        column![
+            start_at_login,
+            shortcut,
+            friction,
+            self.kill_switch_card(status)
+        ]
+        .spacing(16)
+        .into()
     }
 
     /// Stopping Focus entirely: ask, wait, then confirm.
@@ -418,6 +446,7 @@ mod tests {
             configs: Vec::new(),
             auto_start: Vec::new(),
             friction: focus_core::Friction::default(),
+            parking_hotkey: focus_core::Hotkey::default(),
             revision: revision.into(),
         }
     }

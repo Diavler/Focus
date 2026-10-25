@@ -1,44 +1,48 @@
-//! The `Notifier` port for Windows.
+//! The `Notifier` and `NotificationSettings` ports for Windows.
 //!
-//! Windows has no supported API for an app to turn on Do Not Disturb, so "silencing" opens the
-//! notification settings page once per session for the user to switch it on. Restoring can't be
-//! done for them either; it just allows the next session to prompt again.
+//! Windows has no supported API for an app to turn on Do Not Disturb, so silencing answers
+//! [`Silencing::AskUser`]: the window then offers a button, and pressing it opens the notification
+//! settings page for the user to switch Do Not Disturb on. Nothing opens by itself.
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Mutex, PoisonError};
 
-use focus_core::ports::{Notifier, NotifyError};
+use focus_core::ports::{NotificationSettings, Notifier, NotifyError, Silencing};
 
 use crate::Mode;
 
 /// Where Windows 11 keeps the Do Not Disturb switch.
 const SETTINGS_PAGE: &str = "ms-settings:notifications";
 
-/// Prompts the user to turn on Do Not Disturb.
-#[derive(Debug)]
-pub struct WindowsNotifier {
-    mode: Mode,
-    prompted: Mutex<bool>,
-}
+/// Answers that the user has to turn on Do Not Disturb.
+#[derive(Debug, Default)]
+pub struct WindowsNotifier;
 
-impl WindowsNotifier {
-    /// A notifier that opens Settings, or only logs in [`Mode::DryRun`].
-    pub fn new(mode: Mode) -> Self {
-        Self {
-            mode,
-            prompted: Mutex::new(false),
-        }
+impl Notifier for WindowsNotifier {
+    fn silence(&self) -> Result<Silencing, NotifyError> {
+        Ok(Silencing::AskUser)
+    }
+
+    fn restore(&self) -> Result<(), NotifyError> {
+        Ok(())
     }
 }
 
-impl Notifier for WindowsNotifier {
-    fn silence(&self) -> Result<(), NotifyError> {
-        let mut prompted = self.prompted.lock().unwrap_or_else(PoisonError::into_inner);
-        if *prompted {
-            return Ok(());
-        }
-        *prompted = true;
+/// Opens the notification settings page.
+#[derive(Debug)]
+pub struct WindowsNotificationSettings {
+    mode: Mode,
+}
+
+impl WindowsNotificationSettings {
+    /// Opens Settings, or only logs in [`Mode::DryRun`].
+    pub fn new(mode: Mode) -> Self {
+        Self { mode }
+    }
+}
+
+impl NotificationSettings for WindowsNotificationSettings {
+    fn open(&self) -> Result<(), NotifyError> {
         if self.mode == Mode::DryRun {
             tracing::info!("dry run: would open {SETTINGS_PAGE} to turn on Do Not Disturb");
             return Ok(());
@@ -54,22 +58,19 @@ impl Notifier for WindowsNotifier {
                 reason: format!("couldn't open notification settings: {error}"),
             })
     }
-
-    fn restore(&self) -> Result<(), NotifyError> {
-        *self.prompted.lock().unwrap_or_else(PoisonError::into_inner) = false;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use focus_core::testing::notifier_contract;
+    use focus_core::testing::{notification_settings_contract, notifier_contract};
 
     use super::*;
 
     #[test]
-    fn dry_run_passes_the_contract() {
+    fn asks_the_user_and_passes_the_contracts() {
+        notifier_contract(&WindowsNotifier);
+        assert_eq!(WindowsNotifier.silence(), Ok(Silencing::AskUser));
         // Live mode would open the Settings app, so only the dry run is tested automatically.
-        notifier_contract(&WindowsNotifier::new(Mode::DryRun));
+        notification_settings_contract(&WindowsNotificationSettings::new(Mode::DryRun));
     }
 }

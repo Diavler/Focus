@@ -21,7 +21,7 @@ use focus_core::ConfigState;
 use focus_core::ports::NoopHistory;
 use focus_daemon::{InstalledUi, Ports, Service, SystemClock, serve};
 use focus_install::{InstanceLock, Paths};
-use integrations::{IcalCalendar, TodoistTasks};
+use integrations::{IcalCalendar, TodoistInbox, TodoistTasks};
 use ipc_transport::{BindError, Endpoint, bind};
 use secrets_keyring::KeyringSecrets;
 use state_json::JsonStateStore;
@@ -97,6 +97,7 @@ async fn run() -> anyhow::Result<()> {
         processes: enforcement.processes,
         foreground: enforcement.foreground,
         notifier: enforcement.notifier,
+        notification_settings: enforcement.notification_settings,
         browsers: enforcement.browsers,
         autostart: enforcement.autostart,
         ui: Arc::new(InstalledUi {
@@ -106,6 +107,7 @@ async fn run() -> anyhow::Result<()> {
         }),
         calendar: Arc::new(IcalCalendar::new(secrets.clone())),
         tasks: Arc::new(TodoistTasks::new(secrets.clone())),
+        inbox: Arc::new(TodoistInbox::new(secrets.clone())),
         secrets,
         settings: settings.clone(),
         windowed: enforcement.windowed,
@@ -178,7 +180,8 @@ mod platform {
     use std::path::Path;
 
     use focus_core::ports::{
-        Autostart, Enforcer, ForegroundApp, Notifier, ProcessList, WindowedApps,
+        Autostart, Enforcer, ForegroundApp, NotificationSettings, Notifier, ProcessList,
+        WindowedApps,
     };
 
     /// One adapter per enforcement port, plus the browsers to watch.
@@ -191,6 +194,8 @@ mod platform {
         pub foreground: Arc<dyn ForegroundApp>,
         /// Silences notifications during sessions.
         pub notifier: Arc<dyn Notifier>,
+        /// Opens the notification settings when the user asks.
+        pub notification_settings: Arc<dyn NotificationSettings>,
         /// The browsers to watch.
         pub browsers: Vec<KnownBrowser>,
         /// Registers Focus to start at login.
@@ -203,8 +208,8 @@ mod platform {
     #[cfg(windows)]
     pub fn enforcement(dry_run: bool, install: &Path) -> Enforcement {
         use enforce_windows::{
-            Mode, WindowsAutostart, WindowsEnforcer, WindowsForeground, WindowsNotifier,
-            WindowsWindowedApps,
+            Mode, WindowsAutostart, WindowsEnforcer, WindowsForeground,
+            WindowsNotificationSettings, WindowsNotifier, WindowsWindowedApps,
         };
         let mode = if dry_run { Mode::DryRun } else { Mode::Live };
         // One enforcer serves both ports; `Arc` lets it be shared.
@@ -213,7 +218,8 @@ mod platform {
             enforcer: enforcer.clone(),
             processes: enforcer,
             foreground: Arc::new(WindowsForeground),
-            notifier: Arc::new(WindowsNotifier::new(mode)),
+            notifier: Arc::new(WindowsNotifier),
+            notification_settings: Arc::new(WindowsNotificationSettings::new(mode)),
             browsers: enforce_windows::known_browsers(),
             autostart: Arc::new(WindowsAutostart::new(mode, install)),
             windowed: Arc::new(WindowsWindowedApps),
@@ -229,6 +235,7 @@ mod platform {
             processes: pending.clone(),
             foreground: pending.clone(),
             notifier: pending.clone(),
+            notification_settings: pending.clone(),
             browsers: enforce_linux_kde::known_browsers(),
             autostart: pending.clone(),
             windowed: pending,

@@ -9,14 +9,15 @@ mod fakes;
 
 pub use contracts::{
     autostart_contract, calendar_source_contract, clock_contract, config_source_contract,
-    enforcer_contract, foreground_app_contract, history_contract, notifier_contract,
-    process_list_contract, secrets_contract, settings_editor_contract, state_store_contract,
-    task_source_contract, ui_watch_contract, windowed_apps_contract,
+    enforcer_contract, foreground_app_contract, global_hotkey_contract, history_contract,
+    notification_settings_contract, notifier_contract, process_list_contract, secrets_contract,
+    settings_editor_contract, state_store_contract, task_inbox_contract, task_source_contract,
+    ui_watch_contract, windowed_apps_contract,
 };
 pub use fakes::{
     FakeAutostart, FakeCalendar, FakeClock, FakeConfigSource, FakeEnforcer, FakeForegroundApp,
-    FakeNotifier, FakeSettingsFile, FakeTasks, FakeUi, FakeWindowedApps, MemorySecrets,
-    MemoryStateStore, RecordingHistory,
+    FakeHotkey, FakeInbox, FakeNotificationSettings, FakeNotifier, FakeSettingsFile, FakeTasks,
+    FakeUi, FakeWindowedApps, MemorySecrets, MemoryStateStore, RecordingHistory,
 };
 
 #[cfg(test)]
@@ -46,6 +47,15 @@ mod tests {
         foreground.set(Some("chrome"));
         foreground_app_contract(&foreground);
         notifier_contract(&FakeNotifier::default());
+        notifier_contract(&FakeNotifier::asking());
+        notification_settings_contract(&FakeNotificationSettings::default());
+        let inbox = FakeInbox::default();
+        task_inbox_contract(&inbox);
+        assert_eq!(inbox.added().len(), 1, "a repeated send isn't added twice");
+        inbox.fail_with(Some(SourceError::NotConfigured));
+        task_inbox_contract(&inbox);
+        let hotkey = FakeHotkey::default();
+        global_hotkey_contract(&hotkey, crate::Hotkey::CtrlAltP);
         history_contract(&RecordingHistory::default());
         history_contract(&NoopHistory);
         autostart_contract(&FakeAutostart::default());
@@ -64,6 +74,7 @@ mod tests {
             }],
             auto_start: Vec::new(),
             friction: crate::Friction::default(),
+            parking_hotkey: crate::Hotkey::default(),
             revision: String::new(),
         });
         settings_editor_contract(&settings, &settings);

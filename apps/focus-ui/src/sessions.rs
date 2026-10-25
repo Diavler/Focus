@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::{Local, TimeZone};
 use focus_core::{
     BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, OverridePolicy,
-    RunningSession, Strictness, Timestamp,
+    RunningSession, Strictness, Timestamp, ports::Silencing,
 };
 use iced::widget::{
     Column, button, column, pick_list, radio, row, slider, space, text, text_input,
@@ -50,6 +50,7 @@ impl App {
                 page = page.push(self.new_session_card());
             }
         }
+        page = page.push(self.parking_card(status));
         if let Some(pending) = pending_summary(status) {
             page = page.push(card(
                 column![heading("Cooling off"), caption(pending)].spacing(8),
@@ -75,10 +76,31 @@ impl App {
                 bold(format_duration(running.time_left(status.now))).size(64),
                 caption(format!("Ends at {}.", clock(running.ends_at(), &Local))),
                 caption(unlock_line(running, status)),
+                self.do_not_disturb(status),
                 self.end_controls(running, status),
             ]
             .spacing(12),
         )
+        .into()
+    }
+
+    /// A button to turn on Do Not Disturb, where Focus can't do it itself (Windows).
+    fn do_not_disturb<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
+        if status.notifications != Some(Silencing::AskUser) {
+            return space::vertical().height(0).into();
+        }
+        row![
+            button(text("Turn on Do Not Disturb").size(14))
+                .style(button::secondary)
+                .on_press_maybe(self.idle_then(Message::OpenNotificationSettings)),
+            info(
+                "Windows doesn't let apps switch Do Not Disturb on, so this opens the setting for \
+                 you to switch it on. Focus can't switch it off again either, so turn it off \
+                 yourself after the session."
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
         .into()
     }
 
@@ -352,6 +374,7 @@ fn browser_name(heartbeat: &str) -> String {
         "brave" => "Brave".to_owned(),
         "opera" => "Opera".to_owned(),
         "chromium" => "Chromium".to_owned(),
+        "firefox" => "Firefox".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -516,6 +539,9 @@ mod tests {
             friction: focus_core::Friction::default(),
             friction_loosen_after: None,
             unlocks_left: 3,
+            parking_lot: ipc_proto::ParkingStatus::default(),
+            notifications: None,
+            parking_hotkey: focus_core::Hotkey::default(),
         }
     }
 

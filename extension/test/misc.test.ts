@@ -5,7 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import { FEED_MATCHES, hideFeedCss } from "../src/feeds";
 import { BASE_DELAY, MAX_DELAY, delaySeconds } from "../src/friction";
-import { DEFAULT_FRICTION, frictionFromStatus, sessionFromStatus, unlockRefusal, type RunningSession } from "../src/protocol";
+import {
+  DEFAULT_FRICTION,
+  frictionFromStatus,
+  parkRefusal,
+  sessionFromStatus,
+  unlockRefusal,
+  type RunningSession,
+} from "../src/protocol";
 
 describe("delaySeconds", () => {
   it("grows with each visit up to the cap", () => {
@@ -48,6 +55,34 @@ describe("chromium manifest", () => {
   });
 });
 
+describe("firefox manifest", () => {
+  const firefox = JSON.parse(readFileSync("manifests/firefox.json", "utf8"));
+  const chromium = JSON.parse(readFileSync("manifests/chromium.json", "utf8"));
+
+  it("has the add-on ID focus-nmh trusts", () => {
+    const register = readFileSync("../apps/focus-nmh/src/register.rs", "utf8");
+    expect(register).toContain(`FIREFOX_EXTENSION_ID: &str = "${firefox.browser_specific_settings.gecko.id}"`);
+  });
+
+  it("asks for what the Chromium manifest asks for, with Firefox's background and no Chrome keys", () => {
+    for (const key of ["permissions", "host_permissions", "content_scripts", "web_accessible_resources", "action", "incognito"]) {
+      expect(firefox[key], key).toEqual(chromium[key]);
+    }
+    expect(firefox.background).toEqual({ scripts: ["background.js"] });
+    expect(firefox.key).toBeUndefined();
+    expect(firefox.minimum_chrome_version).toBeUndefined();
+  });
+});
+
+describe("platform modules", () => {
+  it("export the same names, so either can stand in for ./platform", async () => {
+    const chromium = await import("../src/platform/chromium");
+    const firefox = await import("../src/platform/firefox");
+    expect(Object.keys(firefox).sort()).toEqual(Object.keys(chromium).sort());
+    expect(firefox.browserName()).toBe("firefox");
+  });
+});
+
 describe("frictionFromStatus", () => {
   it("reads the limits and unlocks left, with defaults for an older daemon", () => {
     const friction = { ...DEFAULT_FRICTION, tab_cap: 0 };
@@ -71,6 +106,22 @@ describe("unlockRefusal", () => {
     expect(refused({ budget_spent: { next_at: null } })).toContain("budget is 0");
     expect(refused({ budget_spent: { next_at: 0 } })).toContain("comes back at");
     expect(unlockRefusal({ type: "error", error: { kind: "unreachable", message: "x" } })).toContain("running");
+  });
+});
+
+describe("parkRefusal", () => {
+  it("is null when parked, and explains each refusal", () => {
+    expect(parkRefusal({ type: "done" })).toBeNull();
+    expect(parkRefusal({ type: "error", error: { kind: "unreachable", message: "x" } })).toContain("running");
+    expect(parkRefusal({ type: "error", error: { kind: "park", error: { full: { max: 500 } } } })).toContain("full");
+    expect(parkRefusal({ type: "error", error: { kind: "park", error: "empty" } })).toContain("nothing");
+  });
+});
+
+describe("toolbar button", () => {
+  it("is declared, so Later works from any page", () => {
+    const manifest = JSON.parse(readFileSync("manifests/chromium.json", "utf8"));
+    expect(manifest.action.default_title).toContain("Later");
   });
 });
 

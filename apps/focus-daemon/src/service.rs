@@ -6,20 +6,22 @@ use std::time::Duration;
 
 use focus_core::ports::{
     Autostart, CalendarSource, Clock, ConfigSource, ConfigSourceError, Enforcer, ForegroundApp,
-    History, HistoryEvent, Notifier, PersistedState, ProcessList, SecretKey, Secrets,
-    SettingsEditor, StateStore, StateStoreError, TaskSource, UiWatch, WindowedApps,
+    History, HistoryEvent, NotificationSettings, Notifier, PersistedState, ProcessList, SecretKey,
+    Secrets, SettingsEditor, Silencing, StateStore, StateStoreError, TaskInbox, TaskSource,
+    UiWatch, WindowedApps,
 };
 use focus_core::{
-    AutoStartRule, BrowserPolicy, BrowserWatch, EditableSettings, Heartbeat, KillSwitch,
+    AutoStartRule, BrowserPolicy, BrowserWatch, EditableSettings, Heartbeat, Hotkey, KillSwitch,
     KnownBrowser, PlannedStart, RuleAction, SessionError, SessionSpec, SessionState, StopPolicy,
     Strictness, Timestamp, UnlockError, Verdict, apps_to_close, planned_starts, scheduled_configs,
 };
 use ipc_proto::{
-    BrowserStatus, DaemonError, PendingSummary, PlanStatus, PlanView, Request, Response,
-    SourceState, StatusReport,
+    BrowserStatus, DaemonError, ParkingStatus, PendingSummary, PlanStatus, PlanView, Request,
+    Response, SourceState, StatusReport,
 };
 use thiserror::Error;
 
+use crate::inbox_sync::{InboxSchedule, InboxSend, InboxSent};
 use crate::plan_sync::{PlanFetch, PlanFetched, SyncSchedule, merge, source_state, source_status};
 
 /// The adapters the daemon runs on, chosen by the composition root (or a test).
@@ -41,6 +43,8 @@ pub struct Ports {
     pub foreground: Arc<dyn ForegroundApp>,
     /// Silences notifications during sessions.
     pub notifier: Arc<dyn Notifier>,
+    /// Opens the notification settings, where the user has to silence notifications themselves.
+    pub notification_settings: Arc<dyn NotificationSettings>,
     /// The browsers this platform knows, closed during a session unless their extension checks in.
     pub browsers: Vec<KnownBrowser>,
     /// Registers Focus to start at login.
@@ -51,6 +55,8 @@ pub struct Ports {
     pub calendar: Arc<dyn CalendarSource>,
     /// The task list, for automatic starts.
     pub tasks: Arc<dyn TaskSource>,
+    /// The task list's inbox, where parked items go.
+    pub inbox: Arc<dyn TaskInbox>,
     /// The OS keychain, holding the calendar address and task token.
     pub secrets: Arc<dyn Secrets>,
     /// Writes the window's settings changes into the settings file.
@@ -100,6 +106,12 @@ pub struct Service {
     kill_switch: KillSwitch,
     /// Set when a stop was confirmed: the server shuts down after answering.
     stopping: bool,
+    /// What silencing notifications answered for the running session.
+    silencing: Option<Silencing>,
+    /// The parking lot's shortcut, from the last good settings.
+    parking_hotkey: Hotkey,
+    /// When parked items are sent to the task inbox next.
+    inbox_schedule: InboxSchedule,
 }
 
 /// The shortest time between two UI launches.
@@ -136,9 +148,17 @@ impl Service {
             tasks_state: SourceState::Unknown,
             kill_switch: KillSwitch::default(),
             stopping: false,
+            silencing: None,
+            parking_hotkey: Hotkey::default(),
+            inbox_schedule: InboxSchedule::default(),
         };
         service.reload_settings();
         service.ensure_autostart();
+        // A session resumed after a restart: silence again (KDE's inhibit ended with the old
+        // process) and learn whether the window should offer the Do Not Disturb button.
+        if service.state.session.running().is_some() {
+            service.silencing = service.silence();
+        }
         Ok(service)
     }
 
@@ -196,6 +216,40 @@ impl Service {
             Request::Unlock { url, reason } => self
                 .unlock(&url, &reason, now)
                 .map(|until| Response::Unlocked { until }),
+            Request::Park { text, url } => self
+                .update(|state| {
+                    state
+                        .parking_lot
+                        .park(&text, url.as_deref(), now)
+                        .map_err(|error| DaemonError::Park { error })
+                })
+                .map(|_| {
+                    self.inbox_schedule.request();
+                    Response::Done
+                }),
+            Request::ParkingLot => Ok(Response::ParkingLot {
+                items: self.state.parking_lot.items().to_vec(),
+            }),
+            Request::Unpark { id } => self
+                .update(|state| {
+                    state.parking_lot.remove(id);
+                    Ok(())
+                })
+                .map(|()| Response::Done),
+            Request::ClearSentParked => self
+                .update(|state| {
+                    state.parking_lot.remove_sent();
+                    Ok(())
+                })
+                .map(|()| Response::Done),
+            Request::OpenNotificationSettings => self
+                .ports
+                .notification_settings
+                .open()
+                .map(|()| Response::Done)
+                .map_err(|error| DaemonError::Internal {
+                    message: error.to_string(),
+                }),
             Request::DelayVisit { url } => self.delay_visit(&url).map(|wait| Response::Delay {
                 seconds: wait.as_secs(),
             }),
@@ -322,6 +376,7 @@ impl Service {
                 // Only once the configs they name are in effect.
                 self.auto_rules = desired.auto_start;
                 self.planned = planned;
+                self.parking_hotkey = desired.parking_hotkey;
             }
             Err(error) => tracing::warn!("{error}"),
         }
@@ -419,7 +474,48 @@ impl Service {
                 message: error.to_string(),
             })?;
         self.sync.request();
+        self.inbox_schedule.request();
         Ok(())
+    }
+
+    /// The send of parked items to run now, if one is due (soon after parking, and retried after
+    /// a failure). Run it without holding the service, then pass the result to
+    /// [`Service::store_sent`].
+    pub fn inbox_send_due(&mut self) -> Option<InboxSend> {
+        let now = self.now();
+        // Checked before copying the items, since this runs every few seconds under the lock.
+        if self.state.parking_lot.waiting() == 0 || !self.inbox_schedule.due(now) {
+            return None;
+        }
+        let items = self.state.parking_lot.unsent();
+        Some(self.inbox_schedule.start(&self.ports.inbox, items, now))
+    }
+
+    /// Records which parked items reached the inbox, and why the rest didn't.
+    pub fn store_sent(&mut self, sent: &InboxSent) {
+        let now = self.now();
+        let before = self.inbox_schedule.state().clone();
+        self.inbox_schedule.finish(sent, now);
+        if let SourceState::Failing { problem, .. } = self.inbox_schedule.state()
+            && before != *self.inbox_schedule.state()
+        {
+            tracing::warn!("couldn't send parked items to the task inbox: {problem}");
+        }
+        for (_, reason) in &sent.refused {
+            tracing::warn!("the task inbox refused a parked item: {reason}");
+        }
+        let result = self.update(|state| {
+            for &id in &sent.sent {
+                state.parking_lot.mark_sent(id, now);
+            }
+            for (id, reason) in &sent.refused {
+                state.parking_lot.mark_refused(*id, reason);
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::warn!("{error}");
+        }
     }
 
     /// The plan fetch to run now, if one is due (at startup, every few minutes, and after a
@@ -664,6 +760,15 @@ impl Service {
                 .state
                 .unlocks
                 .left(self.now(), self.state.friction.in_effect()),
+            parking_lot: ParkingStatus {
+                total: self.state.parking_lot.items().len(),
+                waiting: self.state.parking_lot.waiting(),
+                refused: self.state.parking_lot.refused(),
+                inbox: self.inbox_schedule.state().clone(),
+                revision: self.state.parking_lot.revision(),
+            },
+            notifications: self.state.session.running().and(self.silencing),
+            parking_hotkey: self.parking_hotkey,
         }
     }
 
@@ -776,19 +881,30 @@ impl Service {
     }
 
     /// Silences notifications when a session starts and restores them when it ends.
-    fn silence_while_running(&self, before: &SessionState) {
+    fn silence_while_running(&mut self, before: &SessionState) {
         let (was, is) = (
             before.running().is_some(),
             self.state.session.running().is_some(),
         );
-        let result = match (was, is) {
-            (false, true) => self.ports.notifier.silence(),
-            (true, false) => self.ports.notifier.restore(),
-            _ => return,
-        };
-        if let Err(error) = result {
-            tracing::warn!("{error}");
+        match (was, is) {
+            (false, true) => self.silencing = self.silence(),
+            (true, false) => {
+                self.silencing = None;
+                if let Err(error) = self.ports.notifier.restore() {
+                    tracing::warn!("{error}");
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// Silences notifications, returning what the platform answered (or nothing if it failed).
+    fn silence(&self) -> Option<Silencing> {
+        self.ports
+            .notifier
+            .silence()
+            .inspect_err(|error| tracing::warn!("{error}"))
+            .ok()
     }
 
     fn now(&self) -> Timestamp {
@@ -818,8 +934,9 @@ mod tests {
     use focus_core::ports::NoopHistory;
     use focus_core::ports::SourceError;
     use focus_core::testing::{
-        FakeAutostart, FakeCalendar, FakeClock, FakeEnforcer, FakeForegroundApp, FakeNotifier,
-        FakeTasks, FakeUi, MemorySecrets, MemoryStateStore, RecordingHistory, state_store_contract,
+        FakeAutostart, FakeCalendar, FakeClock, FakeEnforcer, FakeForegroundApp, FakeInbox,
+        FakeNotificationSettings, FakeNotifier, FakeTasks, FakeUi, MemorySecrets, MemoryStateStore,
+        RecordingHistory, state_store_contract,
     };
     use focus_core::{CalendarEvent, EndEarlyResponse, EndReason, RuleAction, StopError, Task};
     use tempfile::TempDir;
@@ -847,6 +964,8 @@ mod tests {
         history: Arc<RecordingHistory>,
         apps: Arc<FakeEnforcer>,
         notifier: Arc<FakeNotifier>,
+        notification_settings: Arc<FakeNotificationSettings>,
+        inbox: Arc<FakeInbox>,
         foreground: Arc<FakeForegroundApp>,
         autostart: Arc<FakeAutostart>,
         ui: Arc<FakeUi>,
@@ -872,6 +991,8 @@ mod tests {
                     "notepad",
                 ])),
                 notifier: Arc::new(FakeNotifier::default()),
+                notification_settings: Arc::new(FakeNotificationSettings::default()),
+                inbox: Arc::new(FakeInbox::default()),
                 foreground: Arc::new(FakeForegroundApp::default()),
                 autostart: Arc::new(FakeAutostart::default()),
                 ui: Arc::new(FakeUi::default()),
@@ -891,6 +1012,7 @@ mod tests {
                 processes: self.apps.clone(),
                 foreground: self.foreground.clone(),
                 notifier: self.notifier.clone(),
+                notification_settings: self.notification_settings.clone(),
                 browsers: vec![KnownBrowser {
                     heartbeat_names: vec!["chrome".into()],
                     app: "chrome".into(),
@@ -899,6 +1021,7 @@ mod tests {
                 ui: self.ui.clone(),
                 calendar: self.calendar.clone(),
                 tasks: self.tasks.clone(),
+                inbox: self.inbox.clone(),
                 secrets: self.secrets.clone(),
                 settings: Arc::new(TomlConfigSource::new(&self.settings)),
                 windowed: Arc::new(focus_core::testing::FakeWindowedApps::with([
@@ -2060,5 +2183,140 @@ mod tests {
         let report = status(&mut service);
         assert_eq!(report.friction.tab_cap, 0);
         assert_eq!(report.friction_loosen_after, None);
+    }
+
+    #[test]
+    fn parked_items_are_kept_and_sent_once_the_inbox_answers() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        let park = |service: &mut Service, text: &str, url: Option<&str>| {
+            service.handle(Request::Park {
+                text: text.into(),
+                url: url.map(str::to_owned),
+            })
+        };
+        harness.inbox.fail_with(Some(SourceError::Unavailable {
+            reason: "offline".into(),
+        }));
+        assert_eq!(park(&mut service, "call the dentist", None), Response::Done);
+        assert_eq!(
+            park(&mut service, "", Some("https://serde.rs/")),
+            Response::Done
+        );
+        assert_eq!(
+            error(park(&mut service, " ", None)),
+            DaemonError::Park {
+                error: focus_core::ParkError::Empty
+            }
+        );
+
+        let send = service.inbox_send_due().expect("parking makes a send due");
+        service.store_sent(&send.run());
+        let report = status(&mut service);
+        assert_eq!(report.parking_lot.total, 2);
+        assert_eq!(report.parking_lot.waiting, 2, "offline: kept here");
+        assert!(matches!(
+            report.parking_lot.inbox,
+            SourceState::Failing { offline: true, .. }
+        ));
+        assert!(service.inbox_send_due().is_none(), "waits before retrying");
+
+        harness.inbox.fail_with(None);
+        harness.clock.advance(MINUTE);
+        let send = service.inbox_send_due().expect("retried after a minute");
+        service.store_sent(&send.run());
+        let report = status(&mut service);
+        assert_eq!(report.parking_lot.waiting, 0);
+        assert_eq!(report.parking_lot.inbox, SourceState::Ok);
+        assert_eq!(harness.inbox.added().len(), 2);
+
+        let restarted = harness.open();
+        assert_eq!(restarted.state().parking_lot.items().len(), 2, "saved");
+        service.handle(Request::ClearSentParked);
+        assert!(service.state().parking_lot.items().is_empty());
+    }
+
+    #[test]
+    fn an_item_the_inbox_refuses_is_kept_and_not_sent_again() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        harness.inbox.refuse("too long for Todoist");
+        for text in ["too long for Todoist", "fine"] {
+            service.handle(Request::Park {
+                text: text.into(),
+                url: None,
+            });
+        }
+        let revision = status(&mut service).parking_lot.revision;
+        let send = service.inbox_send_due().expect("due");
+        service.store_sent(&send.run());
+        let report = status(&mut service);
+        assert_eq!(
+            (report.parking_lot.waiting, report.parking_lot.refused),
+            (0, 1)
+        );
+        assert!(report.parking_lot.revision > revision);
+        assert_eq!(harness.inbox.added().len(), 1, "the other one went through");
+        harness.clock.advance(10 * MINUTE);
+        assert!(service.inbox_send_due().is_none(), "nothing left to send");
+    }
+
+    #[test]
+    fn unparking_removes_one_item() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        service.handle(Request::Park {
+            text: "a".into(),
+            url: None,
+        });
+        let items = match service.handle(Request::ParkingLot) {
+            Response::ParkingLot { items } => items,
+            other => panic!("expected the parking lot, got {other:?}"),
+        };
+        assert_eq!(items.len(), 1);
+        service.handle(Request::Unpark { id: items[0].id });
+        assert_eq!(status(&mut service).parking_lot.total, 0);
+    }
+
+    #[test]
+    fn the_window_offers_do_not_disturb_where_the_user_must_turn_it_on() {
+        let mut harness = Harness::new();
+        harness.notifier = Arc::new(FakeNotifier::asking());
+        let mut service = harness.open();
+        assert_eq!(status(&mut service).notifications, None, "no session");
+        start(&mut service, "coding", Strictness::Light);
+        assert_eq!(status(&mut service).notifications, Some(Silencing::AskUser));
+        assert_eq!(
+            harness.notification_settings.opened(),
+            0,
+            "nothing opens by itself"
+        );
+        assert_eq!(
+            service.handle(Request::OpenNotificationSettings),
+            Response::Done
+        );
+        assert_eq!(harness.notification_settings.opened(), 1);
+
+        let mut resumed = harness.open();
+        assert_eq!(
+            status(&mut resumed).notifications,
+            Some(Silencing::AskUser),
+            "known again after a restart"
+        );
+        resumed.handle(Request::EndSession);
+        assert_eq!(status(&mut resumed).notifications, None);
+    }
+
+    #[test]
+    fn the_parking_hotkey_comes_from_the_settings() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(status(&mut service).parking_hotkey, Hotkey::CtrlAltSpace);
+        harness.write_settings(&format!(
+            "parking_hotkey = \"ctrl+alt+p\"
+{SETTINGS}"
+        ));
+        service.reload_settings();
+        assert_eq!(status(&mut service).parking_hotkey, Hotkey::CtrlAltP);
     }
 }

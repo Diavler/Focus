@@ -4,8 +4,8 @@ use focus_core::KnownBrowser;
 
 /// Browsers by executable name. Chromium also runs as `chrome.exe`, so `chrome` accepts either
 /// heartbeat name (the two can't be told apart by process). Vivaldi reports itself as plain
-/// Chromium, which would let any Chromium heartbeat vouch for it, so it accepts none for now.
-/// Browsers without a heartbeat name (Vivaldi, Firefox) are closed during every session.
+/// Chromium, which would let any Chromium heartbeat vouch for it, so it accepts none for now and
+/// is closed during every session. Firefox's extension sends `firefox`.
 pub fn known_browsers() -> Vec<KnownBrowser> {
     [
         ("chrome", &["chrome", "chromium"][..]),
@@ -13,7 +13,7 @@ pub fn known_browsers() -> Vec<KnownBrowser> {
         ("brave", &["brave"][..]),
         ("opera", &["opera"][..]),
         ("vivaldi", &[][..]),
-        ("firefox", &[][..]),
+        ("firefox", &["firefox"][..]),
     ]
     .into_iter()
     .map(|(app, names)| KnownBrowser {

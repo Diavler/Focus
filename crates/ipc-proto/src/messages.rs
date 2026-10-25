@@ -1,9 +1,10 @@
 //! The requests clients send and the responses the daemon returns.
 
-use focus_core::ports::SecretKey;
+use focus_core::ports::{SecretKey, Silencing};
 use focus_core::{
-    BlockConfig, CalendarEvent, EditableSettings, EndEarlyResponse, Friction, PlannedStart,
-    SessionError, SessionState, StopError, Strictness, Task, Timestamp, UnlockError, Verdict,
+    BlockConfig, CalendarEvent, EditableSettings, EndEarlyResponse, Friction, Hotkey, ParkError,
+    ParkedItem, PlannedStart, SessionError, SessionState, StopError, Strictness, Task, Timestamp,
+    UnlockError, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -63,6 +64,27 @@ pub enum Request {
         /// The page.
         url: String,
     },
+    /// Parks a thought or a link (Later), to be sent to the task inbox when it's reachable.
+    /// Answered with [`Response::Done`].
+    Park {
+        /// What to remember; may be blank when there's a link.
+        text: String,
+        /// The page, for Later.
+        url: Option<String>,
+    },
+    /// Everything parked. Answered with [`Response::ParkingLot`]. Not relayed from the browser.
+    ParkingLot,
+    /// Removes one parked item. Answered with [`Response::Done`]. Not relayed from the browser.
+    Unpark {
+        /// Which item.
+        id: u64,
+    },
+    /// Removes every parked item that reached the task inbox. Answered with [`Response::Done`].
+    /// Not relayed from the browser.
+    ClearSentParked,
+    /// Opens the system's notification settings, for turning on Do Not Disturb where Focus can't.
+    /// Answered with [`Response::Done`]. Not relayed from the browser.
+    OpenNotificationSettings,
     /// Stores or (with `None` or a blank value) removes a credential in the OS keychain, then
     /// syncs the plan. Answered with [`Response::Done`]. Not relayed from the browser.
     SetSecret {
@@ -133,6 +155,11 @@ pub enum Response {
         /// App names, sorted.
         apps: Vec<String>,
     },
+    /// Answer to [`Request::ParkingLot`].
+    ParkingLot {
+        /// Every parked item, oldest first.
+        items: Vec<ParkedItem>,
+    },
     /// Answer to [`Request::Unlock`].
     Unlocked {
         /// When the unlock ends.
@@ -202,6 +229,30 @@ pub struct StatusReport {
     /// Unlocks left for Deep sessions out of the last 24 hours' budget.
     #[serde(default)]
     pub unlocks_left: u8,
+    /// The parking lot: how much is in it and how sending to the task inbox goes.
+    #[serde(default)]
+    pub parking_lot: ParkingStatus,
+    /// What silencing notifications answered for the running session; `None` without one.
+    #[serde(default)]
+    pub notifications: Option<Silencing>,
+    /// The shortcut that opens the parking lot, from the settings.
+    #[serde(default)]
+    pub parking_hotkey: Hotkey,
+}
+
+/// The parking lot at a glance.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkingStatus {
+    /// Items parked.
+    pub total: usize,
+    /// Items still to go to the task inbox.
+    pub waiting: usize,
+    /// Items the task inbox refused; they stay in the parking lot.
+    pub refused: usize,
+    /// How the last send to the task inbox went.
+    pub inbox: SourceState,
+    /// Goes up with every change to the parking lot, so the window knows to read it again.
+    pub revision: u64,
 }
 
 /// How the plan sources are doing, and what they'll start.
@@ -333,6 +384,12 @@ pub enum DaemonError {
     Stop {
         /// Why.
         error: StopError,
+    },
+    /// Something couldn't be parked.
+    #[error("{error}")]
+    Park {
+        /// Why.
+        error: ParkError,
     },
     /// An unlock was refused.
     #[error("{error}")]

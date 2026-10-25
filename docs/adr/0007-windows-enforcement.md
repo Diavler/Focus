@@ -24,16 +24,16 @@ Step 5 makes sessions bite outside the browser on Windows. The build plan now do
 - **Browser catalogue:** each browser's executable and the heartbeat names that vouch for it.
   - Chromium also runs as `chrome.exe`, so `chrome` accepts both names.
   - The extension reports any brand starting with "Opera" (including Opera GX) as `opera`.
-  - Vivaldi reports itself as plain Chromium, which would let any Chromium heartbeat vouch for it, so it accepts none for now. Like Firefox (no extension yet), it's closed during every session.
+  - Vivaldi reports itself as plain Chromium, which would let any Chromium heartbeat vouch for it, so it accepts none for now. It's closed during every session (Firefox was too until its extension arrived, ADR 0013).
 - **Foreground app:** `GetForegroundWindow`, then the owning process's image name. Reported in `Status` as `foreground_app`, ready for drift detection later.
-- **Do Not Disturb:** at session start, open `ms-settings:notifications` once (via `%SystemRoot%\explorer.exe`, by full path). Ending the session can't turn Do Not Disturb off again for the user.
+- **Do Not Disturb:** ~~at session start, open `ms-settings:notifications` once~~. Superseded by ADR 0012: `Notifier::silence` answers `AskUser` on Windows, and the window shows a "Turn on Do Not Disturb" button that opens `ms-settings:notifications` (via `%SystemRoot%\explorer.exe`, by full path) only when pressed. Ending the session can't turn Do Not Disturb off again for the user.
 - **`Mode::DryRun`** logs every action instead, including the move from asking to terminating. `focus-daemon --dry-run` uses it.
 
 **Shared Windows identity code** moved to a new `win-user` crate (current user SID, process owner, owned handles), used by `ipc-transport` and `enforce-windows`. CLAUDE.md's platform-code rule now lists it.
 
 **Daemon:**
 - Enforces every 5 s during a session.
-- Silences notifications when a session starts and restores them when it ends. The prompt isn't repeated when a running session resumes after a daemon restart.
+- Silences notifications when a session starts and restores them when it ends. Since ADR 0012 it also silences again when a running session resumes after a restart, which on Windows only re-learns that the button should show.
 - On other platforms it uses `enforce-linux-kde`'s `PendingEnforcer` placeholder until step 9, so Linux CI keeps building and testing everything.
 
 ## Consequences
