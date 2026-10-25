@@ -181,13 +181,17 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
             pick_list(configs, selected, move |config| {
                 Message::Rule(Edit::Config(index, config))
             })
-            .placeholder("configuration"),
+            .placeholder("configuration")
+            .style(style::picker)
+            .menu_style(style::menu),
             "The block configuration this rule runs: which sites and apps are blocked."
         ),
         tip(
             pick_list(&Strictness::ALL[..], Some(rule.strictness), move |level| {
                 Message::Rule(Edit::Strictness(index, level))
-            }),
+            })
+            .style(style::picker)
+            .menu_style(style::menu),
             "Light: end any time. Deep: end early only after a 30-second wait and a typed \
              reason. Locked: no ending early."
         ),
@@ -225,7 +229,7 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
     let minutes = u16::try_from(rule.task_duration.as_secs() / 60).unwrap_or(u16::MAX);
     let task_length = column![
         row![
-            text(format!("Task session length: {minutes} min")).size(14),
+            style::label(&format!("Task session length: {minutes} min")),
             info("How long a session lasts for a task that has no duration set in Todoist."),
         ]
         .spacing(8),
@@ -234,7 +238,8 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
             minutes.clamp(*TASK_MINUTES.start(), *TASK_MINUTES.end()),
             move |minutes| Message::Rule(Edit::TaskMinutes(index, minutes))
         )
-        .step(5u16),
+        .step(5u16)
+        .style(style::fader),
     ]
     .spacing(6);
     style::card(column![top, keywords, labels, task_length].spacing(12)).into()
@@ -264,10 +269,13 @@ pub(crate) fn entries<'a>(
     }
     let add = (!typed.trim().is_empty()).then_some(on_add);
     column![
-        row![text(title).size(14), info(explanation)].spacing(8),
+        row![style::label(title), info(explanation)]
+            .spacing(8)
+            .align_y(Alignment::Center),
         chips.wrap(),
         row![
             text_input(placeholder, typed)
+                .style(style::field)
                 .on_input(on_type)
                 .on_submit_maybe(add.clone()),
             button("Add").style(style::key).on_press_maybe(add),

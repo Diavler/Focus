@@ -75,6 +75,7 @@ impl App {
             row![
                 text_input("Park a thought for later…", &self.park_input)
                     .id(INPUT)
+                    .style(style::field)
                     .on_input(Message::ParkInput)
                     .on_submit_maybe(park.clone()),
                 button("Park").style(style::key_accent).on_press_maybe(park),

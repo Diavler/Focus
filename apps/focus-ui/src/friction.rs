@@ -1,12 +1,12 @@
 //! The friction limits on Settings → General: unlocks, the tab cap and the drift prompt.
 
 use focus_core::{Friction, Timestamp};
-use iced::widget::{Column, column, row, slider, text};
+use iced::widget::{Column, column, row, slider};
 use iced::{Alignment, Element};
 
 use crate::help::info;
 use crate::sessions::format_duration;
-use crate::style::{Tone, card, heading, toned};
+use crate::style::{self, Tone, card, heading, toned};
 use crate::{Message, settings};
 
 /// One change to the limits.
@@ -74,7 +74,8 @@ pub fn view<'a>(
                 0..=Friction::MAX_UNLOCKS_PER_DAY,
                 friction.unlocks_per_day,
                 move |n| { wrap(Edit::Unlocks(n)) }
-            ),
+            )
+            .style(style::fader),
         ),
         limit(
             format!("Each unlock lasts: {} min", friction.unlock_minutes),
@@ -83,7 +84,8 @@ pub fn view<'a>(
                 minutes_low..=minutes_high,
                 friction.unlock_minutes,
                 move |m| { wrap(Edit::UnlockMinutes(m)) }
-            ),
+            )
+            .style(style::fader),
         ),
         limit(
             match friction.tab_cap {
@@ -96,7 +98,8 @@ pub fn view<'a>(
                 tab_low.saturating_sub(1)..=tab_high,
                 to_slider(friction.tab_cap, tab_low),
                 move |cap| wrap(Edit::TabCap(cap)),
-            ),
+            )
+            .style(style::fader),
         ),
         limit(
             match friction.drift_hops {
@@ -110,7 +113,8 @@ pub fn view<'a>(
                 hops_low.saturating_sub(1)..=hops_high,
                 to_slider(friction.drift_hops, hops_low),
                 move |hops| wrap(Edit::DriftHops(hops)),
-            ),
+            )
+            .style(style::fader),
         ),
     ]
     .spacing(14);
@@ -136,7 +140,7 @@ fn limit<'a>(
     control: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     column![
-        row![text(label).size(14), info(help)]
+        row![style::label(&label), info(help)]
             .spacing(8)
             .align_y(Alignment::Center),
         control.into(),

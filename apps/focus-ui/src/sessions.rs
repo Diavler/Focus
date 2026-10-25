@@ -8,13 +8,12 @@ use focus_core::{
     BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, OverridePolicy,
     RunningSession, Strictness, Timestamp, ports::Silencing,
 };
-use iced::widget::{
-    Column, button, column, pick_list, radio, row, slider, space, text, text_input,
-};
+use iced::widget::{Column, button, column, pick_list, row, slider, space, text, text_input};
 use iced::{Alignment, Element, Length};
 use ipc_proto::StatusReport;
 
 use crate::agenda::clock;
+use crate::dial::dial;
 use crate::help::info;
 use crate::plan_pages::Line;
 use crate::style::{self, Tone, bold, caption, card, dot, heading, hero, pill, title, toned};
@@ -65,6 +64,28 @@ impl App {
         status: &'a StatusReport,
     ) -> Element<'a, Message> {
         let spec = running.spec();
+        let left = running.time_left(status.now);
+        let share_left = share(
+            left,
+            running
+                .ends_at()
+                .saturating_duration_since(running.started_at()),
+        );
+        let time = column![
+            style::lcd(format_duration(left)).size(34),
+            style::lcd("TIME LEFT").size(10),
+        ]
+        .spacing(2)
+        .align_x(Alignment::Center);
+        let progress = column![
+            row![
+                style::label("Progress"),
+                space::horizontal(),
+                style::label(&format!("{:.0}%", (1.0 - share_left) * 100.0)),
+            ],
+            style::meter(1.0 - share_left),
+        ]
+        .spacing(6);
         hero(
             column![
                 row![
@@ -73,17 +94,21 @@ impl App {
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
-                style::readout(
-                    style::mono(format_duration(running.time_left(status.now))).size(56)
-                )
-                .padding([14, 20])
-                .width(Length::Fill),
-                caption(format!("Ends at {}.", clock(running.ends_at(), &Local))),
-                caption(unlock_line(running, status)),
-                self.do_not_disturb(status),
+                row![
+                    dial(share_left, time, 200.0),
+                    column![
+                        caption(format!("Ends at {}.", clock(running.ends_at(), &Local))),
+                        caption(unlock_line(running, status)),
+                        self.do_not_disturb(status),
+                    ]
+                    .spacing(10),
+                ]
+                .spacing(24)
+                .align_y(Alignment::Center),
+                progress,
                 self.end_controls(running, status),
             ]
-            .spacing(12),
+            .spacing(14),
         )
         .into()
     }
@@ -163,13 +188,15 @@ impl App {
 
     fn new_session_card(&self) -> Element<'_, Message> {
         let config = row![
-            text("Configuration").width(Length::Fixed(120.0)),
+            style::label("Configuration").width(Length::Fixed(120.0)),
             pick_list(
                 self.config_names.as_slice(),
                 self.selected.as_ref(),
                 Message::ConfigPicked
             )
-            .placeholder("no configurations"),
+            .placeholder("no configurations")
+            .style(style::picker)
+            .menu_style(style::menu),
             info(
                 "A named set of rules: which sites are blocked, delayed, asked about or have \
                  their feeds hidden, and which apps are closed. Edit them in Settings → \
@@ -178,34 +205,37 @@ impl App {
         ]
         .spacing(12)
         .align_y(Alignment::Center);
-        let strictness = Strictness::ALL.iter().fold(
-            column![
-                row![
-                    text("Strictness"),
-                    info(
-                        "How hard the session is to get out of. Pick Deep or Locked when you \
-                         know you'll be tempted: the extra friction is the point."
-                    ),
-                ]
-                .spacing(8)
+        let strictness = column![
+            row![
+                style::label("Strictness"),
+                info(
+                    "How hard the session is to get out of. Pick Deep or Locked when you \
+                     know you'll be tempted: the extra friction is the point."
+                ),
             ]
-            .spacing(8),
-            |levels, &level| {
-                levels.push(radio(
-                    format!("{level}: {}", describe(level)),
-                    level,
-                    Some(self.strictness),
-                    Message::StrictnessPicked,
-                ))
-            },
-        );
+            .spacing(8)
+            .align_y(Alignment::Center),
+            style::segmented(
+                &Strictness::ALL,
+                self.strictness,
+                |level| level.to_string(),
+                Message::StrictnessPicked,
+            ),
+            caption(format!(
+                "{}: {}.",
+                self.strictness,
+                describe(self.strictness)
+            )),
+        ]
+        .spacing(8);
         let duration = column![
             row![
-                text(format!("Duration: {} min", self.minutes)),
+                style::label(&format!("Duration · {} min", self.minutes)),
                 info("How long the session runs. It ends by itself when the time is up."),
             ]
-            .spacing(8),
-            slider(MINUTES, self.minutes, Message::MinutesChanged),
+            .spacing(8)
+            .align_y(Alignment::Center),
+            slider(MINUTES, self.minutes, Message::MinutesChanged).style(style::fader),
         ]
         .spacing(8);
         let can_start = self.selected.is_some() && !self.action_pending;
@@ -265,6 +295,7 @@ impl App {
         column![
             text(prompt),
             text_input("Type a reason", &self.reason)
+                .style(style::field)
                 .on_input(Message::ReasonChanged)
                 .on_submit_maybe(confirm.clone()),
             row![
@@ -412,6 +443,14 @@ pub(crate) fn login_line(status: &StatusReport) -> Line {
     }
 }
 
+/// How much of `total` is `part`, from 0 to 1 (0 when `total` is zero).
+fn share(part: Duration, total: Duration) -> f32 {
+    if total.is_zero() {
+        return 0.0;
+    }
+    (part.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0)
+}
+
 /// One line on what a strictness level allows, derived from its policy.
 pub(crate) fn describe(strictness: Strictness) -> String {
     match strictness.end_early_policy() {
@@ -519,6 +558,14 @@ mod tests {
     use ipc_proto::PendingSummary;
 
     use super::*;
+
+    #[test]
+    fn shares_stay_between_zero_and_one() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(share(minute, minute * 4), 0.25);
+        assert_eq!(share(minute * 5, minute), 1.0);
+        assert_eq!(share(minute, Duration::ZERO), 0.0);
+    }
 
     #[test]
     fn formats_countdowns() {
