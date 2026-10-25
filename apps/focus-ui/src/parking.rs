@@ -98,7 +98,7 @@ impl App {
                             }
                         }
                     }),
-                button("Park").style(style::key_accent).on_press_maybe(park),
+                self.needs_daemon(button("Park").style(style::key_accent).on_press_maybe(park)),
             ]
             .spacing(10)
             .align_y(Alignment::Start),
@@ -110,7 +110,7 @@ impl App {
         body = body.push(sending_line(status));
         let mut list = column![].spacing(8);
         // Removing waits for an action on its way, so its answer isn't taken for the other's.
-        let idle = !self.action_pending;
+        let idle = !self.action_pending && self.connected();
         for item in self.parked.iter().rev().take(SHOWN) {
             list = list.push(item_row(item, idle));
         }

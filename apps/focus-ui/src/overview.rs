@@ -6,7 +6,7 @@ use ipc_proto::{SourceState, StatusReport};
 
 use crate::agenda::{self, Group};
 use crate::help::info;
-use crate::sessions::{format_duration, no_configurations};
+use crate::sessions::format_duration;
 use crate::style::{self, bold, caption, card, heading, title};
 use crate::{App, Message, Page, timeline};
 
@@ -111,15 +111,17 @@ impl App {
                 button(text("Change").size(14))
                     .style(style::key)
                     .on_press(Message::Navigate(Page::Sessions)),
-                button(text("Start session").size(15))
-                    .padding([10, 20])
-                    .style(style::key_accent)
-                    .on_press_maybe(self.idle_then(Message::Start)),
+                self.needs_daemon(
+                    button(text("Start session").size(15))
+                        .padding([10, 20])
+                        .style(style::key_accent)
+                        .on_press_maybe(self.idle_then(Message::Start)),
+                ),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
             .into(),
-            (None, None) => no_configurations(),
+            (None, None) => self.profiles_missing(),
         };
         card(content).into()
     }

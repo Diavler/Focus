@@ -155,7 +155,7 @@ impl App {
                 .style(style::field)
                 .on_input(move |value| Message::SecretInput(key, value))
                 .on_submit_maybe(save.clone()),
-            button("Save").style(style::key_accent).on_press_maybe(save),
+            self.needs_daemon(button("Save").style(style::key_accent).on_press_maybe(save)),
         ]
         .spacing(8)
         .align_y(Alignment::Center);

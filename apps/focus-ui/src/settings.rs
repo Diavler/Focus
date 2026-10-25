@@ -212,7 +212,7 @@ impl App {
 
     /// Why there are no settings to edit: still loading, or the file can't be read.
     pub(crate) fn settings_unavailable<'a>(&'a self) -> Element<'a, Message> {
-        let Some(problem) = &self.settings_problem else {
+        let Some(problem) = self.settings_problem.as_ref().filter(|_| self.connected()) else {
             return caption("Loading…").into();
         };
         card(
@@ -345,13 +345,15 @@ impl App {
                     "Close Focus until you next log in or open it."
                 }),
                 space::horizontal(),
-                button(if status.session.running().is_some() {
-                    "Stop Focus…"
-                } else {
-                    "Close Focus…"
-                })
-                .style(style::key)
-                .on_press_maybe(self.idle_then(Message::RequestStop)),
+                self.needs_daemon(
+                    button(if status.session.running().is_some() {
+                        "Stop Focus…"
+                    } else {
+                        "Close Focus…"
+                    })
+                    .style(style::key)
+                    .on_press_maybe(self.idle_then(Message::RequestStop)),
+                ),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
