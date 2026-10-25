@@ -12,6 +12,7 @@ The design named `cargo-dist` for releases. Focus ships three exes from three pa
 - `.github/workflows/release.yml` builds on a `v*` tag and attaches the files to a **draft** GitHub release. Pull requests that touch the packaging build the same files without releasing.
 - `scripts/package-windows.ps1` builds the three exes and makes `Focus-<version>-windows-x64.zip` (one folder: exes, `LICENSE-MIT`, `LICENSE-APACHE`, the fonts' `OFL.txt`) and an MSI from the same folder.
 - `installer/windows/focus.wxs` (WiX v5, pinned to 5.0.2) is a **per-user** MSI: it installs to `%LOCALAPPDATA%\Programs\Focus` with no UAC prompt and adds a Start menu shortcut. Install runs `focus-nmh --register`, since the extension IDs are fixed. Uninstall runs `--unregister` and deletes the HKCU `Run` value `Focus`.
+- The exes link the MSVC C runtime statically (`.cargo/config.toml`, `+crt-static`), so they run on a clean Windows without the Visual C++ Redistributable.
 - The MSI never removes `data/`, because it didn't install it, so settings and state survive upgrades and uninstalls.
 
 ## Consequences
