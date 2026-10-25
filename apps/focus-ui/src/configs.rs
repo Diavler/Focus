@@ -79,6 +79,24 @@ pub struct Editor {
     problem: Option<String>,
 }
 
+/// An entry in the configuration or list dropdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Choice {
+    /// One that exists, by name.
+    Existing(String),
+    /// Make a new one; holds the noun ("configuration" or "list").
+    New(&'static str),
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Existing(name) => f.write_str(name),
+            Self::New(noun) => write!(f, "+ New {noun}"),
+        }
+    }
+}
+
 /// What a site in the add bar does: an index into [`ACTION_ROWS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Action(usize);
@@ -366,19 +384,31 @@ pub fn view<'a>(
             "A group of sites (say, social media) that several configurations can include.",
         ),
     };
+    // The dropdown lists the existing ones, then a way to make another.
+    let choices: Vec<Choice> = names
+        .into_iter()
+        .map(Choice::Existing)
+        .chain([Choice::New(noun)])
+        .collect();
     let mut picker = row![
-        pick_list(names, current.clone(), move |name| wrap(Edit::Select(name)))
-            .placeholder(format!("No {noun}s yet"))
-            .style(style::picker)
-            .menu_style(style::menu),
+        pick_list(
+            choices,
+            current.clone().map(Choice::Existing),
+            move |choice| match choice {
+                Choice::Existing(name) => wrap(Edit::Select(name)),
+                Choice::New(_) => wrap(Edit::StartNew),
+            }
+        )
+        .placeholder(format!("No {noun}s yet"))
+        .style(style::picker)
+        .menu_style(style::menu),
         info(explanation),
-        space::horizontal(),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    picker = if editor.naming {
+    if editor.naming {
         let create = (!editor.new_name.trim().is_empty()).then(|| wrap(Edit::Create));
-        picker
+        picker = picker
             .push(
                 text_input(&format!("New {noun} name"), &editor.new_name)
                     .style(style::field)
@@ -395,14 +425,8 @@ pub fn view<'a>(
                 button("Cancel")
                     .style(style::key)
                     .on_press(wrap(Edit::CancelNew)),
-            )
-    } else {
-        picker.push(
-            button("+ New")
-                .style(style::key)
-                .on_press(wrap(Edit::StartNew)),
-        )
-    };
+            );
+    }
     let mut page = column![picker].spacing(16);
     // A problem with the new name shows by its box; others by the add bar.
     let problem = editor
@@ -419,7 +443,9 @@ pub fn view<'a>(
     }
     let Some(name) = current else {
         return page
-            .push(caption(format!("No {noun}s yet. Press + New to make one.")))
+            .push(caption(format!(
+                "No {noun}s yet. Pick + New {noun} in the list to make one."
+            )))
             .into();
     };
     let (patterns, config) = match target {
