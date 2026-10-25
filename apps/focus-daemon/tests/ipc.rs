@@ -370,3 +370,30 @@ async fn the_kill_switch_ends_the_session_and_stops_the_daemon() {
         }
     );
 }
+
+#[tokio::test]
+async fn with_no_session_the_kill_switch_closes_at_once() {
+    let home = Home::new();
+    let endpoint = unique_endpoint();
+    let daemon = home.start_daemon(&endpoint).await;
+    let mut client = Client::connect(&endpoint).await.unwrap();
+    let Response::Stop {
+        reason_required: false,
+        ..
+    } = client.request(&Request::RequestStop).await.unwrap()
+    else {
+        panic!("no reason is needed with no session");
+    };
+    let confirm = Request::ConfirmStop {
+        reason: String::new(),
+    };
+    assert_eq!(
+        client.request(&confirm).await.unwrap(),
+        Response::Done,
+        "no wait"
+    );
+    tokio::time::timeout(Duration::from_secs(10), daemon.task)
+        .await
+        .expect("the daemon stopped")
+        .unwrap();
+}

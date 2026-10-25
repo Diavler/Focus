@@ -1,6 +1,6 @@
 # 10. Window layout, settings in the window, and the kill switch
 
-- Status: accepted
+- Status: accepted (amended 2026-10-25: no wait when no session is running)
 - Date: 2026-10-24
 
 ## Context
@@ -47,7 +47,7 @@ The developer decided:
 
 **Kill switch:**
 - Core `KillSwitch` and `StopPolicy`:
-  - Asking starts a wait of 1 minute, or 5 minutes plus a typed reason during a Locked session.
+  - Asking starts a wait of 1 minute, or 5 minutes plus a typed reason during a Locked session. With no session running there's nothing to protect, so there's no wait (amended 2026-10-25, so the tray's "Close Focus" closes at once; it warns about skipped automatic starts).
   - The policy in force when confirming applies, and the wait never counts time from before the running session started. So a session that starts during the wait restarts it (5 minutes for a Locked one), and a request left pending while idle can't shorten a later session's wait.
   - It's not persisted: a restart just starts a fresh wait.
 - `SessionState::stop` ends any session with `EndReason::Stopped { reason }`.
