@@ -1,8 +1,44 @@
 # Focus
 
-An offline-first focus app for Windows and KDE Plasma (Wayland), written in Rust with a native [Iced](https://iced.rs) UI. It blocks distracting sites and apps during focus sessions, which you start by hand or from Google Calendar and Todoist, and it makes every bypass slow and deliberate. It needs no admin rights, no account and no server.
+> **Note:** this code was written with an AI assistant (Claude). It's a personal project, provided as is, with no guarantees that it works, keeps working or blocks everything you expect. Use it at your own risk.
 
-**Status:** MVP on Windows, first release in progress (build step 10; KDE Plasma parity is step 9). The daemon runs sessions, starts at login, and restarts the UI during sessions; the UI restarts the daemon if it's killed. The browser extension blocks sites and hides feeds, and on Windows the daemon closes blocked apps and browsers without the extension. Add `--dry-run` to the daemon to see what it would do without doing it.
+Focus helps you get deep work done by blocking distracting websites and apps while you focus. It runs entirely on your own computer: no account, no server, no admin rights, and it keeps working offline.
+
+Start a focus session by hand, or let your Google Calendar and Todoist start one for you. During a session, the sites and apps you've chosen are blocked or slowed down, and getting around them takes long enough that the urge usually passes first.
+
+Windows today; KDE Plasma (Wayland) is planned.
+
+## Features
+
+**Focus sessions**
+- Start a session by hand, on a schedule, from a calendar event or from a Todoist task.
+- Pick a configuration (what to block) and a strictness level:
+  - **Light:** end any time with one click.
+  - **Deep:** ending early takes a 30-second wait and a typed reason; overrides come from a small daily budget.
+  - **Locked:** no stopping until the timer ends.
+- An **Emergency exit** in Settings for when you really need out.
+
+**Blocking**
+- Block by page, not just by site: one Reddit post is fine, the Reddit front page isn't.
+- Each rule can **Block**, **Delay** (a countdown that grows each visit), **Ask** ("Is this part of your task?") or **Hide feed** (the site works, the endless feed doesn't).
+- Closes distracting apps during a session.
+- Browsers without the Focus extension (or private windows it can't see) are closed during a session, so switching browsers doesn't get around it.
+
+**Staying on track**
+- **Drift prompt:** after a few hops away from what you were doing, shows the trail and offers a way back.
+- **Later button:** saves the link to Todoist and closes the tab.
+- **Tab cap:** asks you to close a tab before opening one more than your limit.
+- **Parking lot:** a keyboard shortcut sends a stray thought to your Todoist inbox instead of a new tab.
+- Do Not Disturb during sessions.
+
+**Hard to quit on a whim**
+- Closing the window doesn't end a session; Focus keeps running in the tray.
+- Rules are frozen during a session, and loosening them only takes effect after a cooling-off delay.
+- Focus starts at login, and its parts restart each other if one is closed.
+
+**Your data stays with you**
+- Calendar (via its private iCal link) and Todoist sync when you're online and keep working from the last sync when you're not.
+- Settings and state live in a `data` folder next to the app. Credentials (Todoist token, calendar link) are kept in the Windows Credential Manager.
 
 ## Install (Windows)
 
@@ -13,7 +49,11 @@ From a [release](https://github.com/Diavler/FocusApp/releases), take either:
 
 Either way, Focus keeps its settings and state in `data\` beside the exes, and uninstalling leaves that folder in place. Close Focus from the tray (**Close Focus…**) before you upgrade or uninstall. Then install the browser extension from the same release: `Focus-<version>-chromium-extension.zip` for Chromium browsers (load unpacked) or `Focus-<version>-firefox-extension.xpi` for Firefox. Steps are in [extension/README.md](extension/README.md#install-from-a-release).
 
-## Build from source
+## Development
+
+**Status:** MVP on Windows; v0.1.0 is the first release. KDE Plasma parity is build step 9. Add `--dry-run` to the daemon to see what it would do without doing it.
+
+### Build from source
 
 ```sh
 cargo run -p focus-daemon   # first run writes starter settings to target/debug/data/
@@ -22,13 +62,13 @@ cargo run -p focus-ui       # in another terminal
 
 On Windows both are windowed programs, so the daemon prints nothing to the terminal; its log is `target/debug/data/daemon.log`.
 
-## Docs
+### Docs
 
 - [Design](docs/DESIGN.md): what and why
 - [Build plan](docs/BUILD_PLAN.md): the steps, in order
 - [Architecture decisions](docs/adr/)
 
-## Layout
+### Layout
 
 ```
 crates/
@@ -50,7 +90,7 @@ extension/            browser extension (TypeScript, MV3)
 scripts/              CI helpers
 ```
 
-## Development
+### Checks
 
 You need the stable Rust toolchain (on Windows, the MSVC target with the VS Build Tools "Desktop development with C++" workload) and `cargo install cargo-deny --locked`.
 
