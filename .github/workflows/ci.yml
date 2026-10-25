@@ -71,7 +71,7 @@ jobs:
   deny:
     name: cargo-deny
     needs: changes
-        if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +80,7 @@ jobs:
   extension:
     name: Extension
     needs: changes
-        if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
