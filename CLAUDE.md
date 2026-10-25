@@ -58,6 +58,16 @@ The developer has a limited usage budget. Prefer the cheaper path:
 - Don't try to drive or click the UI window. A screenshot of a page that needs no clicks is fine if it's quick; otherwise list the visual checks for the developer.
 - Keep PR descriptions, ADRs and summaries short: bullet points, no repeated detail. The manual checklist belongs in the PR, not repeated in chat.
 - Don't investigate things outside the task (old logs, unrelated machine state) unless they block it; mention them in one line instead.
+- Keep command output short; it stays in the context for the rest of the session. Use `cargo test -q 2>&1 | tail -30`, `cargo clippy ... --message-format short 2>&1 | head -50`, `npm test -- --reporter=dot`, and `| tail`/`| head` on builds and logs. Rerun without the filter only if the short output hides the failure.
+- Make fewer, bigger tool calls: all of a file's edits at once, and independent reads, searches and commands in parallel. Don't re-check what a tool already reported as done.
+
+## Handoff
+
+Each sub-step gets its own session. When the PR is open and CI has passed:
+
+1. Update the build-progress memory: the step and PR number, what's merged, the manual checks left for the developer, and any gotchas the next session needs (anything not in the code, the PR or the ADRs).
+2. Tell the developer it's ready to merge, and to start the next step with `/clear` and then "Read build-progress and continue."
+3. Stop. Don't start the next step in the same session.
 
 ## Commands
 
