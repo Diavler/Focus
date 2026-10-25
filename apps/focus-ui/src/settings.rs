@@ -171,10 +171,7 @@ impl App {
                 .on_press(Message::Navigate(Page::Sessions)),
             title("Settings"),
             info(
-                "Everything here is saved into settings.toml in Focus's data folder, which you \
-                 can still edit by hand. Edits to a configuration that's running, or that a \
-                 session in the next 24 hours will use, wait 24 hours before they apply \
-                 (cooling off), so rules can't be loosened on impulse."
+                "Saved to settings.toml. Edits to configurations in use wait 24 hours (cooling off)."
             ),
         ]
         .spacing(12)
@@ -286,11 +283,7 @@ impl App {
             column![
                 row![
                     heading("Start at login"),
-                    info(
-                        "Starting at login is what brings Focus back after a restart, so \
-                         turning it off waits 24 hours (cooling off) before it applies. \
-                         Turning it on applies right away."
-                    ),
+                    info("Brings Focus back after a restart. Turning it off waits 24 hours."),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -314,9 +307,7 @@ impl App {
                 row![
                     heading("Parking lot shortcut"),
                     info(
-                        "Pressed in any app, it brings up Focus with the parking lot ready to \
-                         type into; Enter parks the thought and puts Focus away again. Pick \
-                         another if an app you use already has this one."
+                        "Opens the parking lot from any app. Enter parks the thought and hides Focus."
                     ),
                 ]
                 .spacing(8)
@@ -335,10 +326,7 @@ impl App {
             column![
                 row![
                     heading("Theme"),
-                    info(
-                        "System follows Windows' light or dark mode as it changes; Light and \
-                         Dark keep one look whatever the system says. Applies once saved."
-                    ),
+                    info("System follows Windows' light or dark mode."),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -367,19 +355,13 @@ impl App {
         let header = row![
             heading("Stop Focus"),
             info(
-                "An emergency exit: ends the running session (even a Locked one), lifts all \
-                 blocking and closes Focus. Because it's a way out, it makes you wait first: \
-                 1 minute, or 5 minutes and a typed reason during a Locked session. Focus \
-                 starts again the next time you log in, or when you open it."
+                "Emergency exit: ends any session, lifts blocking and closes Focus. Waits 1 minute first (5 and a reason during a Locked session)."
             ),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
         let body: Element<'a, Message> = match status.stop_allowed_at {
             None => column![
-                caption(
-                    "Ends any session and closes Focus until you open it again or log in again."
-                ),
                 button("Stop Focus…")
                     .style(style::key_danger)
                     .on_press_maybe(self.idle_then(Message::RequestStop)),

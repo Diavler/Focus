@@ -57,10 +57,8 @@ impl App {
     /// The parking lot: a box to park a thought, what's parked, and how sending it goes.
     pub(crate) fn parking_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let shortcut = match status.parking_hotkey {
-            Hotkey::Off => {
-                "Turn on a shortcut under Settings → General to park from any app.".into()
-            }
-            hotkey => format!("Press {hotkey} from any app to park a thought here."),
+            Hotkey::Off => "Turn on a shortcut in Settings → General to park from any app.".into(),
+            hotkey => format!("{hotkey} parks from any app."),
         };
         let park = (!self.park_input.text().trim().is_empty())
             .then_some(Message::Park)
@@ -68,15 +66,13 @@ impl App {
         let mut body: Column<'a, Message> = column![
             row![
                 heading("Parking lot"),
-                info(
-                    "Park stray thoughts and links instead of following them now. They go to \
-                     your Todoist inbox once Todoist is connected and you're online; until then \
-                     they wait here. The browser's Later button parks the page you're on."
-                ),
+                info(format!(
+                    "Park stray thoughts instead of chasing them. They go to your Todoist inbox \
+                     when connected. {shortcut}"
+                )),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            caption(shortcut),
             // Grows downward as the thought gets longer. Enter parks it; Shift+Enter breaks
             // the line.
             row![

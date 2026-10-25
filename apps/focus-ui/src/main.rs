@@ -770,9 +770,6 @@ impl App {
         if let Some(error) = &self.error {
             main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
         }
-        main = main.push(caption(
-            "Sessions run in the background; closing this window doesn't end them.",
-        ));
         row![
             self.sidebar(),
             scrollable(container(main).padding([28, 32]).width(Length::Fill))

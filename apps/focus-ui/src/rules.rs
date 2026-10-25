@@ -144,11 +144,17 @@ pub fn problem(drafts: &[Draft], configs: &[String]) -> Option<String> {
 
 /// The rules tab: one card per rule, then a button to add one. Saving is the Settings page's.
 pub fn view<'a>(drafts: &'a [Draft], configs: &'a [String]) -> Element<'a, Message> {
-    let mut section = column![caption(
-        "A calendar event whose title contains a keyword runs its configuration until the event \
-         ends. A Todoist task that's due at a time and has one of the labels runs it for the \
-         task's duration (or the length below)."
-    )]
+    let mut section = column![
+        row![
+            caption("Calendar events and Todoist tasks that start sessions."),
+            info(
+                "An event whose title has a keyword runs its configuration until it ends. A task \
+                 due at a time with one of the labels runs it for the task's duration."
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+    ]
     .spacing(14);
     if drafts.is_empty() {
         section = section.push(caption(
@@ -230,7 +236,7 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
     let task_length = column![
         row![
             style::label(&format!("Task session length: {minutes} min")),
-            info("How long a session lasts for a task that has no duration set in Todoist."),
+            info("For Todoist tasks without a duration."),
         ]
         .spacing(8),
         slider(

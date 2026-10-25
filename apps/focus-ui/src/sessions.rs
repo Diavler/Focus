@@ -23,6 +23,7 @@ impl App {
     pub(crate) fn sessions_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let header = row![
             title("Sessions"),
+            info("Sessions run in the background; closing this window doesn't end them."),
             space::horizontal(),
             button(text("Settings").size(15))
                 .padding([8, 16])
@@ -122,9 +123,7 @@ impl App {
                 .style(style::key)
                 .on_press_maybe(self.idle_then(Message::OpenNotificationSettings)),
             info(
-                "Windows doesn't let apps switch Do Not Disturb on, so this opens the setting for \
-                 you to switch it on. Focus can't switch it off again either, so turn it off \
-                 yourself after the session."
+                "Windows won't let apps switch this on, so this opens the setting. Turn it off yourself afterwards."
             ),
         ]
         .spacing(8)
@@ -172,11 +171,7 @@ impl App {
             .placeholder("no configurations")
             .style(style::picker)
             .menu_style(style::menu),
-            info(
-                "A named set of rules: which sites are blocked, delayed, asked about or have \
-                 their feeds hidden, and which apps are closed. Edit them in Settings → \
-                 Configurations."
-            ),
+            info("Which sites and apps are restricted. Edit in Settings → Configurations."),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
@@ -193,7 +188,7 @@ impl App {
                     .size(54),
                     space::horizontal(),
                     style::label("Duration"),
-                    info("How long the session runs. It ends by itself when the time is up."),
+                    info("Ends by itself when the time is up."),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -211,10 +206,7 @@ impl App {
                 |level| level.to_string(),
                 Message::StrictnessPicked,
             ),
-            info(
-                "How hard the session is to get out of. Pick Deep or Locked when you know \
-                 you'll be tempted: the extra friction is the point."
-            ),
+            info(strictness_help()),
             space::horizontal(),
             button(text("Start session").size(15))
                 .padding([10, 20])
@@ -227,17 +219,7 @@ impl App {
         if let Some(ended) = status.session.ended() {
             body = body.push(caption(last_session_summary(ended)));
         }
-        card(
-            body.push(config)
-                .push(duration)
-                .push(controls)
-                .push(caption(format!(
-                    "{}: {}.",
-                    self.strictness,
-                    describe(self.strictness)
-                ))),
-        )
-        .into()
+        card(body.push(config).push(duration).push(controls)).into()
     }
 
     /// End-early controls, which depend on the session's strictness.
@@ -415,6 +397,15 @@ pub(crate) fn describe(strictness: Strictness) -> String {
         ),
         EndEarlyPolicy::Forbidden => "no ending early".to_owned(),
     }
+}
+
+/// How hard each strictness is to end early, for its tooltip.
+fn strictness_help() -> String {
+    Strictness::ALL
+        .iter()
+        .map(|&level| format!("{level}: {}.", describe(level)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Mode, rule count and apps for a configuration.
