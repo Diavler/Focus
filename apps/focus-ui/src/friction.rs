@@ -55,9 +55,7 @@ pub fn view<'a>(
         row![
             heading("Friction"),
             info(
-                "Limits that make getting around a session slow and nudge you out of rabbit \
-                 holes. Making them stricter applies right away; loosening them waits 24 hours \
-                 (cooling off), so they can't be relaxed on impulse."
+                "Limits that make escaping a session slow. Stricter applies now; looser waits 24 hours."
             ),
         ]
         .spacing(8)

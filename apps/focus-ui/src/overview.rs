@@ -18,10 +18,7 @@ impl App {
             .to_string();
         let header = row![
             title("Overview"),
-            info(
-                "Today's calendar and tasks. Events in green start a session by themselves; \
-                 the red line is now. The Calendar and Todoist pages show the week ahead."
-            ),
+            info("Today at a glance. Green events start sessions; the red line is now."),
             space::horizontal(),
             caption(date),
         ]

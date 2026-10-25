@@ -8,7 +8,7 @@ use crate::Message;
 /// `content` with `explanation` shown in a box above it while the pointer is over it.
 pub fn tip<'a>(
     content: impl Into<Element<'a, Message>>,
-    explanation: &'a str,
+    explanation: impl text::IntoFragment<'a>,
 ) -> Element<'a, Message> {
     let bubble = container(text(explanation).size(13))
         .max_width(340)
@@ -20,6 +20,6 @@ pub fn tip<'a>(
 }
 
 /// A small "(?)" that explains the thing next to it on hover.
-pub fn info(explanation: &str) -> Element<'_, Message> {
+pub fn info<'a>(explanation: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     tip(text("(?)").size(13).style(text::secondary), explanation)
 }

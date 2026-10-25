@@ -10,7 +10,6 @@
 mod agenda;
 mod configs;
 mod daemon;
-mod dial;
 mod friction;
 mod help;
 mod overview;
@@ -23,7 +22,7 @@ mod style;
 mod timeline;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use focus_core::ports::SecretKey;
 use focus_core::{BlockConfig, EditableSettings, ParkedItem, Strictness};
@@ -70,10 +69,19 @@ fn main() -> iced::Result {
         .title("Focus")
         .subscription(App::subscription)
         .theme(App::theme)
-        .window_size((1040.0, 760.0))
-        .centered()
+        .window(iced::window::Settings {
+            size: iced::Size::new(1120.0, 780.0),
+            min_size: Some(MIN_WINDOW),
+            position: iced::window::Position::Centered,
+            ..iced::window::Settings::default()
+        })
         .run()
 }
+
+/// The smallest the window can be made. The width keeps the Sessions start card's strictness
+/// keys and Start key on one line beside the parking lot (sidebar 210 + padding + a 3:2 split);
+/// the height keeps the sidebar's readouts, pages and status lines clear of each other.
+const MIN_WINDOW: iced::Size = iced::Size::new(1080.0, 640.0);
 
 /// How often (in polls, about seconds) a shortcut another app held is tried again.
 const HOTKEY_RETRY_POLLS: u32 = 30;
@@ -126,6 +134,8 @@ pub(crate) struct App {
     selected: Option<String>,
     strictness: Strictness,
     minutes: u16,
+    /// The session length as typed on the readout.
+    minutes_text: String,
     reason: String,
     /// The calendar and tasks, from the daemon; `None` until it first answers.
     plan: Option<PlanView>,
@@ -149,7 +159,7 @@ pub(crate) struct App {
     /// A parking-lot request is on its way.
     parked_pending: bool,
     /// A thought being typed into the parking lot.
-    park_input: String,
+    park_input: iced::widget::text_editor::Content,
     /// The window came up for the parking-lot shortcut, so it goes back down after parking.
     capturing: bool,
     /// Why the parking-lot shortcut couldn't be registered, if it couldn't.
@@ -202,6 +212,8 @@ pub(crate) enum Message {
     ConfigPicked(String),
     StrictnessPicked(Strictness),
     MinutesChanged(u16),
+    MinutesTyped(String),
+    MinutesSubmitted,
     Start,
     EndEarly,
     ReasonChanged(String),
@@ -223,7 +235,7 @@ pub(crate) enum Message {
     CancelStop,
     /// The system switched between light and dark mode (or said which at startup).
     ThemeMode(iced::theme::Mode),
-    ParkInput(String),
+    ParkInput(iced::widget::text_editor::Action),
     Park,
     Unpark(u64),
     ClearSentParked,
@@ -256,6 +268,7 @@ impl App {
             selected: None,
             strictness: Strictness::Deep,
             minutes: 25,
+            minutes_text: sessions::minutes_label(25),
             reason: String::new(),
             plan: None,
             calendar_input: String::new(),
@@ -268,7 +281,7 @@ impl App {
             stop_reason: String::new(),
             parked: Vec::new(),
             parked_pending: false,
-            park_input: String::new(),
+            park_input: iced::widget::text_editor::Content::new(),
             capturing: false,
             hotkey_problem: None,
             hotkey_retry: false,
@@ -345,7 +358,19 @@ impl App {
             }
             Message::ConfigPicked(name) => self.selected = Some(name),
             Message::StrictnessPicked(strictness) => self.strictness = strictness,
-            Message::MinutesChanged(minutes) => self.minutes = minutes,
+            Message::MinutesChanged(minutes) => {
+                self.minutes = minutes;
+                self.minutes_text = sessions::minutes_label(minutes);
+            }
+            Message::MinutesTyped(text) => {
+                if let Some(minutes) = sessions::parse_minutes(&text) {
+                    self.minutes = minutes;
+                }
+                self.minutes_text = text;
+            }
+            Message::MinutesSubmitted => {
+                self.minutes_text = sessions::minutes_label(self.minutes);
+            }
             Message::Start => {
                 let Some(config) = self.selected.clone() else {
                     return Task::none();
@@ -409,6 +434,7 @@ impl App {
             Message::Rule(edit) => {
                 if let Some(draft) = &mut self.settings {
                     rules::apply(&mut draft.rules, edit, &self.rule_configs);
+                    draft.touch(Instant::now());
                 }
             }
             Message::RequestStop => {
@@ -428,9 +454,9 @@ impl App {
                 self.system_mode = mode;
                 self.refresh_theme();
             }
-            Message::ParkInput(text) => self.park_input = text,
+            Message::ParkInput(action) => self.park_input.perform(action),
             Message::Park => {
-                let text = self.park_input.clone();
+                let text = self.park_input.text().trim_end().to_owned();
                 return self.act_saving(Saving::Park, Request::Park { text, url: None });
             }
             Message::Unpark(id) => return self.act(Request::Unpark { id }),
@@ -493,6 +519,14 @@ impl App {
         if plan_due && !self.plan_pending {
             tasks.push(self.fetch_plan());
         }
+        // Edited settings save themselves once editing pauses (and the rules make sense).
+        let autosave = self.settings.as_ref().is_some_and(|draft| {
+            draft.autosave_due(Instant::now())
+                && rules::problem(&draft.rules, &self.rule_configs).is_none()
+        });
+        if autosave && !self.action_pending {
+            tasks.push(self.settings_message(settings::Msg::Save));
+        }
         Task::batch(tasks)
     }
 
@@ -509,7 +543,7 @@ impl App {
             // A failed park leaves the window up, with the error, so the thought isn't lost.
             (Some(Saving::Park), Err(_)) => self.capturing = false,
             (Some(Saving::Park), Ok(())) => {
-                self.park_input.clear();
+                self.park_input = iced::widget::text_editor::Content::new();
                 let mut tasks = vec![self.fetch_parked(), self.fetch_status()];
                 if std::mem::take(&mut self.capturing) {
                     // Back to what the shortcut interrupted.
@@ -564,6 +598,9 @@ impl App {
             return Task::none();
         };
         draft.error = None;
+        if !matches!(message, settings::Msg::Save) {
+            draft.touch(Instant::now());
+        }
         match message {
             settings::Msg::Tab(_) | settings::Msg::Reload => {}
             settings::Msg::Config(edit) => {
@@ -592,13 +629,9 @@ impl App {
             settings::Msg::ParkingHotkey(hotkey) => draft.edited.parking_hotkey = hotkey,
             settings::Msg::Theme(theme) => draft.edited.theme = theme,
             settings::Msg::Save => {
-                let settings = draft.to_save();
+                let settings = draft.take_save();
                 draft.sent = Some(settings.clone());
                 return self.act_saving(Saving::Settings, Request::SaveSettings { settings });
-            }
-            settings::Msg::Discard => {
-                draft.discard();
-                self.refresh_rule_configs();
             }
         }
         Task::none()
@@ -771,9 +804,6 @@ impl App {
         if let Some(error) = &self.error {
             main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
         }
-        main = main.push(caption(
-            "Sessions run in the background; closing this window doesn't end them.",
-        ));
         row![
             self.sidebar(),
             scrollable(container(main).padding([28, 32]).width(Length::Fill))
@@ -786,29 +816,33 @@ impl App {
 
     /// The app name, what's happening now, the pages, and the sources' sync status.
     fn sidebar(&self) -> Element<'_, Message> {
-        let now_line: Element<'_, Message> = match self
+        // What's happening, always on the readout: the session and its time left, or idle.
+        let (name, time) = match self
             .status
             .as_ref()
             .and_then(|status| Some((status, status.session.running()?)))
         {
-            Some((status, running)) => style::readout(
-                row![
-                    style::mono(running.spec().config.name.as_str()).size(13),
-                    space::horizontal(),
-                    style::mono(sessions::format_duration(running.time_left(status.now))).size(13),
-                ]
-                .spacing(6),
-            )
-            .width(Length::Fill)
-            .into(),
-            None => caption("Not in a session").into(),
+            Some((status, running)) => (
+                running.spec().config.name.to_uppercase(),
+                sessions::format_duration(running.time_left(status.now)),
+            ),
+            None => ("IDLE".to_string(), "--:--".to_string()),
         };
+        let now_line = style::readout(
+            row![
+                style::mono(name).size(13),
+                space::horizontal(),
+                style::mono(time).size(13),
+            ]
+            .spacing(6),
+        )
+        .width(Length::Fill);
         let on_sessions = matches!(self.page, Page::Sessions | Page::Settings);
         let mut sources = column![].spacing(6);
         if let Some(status) = &self.status {
             for (name, source) in [
-                ("Calendar", &status.plan.calendar),
-                ("Todoist", &status.plan.tasks),
+                ("Cal ", &status.plan.calendar),
+                ("Todo", &status.plan.tasks),
             ] {
                 let (label, tone) = match &source.state {
                     SourceState::Ok => ("synced", Tone::Good),
@@ -818,16 +852,32 @@ impl App {
                     SourceState::Unknown => ("checking", Tone::Quiet),
                 };
                 sources = sources.push(
-                    row![dot(tone), caption(format!("{name}: {label}"))]
+                    row![dot(tone), style::label(&format!("{name} {label}"))]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                );
+            }
+            // Which browsers the extension protects (a browser without it is closed in sessions).
+            for line in sessions::browser_lines(status) {
+                sources = sources.push(
+                    row![dot(line.tone), style::label(&line.text)]
                         .spacing(6)
                         .align_y(Alignment::Center),
                 );
             }
         }
+        let mut readouts = column![now_line].spacing(12);
+        if let Some(next) = self
+            .status
+            .as_ref()
+            .and_then(|status| self.next_start_readout(status))
+        {
+            readouts = readouts.push(next);
+        }
         style::sidebar(
             column![
                 style::brand(),
-                now_line,
+                readouts,
                 space::vertical().height(Length::Fixed(12.0)),
                 nav(
                     "Overview",

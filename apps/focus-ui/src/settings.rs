@@ -2,6 +2,8 @@
 //! general settings with the kill switch. Edits are kept in a draft until Save sends them to the
 //! daemon, which writes `settings.toml`.
 
+use std::time::{Duration, Instant};
+
 use focus_core::{AutoStartRule, EditableSettings};
 use iced::widget::{Column, button, column, pick_list, row, space, text, text_input, toggler};
 use iced::{Alignment, Element, Length};
@@ -11,7 +13,7 @@ use crate::configs::{self, Target};
 use crate::help::info;
 use crate::rules;
 use crate::sessions::{format_duration, login_line, pending_summary};
-use crate::style::{self, Tone, caption, card, dot, heading, tab, title, toned};
+use crate::style::{self, Tone, caption, card, dot, heading, title, toned};
 use crate::{App, Message, Page};
 
 /// The tabs of the Settings page.
@@ -27,6 +29,10 @@ pub enum Tab {
     /// Start at login, friction limits and the kill switch.
     General,
 }
+
+/// How long after the last edit the settings save themselves, so typing isn't saved on every
+/// key.
+pub const AUTOSAVE_AFTER: Duration = Duration::from_secs(1);
 
 /// The settings being edited.
 #[derive(Debug, Clone)]
@@ -45,6 +51,8 @@ pub struct Draft {
     pub error: Option<String>,
     /// What the save on its way sent, until the settings are read back.
     pub sent: Option<EditableSettings>,
+    /// When the last edit not yet saved was made.
+    edited_at: Option<Instant>,
 }
 
 impl Draft {
@@ -63,6 +71,7 @@ impl Draft {
             lists: configs::Editor::default(),
             error: None,
             sent: None,
+            edited_at: None,
         }
     }
 
@@ -89,13 +98,24 @@ impl Draft {
         // with "Reload from file".
     }
 
-    /// Throws the edits away, back to what was last read.
-    pub fn discard(&mut self) {
-        *self = Self::new(self.saved.clone());
+    /// Notes an edit made at `now`, which restarts the wait before saving.
+    pub fn touch(&mut self, now: Instant) {
+        self.edited_at = Some(now);
     }
 
-    /// What Save sends.
-    pub fn to_save(&self) -> EditableSettings {
+    /// Whether the edits should be saved at `now`: something changed, nothing has been edited for
+    /// [`AUTOSAVE_AFTER`], and no save is on its way.
+    pub fn autosave_due(&self, now: Instant) -> bool {
+        self.sent.is_none()
+            && self
+                .edited_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= AUTOSAVE_AFTER)
+            && self.dirty()
+    }
+
+    /// What saving sends; the edits count as saved from here on.
+    pub fn take_save(&mut self) -> EditableSettings {
+        self.edited_at = None;
         let mut settings = self.edited.clone();
         settings.auto_start = self.edited_rules().cloned().collect();
         settings
@@ -158,7 +178,6 @@ pub enum Msg {
     ParkingHotkey(focus_core::Hotkey),
     Theme(focus_core::Theme),
     Save,
-    Discard,
     Reload,
 }
 
@@ -171,37 +190,32 @@ impl App {
                 .on_press(Message::Navigate(Page::Sessions)),
             title("Settings"),
             info(
-                "Everything here is saved into settings.toml in Focus's data folder, which you \
-                 can still edit by hand. Edits to a configuration that's running, or that a \
-                 session in the next 24 hours will use, wait 24 hours before they apply \
-                 (cooling off), so rules can't be loosened on impulse."
+                "Saved to settings.toml. Edits to configurations in use wait 24 hours (cooling off)."
             ),
         ]
         .spacing(12)
         .align_y(Alignment::Center);
-        let tabs = row![
-            tab(
-                "Automatic starts",
-                self.settings_tab == Tab::Rules,
-                Message::Settings(Msg::Tab(Tab::Rules))
-            ),
-            tab(
-                "Configurations",
-                self.settings_tab == Tab::Configs,
-                Message::Settings(Msg::Tab(Tab::Configs))
-            ),
-            tab(
-                "Lists",
-                self.settings_tab == Tab::Lists,
-                Message::Settings(Msg::Tab(Tab::Lists))
-            ),
-            tab(
-                "General",
-                self.settings_tab == Tab::General,
-                Message::Settings(Msg::Tab(Tab::General))
-            ),
-        ]
-        .spacing(8);
+        let tabs = style::segmented(
+            &[Tab::Rules, Tab::Configs, Tab::Lists, Tab::General],
+            self.settings_tab,
+            |tab| {
+                match tab {
+                    Tab::Rules => "Automatic starts",
+                    Tab::Configs => "Configurations",
+                    Tab::Lists => "Lists",
+                    Tab::General => "General",
+                }
+                .to_string()
+            },
+            |tab| Message::Settings(Msg::Tab(tab)),
+        );
+        let tabs = match &self.settings {
+            Some(draft) => row![tabs, space::horizontal(), self.save_status(draft)]
+                .spacing(12)
+                .align_y(Alignment::Center)
+                .into(),
+            None => tabs,
+        };
         let mut page: Column<'a, Message> = column![header, tabs].spacing(18);
         if let Some(pending) = pending_summary(status) {
             page = page.push(card(
@@ -224,7 +238,7 @@ impl App {
             Tab::Lists => configs::view(&draft.edited, &draft.lists, Target::Lists, &self.apps),
             Tab::General => self.general_tab(draft, status),
         };
-        page.push(body).push(self.save_bar(draft)).into()
+        page.push(body).into()
     }
 
     /// Why there are no settings to edit: still loading, or the file can't be read.
@@ -249,39 +263,29 @@ impl App {
         .into()
     }
 
-    /// Save, Discard and the result of the last save.
-    fn save_bar<'a>(&'a self, draft: &'a Draft) -> Element<'a, Message> {
-        let dirty = draft.dirty();
-        let problem = rules::problem(&draft.rules, &self.rule_configs);
-        let save = (dirty && problem.is_none())
-            .then_some(Message::Settings(Msg::Save))
-            .and_then(|message| self.idle_then(message));
-        let mut bar = row![].spacing(10).align_y(Alignment::Center);
-        bar = bar.push(if dirty {
-            toned("Unsaved changes", Tone::Warn).size(14)
-        } else {
-            caption("Everything is saved to settings.toml.")
-        });
-        bar = bar.push(space::horizontal());
-        if draft.error.is_some() {
-            bar = bar.push(
-                button("Reload from file")
+    /// Whether the edits are saved. Saving happens by itself shortly after an edit.
+    fn save_status<'a>(&'a self, draft: &'a Draft) -> Element<'a, Message> {
+        if let Some(error) = &draft.error {
+            return row![
+                toned(format!("Not saved: {error}"), Tone::Bad).size(13),
+                button(text("Reload from file").size(13))
                     .style(style::key)
                     .on_press(Message::Settings(Msg::Reload)),
-            );
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into();
         }
-        bar = bar
-            .push(
-                button("Discard")
-                    .style(style::key)
-                    .on_press_maybe(dirty.then_some(Message::Settings(Msg::Discard))),
-            )
-            .push(button("Save").style(style::key_accent).on_press_maybe(save));
-        let mut column = column![bar].spacing(8);
-        if let Some(error) = &draft.error {
-            column = column.push(toned(error.as_str(), Tone::Bad).size(14));
+        if rules::problem(&draft.rules, &self.rule_configs).is_some() {
+            return toned("Not saved until the rule is fixed", Tone::Warn)
+                .size(13)
+                .into();
         }
-        card(column).into()
+        if draft.dirty() || draft.sent.is_some() {
+            caption("Saving…").into()
+        } else {
+            caption("Saved").into()
+        }
     }
 
     /// Start at login, friction limits and the kill switch.
@@ -295,11 +299,7 @@ impl App {
             column![
                 row![
                     heading("Start at login"),
-                    info(
-                        "Starting at login is what brings Focus back after a restart, so \
-                         turning it off waits 24 hours (cooling off) before it applies. \
-                         Turning it on applies right away."
-                    ),
+                    info("Brings Focus back after a restart. Turning it off waits 24 hours."),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -323,9 +323,7 @@ impl App {
                 row![
                     heading("Parking lot shortcut"),
                     info(
-                        "Pressed in any app, it brings up Focus with the parking lot ready to \
-                         type into; Enter parks the thought and puts Focus away again. Pick \
-                         another if an app you use already has this one."
+                        "Opens the parking lot from any app. Enter parks the thought and hides Focus."
                     ),
                 ]
                 .spacing(8)
@@ -344,10 +342,7 @@ impl App {
             column![
                 row![
                     heading("Theme"),
-                    info(
-                        "System follows Windows' light or dark mode as it changes; Light and \
-                         Dark keep one look whatever the system says. Applies once saved."
-                    ),
+                    info("System follows Windows' light or dark mode."),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -376,19 +371,13 @@ impl App {
         let header = row![
             heading("Stop Focus"),
             info(
-                "An emergency exit: ends the running session (even a Locked one), lifts all \
-                 blocking and closes Focus. Because it's a way out, it makes you wait first: \
-                 1 minute, or 5 minutes and a typed reason during a Locked session. Focus \
-                 starts again the next time you log in, or when you open it."
+                "Emergency exit: ends any session, lifts blocking and closes Focus. Waits 1 minute first (5 and a reason during a Locked session)."
             ),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
         let body: Element<'a, Message> = match status.stop_allowed_at {
             None => column![
-                caption(
-                    "Ends any session and closes Focus until you open it again or log in again."
-                ),
                 button("Stop Focus…")
                     .style(style::key_danger)
                     .on_press_maybe(self.idle_then(Message::RequestStop)),
@@ -492,12 +481,33 @@ mod tests {
     }
 
     #[test]
+    fn saves_itself_after_a_pause_in_editing() {
+        let start = Instant::now();
+        let mut draft = Draft::new(settings("1"));
+        draft.touch(start);
+        assert!(
+            !draft.autosave_due(start + AUTOSAVE_AFTER),
+            "nothing changed"
+        );
+        draft.edited.start_at_login = false;
+        draft.touch(start);
+        assert!(!draft.autosave_due(start), "still editing");
+        assert!(draft.autosave_due(start + AUTOSAVE_AFTER));
+        let sent = draft.take_save();
+        draft.sent = Some(sent);
+        assert!(
+            !draft.autosave_due(start + AUTOSAVE_AFTER * 2),
+            "once is enough"
+        );
+    }
+
+    #[test]
     fn dirty_follows_edits_and_rules() {
         let mut draft = Draft::new(settings("1"));
         assert!(!draft.dirty());
         draft.edited.start_at_login = false;
         assert!(draft.dirty());
-        draft.discard();
+        let mut draft = Draft::new(settings("1"));
         draft.rules.push(rules::Draft::from_rule(rule("coding")));
         assert!(draft.dirty());
     }
@@ -517,7 +527,7 @@ mod tests {
         let mut changed = settings("2");
         changed.start_at_login = false;
         draft.reload(changed.clone());
-        assert_eq!(draft.to_save(), changed);
+        assert_eq!(draft.take_save(), changed);
         assert!(!draft.dirty());
     }
 
@@ -525,14 +535,14 @@ mod tests {
     fn edits_made_while_saving_stay_on_top_of_the_save() {
         let mut draft = Draft::new(settings("1"));
         draft.edited.start_at_login = false;
-        draft.sent = Some(draft.to_save());
+        draft.sent = Some(draft.take_save());
         // Typed while the save was on its way.
         draft.rules.push(rules::Draft::from_rule(rule("coding")));
 
         let mut stored = settings("2");
         stored.start_at_login = false;
         draft.reload(stored);
-        let next = draft.to_save();
+        let next = draft.take_save();
         assert_eq!(
             next.revision, "2",
             "the next save won't be refused as stale"
@@ -553,7 +563,7 @@ mod tests {
         });
         draft.reload(elsewhere);
         assert_eq!(
-            draft.to_save().revision,
+            draft.take_save().revision,
             "1",
             "so saving is refused as stale"
         );

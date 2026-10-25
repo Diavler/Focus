@@ -18,6 +18,5 @@ ipc-proto.workspace = true
 ipc-transport.workspace = true
 # Shows calendar and task times in the computer's local time zone.
 chrono.workspace = true
-# `tokio` runs the async IPC calls and provides `iced::time::every` for polling; `canvas` draws
-# the running session's dial.
-iced = { workspace = true, features = ["tokio", "canvas"] }
+# `tokio` runs the async IPC calls and provides `iced::time::every` for polling.
+iced = { workspace = true, features = ["tokio"] }

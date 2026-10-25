@@ -9,8 +9,8 @@ use iced::gradient::Linear;
 use iced::overlay::menu;
 use iced::theme::{Mode, Palette};
 use iced::widget::{
-    Button, Container, Text, button, container, pick_list, row, rule, scrollable, slider, space,
-    stack, text, text_input, toggler,
+    Button, Container, Text, TextInput, button, container, pick_list, row, rule, scrollable,
+    slider, space, stack, text, text_editor, text_input, toggler,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Gradient, Length, Padding, Radians,
@@ -207,9 +207,9 @@ pub fn title<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     bold(content).size(28)
 }
 
-/// A heading inside a page or card.
-pub fn heading<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
-    bold(content).size(17)
+/// A card's heading: a [`label`], like the legend over a section of the panel.
+pub fn heading<'a>(content: impl AsRef<str>) -> Text<'a> {
+    label(content.as_ref())
 }
 
 /// Small grey text for details.
@@ -228,6 +228,31 @@ pub fn label<'a>(content: &str) -> Text<'a> {
         .font(MONO)
         .size(11)
         .style(text::secondary)
+}
+
+/// Big readout digits the user can type into, on a [`readout`]'s glass.
+pub fn lcd_input<'a>(value: &str) -> TextInput<'a, Message> {
+    text_input("", value)
+        .font(MONO)
+        .size(54)
+        .padding([0, 4])
+        .width(Length::Fixed(240.0))
+        .style(|theme: &Theme, status| {
+            let look = look(theme);
+            let focused = matches!(status, text_input::Status::Focused { .. });
+            text_input::Style {
+                background: Background::Color(Color::TRANSPARENT),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: if focused { 1.0 } else { 0.0 },
+                    color: look.digits.scale_alpha(0.5),
+                },
+                icon: look.digits,
+                placeholder: look.unlit,
+                value: look.digits,
+                selection: look.digits.scale_alpha(0.3),
+            }
+        })
 }
 
 /// Readout text in the glowing digit colour, for text on glass outside a [`readout`].
@@ -309,15 +334,6 @@ pub fn nav<'a>(label: &'a str, selected: bool, on_press: Message) -> Button<'a, 
         .padding([10, 12])
         .on_press(on_press)
         .style(move |theme: &Theme, status| key_style(theme, status, Face::Plain, selected))
-}
-
-/// A tab in a row of tabs: lit in the accent and held down when `selected`.
-pub fn tab<'a>(label: &'a str, selected: bool, on_press: Message) -> Button<'a, Message> {
-    let face = if selected { Face::Accent } else { Face::Plain };
-    button(text(label).size(14))
-        .padding([7, 14])
-        .on_press(on_press)
-        .style(move |theme: &Theme, status| key_style(theme, status, face, selected))
 }
 
 /// An ordinary key: lifts on hover, sinks when pressed.
@@ -471,25 +487,136 @@ pub fn switch(theme: &Theme, status: toggler::Status) -> toggler::Style {
     }
 }
 
-/// A row of keys for picking one of `options`: the picked one is held down and lit.
+/// The height of a [`segmented`] key. Fixed, so the dividers between keys can match it (a
+/// divider that fills would stretch to the height of a scrolling page).
+const SEGMENT_HEIGHT: f32 = 36.0;
+
+/// Keys joined in one bezel for picking one of `options`: the picked one is held down and lit.
 pub fn segmented<'a, T: Copy + PartialEq>(
     options: &[T],
     picked: T,
     name: impl Fn(T) -> String,
     on_pick: impl Fn(T) -> Message,
 ) -> Element<'a, Message> {
-    options
+    let last = options.len().saturating_sub(1);
+    let keys = options
         .iter()
-        .fold(row![].spacing(4), |keys, &option| {
+        .enumerate()
+        .fold(row![], |keys, (index, &option)| {
+            let keys = if index == 0 {
+                keys
+            } else {
+                keys.push(segment_divider())
+            };
             let held = option == picked;
-            let face = if held { Face::Accent } else { Face::Plain };
+            // Only the outer corners are round, inside the bezel's 1px edge.
+            let radius = iced::border::Radius {
+                top_left: if index == 0 { 7.0 } else { 0.0 },
+                bottom_left: if index == 0 { 7.0 } else { 0.0 },
+                top_right: if index == last { 7.0 } else { 0.0 },
+                bottom_right: if index == last { 7.0 } else { 0.0 },
+            };
             keys.push(
-                button(text(name(option)).size(14).width(Length::Fill).center())
-                    .width(Length::Fill)
-                    .padding([8, 10])
-                    .on_press(on_pick(option))
-                    .style(move |theme: &Theme, status| key_style(theme, status, face, held)),
+                button(
+                    text(name(option))
+                        .size(14)
+                        .height(Length::Fill)
+                        .align_y(Alignment::Center),
+                )
+                .height(Length::Fixed(SEGMENT_HEIGHT))
+                .padding([0, 18])
+                .on_press(on_pick(option))
+                .style(move |theme: &Theme, status| segment_style(theme, status, held, radius)),
             )
+        });
+    container(keys)
+        .padding(1)
+        .style(|theme: &Theme| {
+            let look = look(theme);
+            container::Style {
+                border: Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: look.key_edge,
+                },
+                // The whole row of keys stands on one ledge.
+                shadow: Shadow {
+                    color: look.ledge,
+                    offset: Vector::new(0.0, 2.0),
+                    blur_radius: 0.0,
+                },
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The line between two keys of a [`segmented`] control.
+fn segment_divider<'a>() -> Element<'a, Message> {
+    container(space::horizontal().width(Length::Fixed(1.0)))
+        .height(Length::Fixed(SEGMENT_HEIGHT))
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(look(theme).key_edge)),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// One key of a [`segmented`] control: muted until the pointer is over it, lit when `held`.
+fn segment_style(
+    theme: &Theme,
+    status: button::Status,
+    held: bool,
+    radius: iced::border::Radius,
+) -> button::Style {
+    let look = look(theme);
+    let palette = theme.extended_palette();
+    let (background, text_color) = if held {
+        (
+            sunk(palette.primary.base.color, look.shade),
+            palette.primary.base.text,
+        )
+    } else {
+        match status {
+            button::Status::Hovered => (
+                vertical(look.hover.0, look.hover.1),
+                palette.background.base.text,
+            ),
+            button::Status::Pressed => {
+                (sunk(look.pressed, look.shade), palette.background.base.text)
+            }
+            button::Status::Active | button::Status::Disabled => (
+                vertical(look.key.0, look.key.1),
+                palette.background.base.text.scale_alpha(0.72),
+            ),
+        }
+    };
+    button::Style {
+        background: Some(background),
+        text_color,
+        border: Border {
+            radius,
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// A small tag outlined in the accent, in the readout font, like "REC" on a recorder.
+pub fn tag<'a>(content: &str) -> Element<'a, Message> {
+    container(mono(content.to_uppercase()).size(11))
+        .padding([4, 8])
+        .style(|theme: &Theme| {
+            let accent = theme.extended_palette().primary.base.color;
+            container::Style {
+                text_color: Some(accent),
+                border: Border {
+                    radius: 4.0.into(),
+                    width: 1.0,
+                    color: accent,
+                },
+                ..container::Style::default()
+            }
         })
         .into()
 }
@@ -533,29 +660,6 @@ fn lit_cells(fraction: f32, cells: usize) -> usize {
     (fraction.clamp(0.0, 1.0) * cells as f32).ceil() as usize
 }
 
-/// The colours of the running session's dial.
-pub struct DialColors {
-    /// The glass face.
-    pub glass: Color,
-    /// The rim around the glass.
-    pub rim: Color,
-    /// The unlit ring.
-    pub track: Color,
-    /// The lit arc on the ring.
-    pub lit: Color,
-}
-
-/// The dial's colours for `theme`, matching a [`readout`].
-pub fn dial_colors(theme: &Theme) -> DialColors {
-    let look = look(theme);
-    DialColors {
-        glass: look.glass,
-        rim: look.glass_edge,
-        track: blend(look.glass, look.digits.scale_alpha(0.14)),
-        lit: look.digits,
-    }
-}
-
 /// A text box: a well sunk into the panel, rimmed in the accent while it has the cursor.
 pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let look = look(theme);
@@ -580,6 +684,28 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
         placeholder: look.disabled_text,
         value: palette.background.base.text,
         selection: palette.primary.base.color.scale_alpha(0.3),
+    }
+}
+
+/// A box for longer text: looks like a [`field`].
+pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let field = field(
+        theme,
+        match status {
+            text_editor::Status::Active => text_input::Status::Active,
+            text_editor::Status::Hovered => text_input::Status::Hovered,
+            text_editor::Status::Focused { is_hovered } => {
+                text_input::Status::Focused { is_hovered }
+            }
+            text_editor::Status::Disabled => text_input::Status::Disabled,
+        },
+    );
+    text_editor::Style {
+        background: field.background,
+        border: field.border,
+        placeholder: field.placeholder,
+        value: field.value,
+        selection: field.selection,
     }
 }
 
@@ -734,9 +860,15 @@ fn darken(color: Color) -> Color {
     Color::from_rgb(color.r * 0.6, color.g * 0.6, color.b * 0.6)
 }
 
-/// The app's name in the sidebar.
-pub fn brand<'a>() -> Text<'a> {
-    bold("Focus").size(22)
+/// The app's name in the sidebar, with a model number like a device's badge.
+pub fn brand<'a>() -> Element<'a, Message> {
+    row![
+        bold("focus").size(18),
+        mono("FX-1").size(11).style(text::secondary),
+    ]
+    .spacing(6)
+    .align_y(Alignment::End)
+    .into()
 }
 
 /// A small label outlined in its tone, e.g. "Synced" or "Offline".

@@ -435,9 +435,7 @@ fn mode_picker<'a>(
         row![
             style::label("Mode"),
             info(
-                "Blocklist: everything opens except what the rules restrict. Allowlist: only \
-                 the Allow patterns open; everything else is blocked (good for writing or \
-                 studying with a few reference sites)."
+                "Blocklist: everything opens except what the rules restrict. Allowlist: only Allow patterns open."
             ),
         ]
         .spacing(8)
@@ -478,7 +476,7 @@ fn include_picker<'a>(
     column![
         row![
             style::label("Includes"),
-            info("Shared lists whose rules this configuration uses too.")
+            info("Shared lists this configuration also uses.")
         ]
         .spacing(8),
         body,
@@ -538,7 +536,7 @@ fn try_url<'a>(
     column![
         row![
             style::label("Try a URL"),
-            info("Checks an address against the rules above, including edits not saved yet. Nothing is opened."),
+            info("Tests an address against the rules, unsaved edits included."),
         ]
         .spacing(8),
         text_input("reddit.com/r/rust/comments/abc", &editor.try_url)
