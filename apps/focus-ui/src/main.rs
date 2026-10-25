@@ -162,6 +162,8 @@ pub(crate) struct App {
     full_size: Option<iced::Size>,
     /// What the tray's tooltip says now, so it's only set when it changes.
     tray_tooltip: String,
+    /// When the daemon last started answering, so a browser extension gets time to check in.
+    connected_since: Option<focus_core::Timestamp>,
     /// What the pages are drawn with until the daemon first answers.
     waiting: StatusReport,
     /// Status polls in a row the daemon hasn't answered, for the sidebar's note.
@@ -335,6 +337,7 @@ impl App {
             native_window: None,
             tray: tray::Tray::create(),
             tray_tooltip: String::new(),
+            connected_since: None,
             waiting: sessions::blank_status(wall_clock()),
             unanswered: 0,
             compact: false,
@@ -403,6 +406,9 @@ impl App {
                         let revision = status.parking_lot.revision;
                         // An open Rules or Settings panel couldn't load without the daemon.
                         let reconnected = !self.connected() && self.panel.is_some();
+                        if !self.connected() {
+                            self.connected_since = Some(status.now);
+                        }
                         let running = status.session.running().is_some();
                         let on_top = status.timer_on_top;
                         let on_top_changed =
@@ -1190,7 +1196,7 @@ impl App {
                 );
             }
             // Which browsers the extension protects (a browser without it is closed in sessions).
-            for line in sessions::browser_lines(status) {
+            for line in sessions::browser_lines(status, self.connected_since) {
                 if line.tone == Tone::Good {
                     continue;
                 }

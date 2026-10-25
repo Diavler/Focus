@@ -314,8 +314,12 @@ pub(crate) fn when_label(at: Timestamp, now: Timestamp) -> String {
 
 /// One short line per browser whose extension is checking in, or one saying none is. A browser
 /// whose extension can't run in private windows still counts, with a warning light: it's closed
-/// during sessions until that's allowed.
-pub(crate) fn browser_lines(status: &StatusReport) -> Vec<Line> {
+/// during sessions until that's allowed. For one heartbeat window after the daemon answered
+/// (`connected_since`), no extension yet means it may still be on its way, not missing.
+pub(crate) fn browser_lines(
+    status: &StatusReport,
+    connected_since: Option<Timestamp>,
+) -> Vec<Line> {
     let lines: Vec<Line> = status
         .browsers
         .iter()
@@ -334,9 +338,19 @@ pub(crate) fn browser_lines(status: &StatusReport) -> Vec<Line> {
         })
         .collect();
     if lines.is_empty() {
-        vec![Line {
-            text: "No browser extension connected".to_owned(),
-            tone: Tone::Bad,
+        let starting = connected_since.is_some_and(|since| {
+            status.now.saturating_duration_since(since) < BrowserPolicy::default().heartbeat_timeout
+        });
+        vec![if starting {
+            Line {
+                text: "Waiting for browser extension…".to_owned(),
+                tone: Tone::Warn,
+            }
+        } else {
+            Line {
+                text: "No browser extension connected".to_owned(),
+                tone: Tone::Bad,
+            }
         }]
     } else {
         lines
@@ -622,7 +636,12 @@ mod tests {
     fn names_the_connected_browsers() {
         let mut status = status_at(100_000);
         assert_eq!(
-            browser_lines(&status),
+            browser_lines(&status, Some(Timestamp::from_millis(90_000)))[0].text,
+            "Waiting for browser extension…",
+            "just after the daemon answered"
+        );
+        assert_eq!(
+            browser_lines(&status, None),
             vec![Line {
                 text: "No browser extension connected".into(),
                 tone: Tone::Bad
@@ -635,7 +654,7 @@ mod tests {
             beat("brave", 1_000, true),
         ];
         assert_eq!(
-            browser_lines(&status),
+            browser_lines(&status, None),
             vec![
                 Line {
                     text: "Browser extension connected".into(),
@@ -651,7 +670,7 @@ mod tests {
 
         status.browsers = vec![beat("brave", 1_000, true)];
         assert_eq!(
-            browser_lines(&status)[0].text,
+            browser_lines(&status, None)[0].text,
             "No browser extension connected"
         );
     }
