@@ -30,7 +30,9 @@ pub enum Problem {
         table: &'static str,
     },
     /// `include` names a list that isn't defined.
-    #[error("configs.{config}.include: there is no list named \"{list}\" (add [lists.{list}])")]
+    #[error(
+        "profile \"{config}\": there is no list named \"{list}\" to include (add [lists.{list}])"
+    )]
     UnknownList {
         /// The configuration with the bad include.
         config: String,
@@ -39,14 +41,14 @@ pub enum Problem {
     },
     /// An allowlist with nothing allowed would block every site.
     #[error(
-        "configs.{config}: an allowlist needs at least one `allow` entry, or every site is blocked"
+        "profile \"{config}\": an allowlist needs at least one Allow site, or every site is blocked"
     )]
     EmptyAllowlist {
         /// The configuration.
         config: String,
     },
     /// An automatic start names a configuration that isn't defined.
-    #[error("auto_start #{number}: there is no configuration named \"{config}\"")]
+    #[error("automatic start #{number}: there is no profile named \"{config}\"")]
     AutoStartUnknownConfig {
         /// Which `[[auto_start]]` table, counting from 1.
         number: usize,

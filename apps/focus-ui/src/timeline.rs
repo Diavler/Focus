@@ -53,6 +53,13 @@ pub struct Timeline {
     pub now_label: String,
 }
 
+impl Timeline {
+    /// Whether the day has no events at all, timed, all-day or earlier.
+    pub fn is_empty(&self) -> bool {
+        self.clusters.is_empty() && self.all_day.is_empty() && self.earlier.is_empty()
+    }
+}
+
 /// Events that overlap, directly or through each other, in lanes drawn side by side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cluster {

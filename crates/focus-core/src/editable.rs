@@ -62,6 +62,9 @@ pub struct ListEntry {
     pub name: String,
     /// Its patterns.
     pub patterns: RulePatterns,
+    /// Apps to close during a session, by executable name.
+    #[serde(default)]
+    pub apps: Vec<String>,
 }
 
 /// One block configuration, as written.
@@ -138,11 +141,12 @@ impl EditableSettings {
                 resolved.include(&SharedList {
                     name: list.name.clone(),
                     rules: list.patterns.rules(),
+                    apps: list.apps.clone(),
                 });
             }
         }
         resolved.rules.extend(entry.patterns.rules());
-        resolved.apps.clone_from(&entry.apps);
+        resolved.add_apps(&entry.apps);
         Some(resolved)
     }
 }
@@ -160,6 +164,7 @@ mod tests {
         EditableSettings {
             start_at_login: true,
             lists: vec![ListEntry {
+                apps: Vec::new(),
                 name: "social".into(),
                 patterns: RulePatterns {
                     block: vec!["x.com".into()],

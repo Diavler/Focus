@@ -425,6 +425,11 @@ pub fn sheet<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Mess
         })
 }
 
+/// A key that stays down, for the selected entry in a list of keys.
+pub fn key_held(theme: &Theme, status: button::Status) -> button::Style {
+    key_style(theme, status, Face::Plain, true)
+}
+
 /// An ordinary key: lifts on hover, sinks when pressed.
 pub fn key(theme: &Theme, status: button::Status) -> button::Style {
     key_style(theme, status, Face::Plain, false)

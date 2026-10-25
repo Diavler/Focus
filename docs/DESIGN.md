@@ -16,11 +16,12 @@ Goals:
 
 A session is a block configuration plus a strictness level plus a duration. It starts by hand, on a schedule, from a calendar event keyword, or from a Todoist task or label (e.g. `@deep`).
 
-**Block configurations** are named, reusable rule sets in the TOML config. Each has a mode (block what's listed, or allow only what's listed), site and URL-pattern rules, apps to close and notification settings. Shared lists such as *Social media* can be included by several configurations.
+**Block configurations** are named, reusable rule sets in the TOML config. Each has a mode (block what's listed, or allow only what's listed), site and URL-pattern rules, apps to close and notification settings. Shared lists such as *Social media* (sites and apps) can be included by several configurations; the window calls configurations *profiles*.
 
 ```toml
 [lists.social]
 block = ["x.com", "instagram.com", "tiktok.com"]
+apps = ["discord"]
 
 [configs.coding]
 mode = "blocklist"

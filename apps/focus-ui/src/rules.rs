@@ -140,7 +140,7 @@ pub fn problem(drafts: &[Draft], configs: &[String]) -> Option<String> {
     drafts.iter().enumerate().find_map(|(index, draft)| {
         let number = index + 1;
         if !configs.contains(&draft.rule.config) {
-            Some(format!("Rule {number}: pick a configuration."))
+            Some(format!("Rule {number}: pick a profile."))
         } else if draft.rule.calendar_keywords.is_empty() && draft.rule.task_labels.is_empty() {
             Some(format!(
                 "Rule {number}: add a calendar keyword or a Todoist label, or it never starts."
@@ -176,9 +176,7 @@ pub fn view<'a>(drafts: &'a [Draft], configs: &'a [String]) -> Element<'a, Messa
     let add = (!configs.is_empty()).then_some(Message::Rule(Edit::Add));
     section = section.push(button("Add rule").style(style::key).on_press_maybe(add));
     if configs.is_empty() {
-        section = section.push(caption(
-            "Create a configuration first (Configurations tab).",
-        ));
+        section = section.push(caption("Create a profile first (Profiles tab)."));
     }
     if let Some(problem) = problem(drafts, configs) {
         section = section.push(toned(problem, Tone::Bad).size(14));
@@ -223,7 +221,7 @@ fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a
         pick_list(configs, selected, move |config| {
             Message::Rule(Edit::Config(index, config))
         })
-        .placeholder("configuration")
+        .placeholder("profile")
         .style(style::picker)
         .menu_style(style::menu),
         style::field_label("at"),
@@ -414,7 +412,7 @@ mod tests {
         drafts[0].rule.config = "gone".into();
         assert_eq!(
             problem(&drafts, &configs()).as_deref(),
-            Some("Rule 1: pick a configuration.")
+            Some("Rule 1: pick a profile.")
         );
     }
 }

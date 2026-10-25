@@ -31,6 +31,10 @@ enforce-windows.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 enforce-linux-kde.workspace = true
 
+[build-dependencies]
+# Embeds the app icon in the Windows exe (see build.rs).
+winresource.workspace = true
+
 [dev-dependencies]
 focus-core = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

@@ -4,6 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::enforcement::same_app;
 use crate::matcher::evaluate;
 use crate::rule::{Rule, RuleAction, Verdict};
 
@@ -17,13 +18,17 @@ pub enum Mode {
     Allowlist,
 }
 
-/// A named list of rules that several configurations can include, such as *Social media*.
+/// A named list of rules and apps that several configurations can include, such as *Social
+/// media*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedList {
     /// The list's name, used by `include`.
     pub name: String,
     /// The list's rules.
     pub rules: Vec<Rule>,
+    /// Apps to close during a session, by executable name.
+    #[serde(default)]
+    pub apps: Vec<String>,
 }
 
 /// A named rule set: mode, site rules (with shared lists already included) and apps to close.
@@ -50,9 +55,19 @@ impl BlockConfig {
         }
     }
 
-    /// Adds a shared list's rules to this configuration.
+    /// Adds a shared list's rules and apps to this configuration.
     pub fn include(&mut self, list: &SharedList) {
         self.rules.extend(list.rules.iter().cloned());
+        self.add_apps(&list.apps);
+    }
+
+    /// Adds apps to close, skipping any already there (by [`same_app`]).
+    pub fn add_apps(&mut self, apps: &[String]) {
+        for app in apps {
+            if !self.apps.iter().any(|existing| same_app(existing, app)) {
+                self.apps.push(app.clone());
+            }
+        }
     }
 
     /// The verdict for `url` under this configuration.
@@ -93,10 +108,13 @@ mod tests {
                 UrlPattern::parse("x.com").unwrap(),
                 RuleAction::Block,
             )],
+            apps: vec!["discord".into(), "Steam".into()],
         };
         let mut config = BlockConfig::new("coding", Mode::Blocklist);
+        config.apps = vec!["steam".into()];
         config.include(&social);
         assert_eq!(config.rules, social.rules);
+        assert_eq!(config.apps, ["steam", "discord"], "no app twice");
         assert_eq!(
             config.verdict("https://x.com/home"),
             Verdict::Restrict(RuleAction::Block)

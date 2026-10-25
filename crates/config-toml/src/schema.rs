@@ -87,6 +87,8 @@ pub(crate) struct ListTable {
     pub(crate) feed_only: Vec<String>,
     #[serde(default)]
     pub(crate) block: Vec<String>,
+    #[serde(default)]
+    pub(crate) apps: Vec<String>,
 }
 
 /// `[configs.<name>]`: a block configuration. Repeats the rule keys of [`ListTable`] because serde

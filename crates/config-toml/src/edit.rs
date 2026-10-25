@@ -35,6 +35,7 @@ pub fn editable(text: &str) -> Result<EditableSettings, SettingsError> {
                     feed_only: table.feed_only,
                     block: table.block,
                 },
+                apps: table.apps,
             })
             .collect(),
         configs: file
@@ -108,6 +109,7 @@ pub fn with_settings(text: &str, settings: &EditableSettings) -> Result<String, 
     for list in &settings.lists {
         let table = child_table(lists, &list.name);
         set_patterns(table, &list.patterns);
+        set_array(table, "apps", &list.apps);
     }
     drop_if_empty(&mut document, "lists");
 
@@ -395,6 +397,7 @@ allow = ["docs.google.com"]
             .push("netflix.com".into());
         settings.configs[0].apps.clear();
         settings.lists.push(ListEntry {
+            apps: Vec::new(),
             name: "news".into(),
             patterns: RulePatterns {
                 delay: vec!["news.ycombinator.com".into()],
@@ -576,5 +579,18 @@ allow = ["docs.google.com"]
             editable("[configs\n"),
             Err(SettingsError::Syntax { .. })
         ));
+    }
+
+    #[test]
+    fn list_apps_round_trip() {
+        let text = "[lists.games]
+block = [\"steampowered.com\"]
+";
+        let mut settings = editable(text).unwrap();
+        assert!(settings.lists[0].apps.is_empty());
+        settings.lists[0].apps = vec!["steam".into()];
+        let written = with_settings(text, &settings).unwrap();
+        assert!(written.contains("apps = [\"steam\"]"), "{written}");
+        assert_eq!(editable(&written).unwrap().lists[0].apps, ["steam"]);
     }
 }

@@ -1,6 +1,7 @@
-//! Editing block configurations and shared lists: their URL patterns, and for configurations the
-//! mode, included lists and apps to close. Patterns are checked as they're added, and a URL can
-//! be tried against the edited configuration before saving.
+//! Editing profiles (block configurations) and shared lists: their URL patterns and apps to
+//! close, and for profiles the mode and included lists. Both show every entry down the left with
+//! what's in it, and the selected one's editor beside. Patterns are checked as they're added, and
+//! a URL can be tried against the edited profile before saving.
 
 use focus_core::{
     ConfigEntry, EditableSettings, ListEntry, Mode, RulePatterns, UrlPattern, same_app,
@@ -79,24 +80,6 @@ pub struct Editor {
     problem: Option<String>,
 }
 
-/// An entry in the configuration or list dropdown.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Choice {
-    /// One that exists, by name.
-    Existing(String),
-    /// Make a new one; holds the noun ("configuration" or "list").
-    New(&'static str),
-}
-
-impl std::fmt::Display for Choice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Existing(name) => f.write_str(name),
-            Self::New(noun) => write!(f, "+ New {noun}"),
-        }
-    }
-}
-
 /// What a site in the add bar does: an index into [`ACTION_ROWS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Action(usize);
@@ -139,6 +122,68 @@ pub enum Edit {
     RemoveApp(usize),
     ToggleTest,
     TryUrl(String),
+    /// Add the ready-made list at this index of [`STARTERS`].
+    Starter(usize),
+}
+
+/// A ready-made list: name, blocked sites, sites with feeds hidden, and apps.
+type Starter = (
+    &'static str,
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
+/// Ready-made lists to start from, offered until each exists.
+const STARTERS: [Starter; 3] = [
+    (
+        "social",
+        &[
+            "facebook.com",
+            "instagram.com",
+            "x.com",
+            "twitter.com",
+            "tiktok.com",
+        ],
+        &["reddit.com"],
+        &["discord"],
+    ),
+    (
+        "video",
+        &[
+            "netflix.com",
+            "twitch.tv",
+            "primevideo.com",
+            "disneyplus.com",
+        ],
+        &["youtube.com"],
+        &[],
+    ),
+    (
+        "games",
+        &[
+            "store.steampowered.com",
+            "steamcommunity.com",
+            "epicgames.com",
+        ],
+        &[],
+        &["steam", "EpicGamesLauncher", "Battle.net"],
+    ),
+];
+
+/// The ready-made list at `index` as a list entry.
+fn starter(index: usize) -> Option<ListEntry> {
+    let (name, block, feed_only, apps) = STARTERS.get(index)?;
+    let owned = |items: &[&str]| items.iter().map(|&item| item.to_owned()).collect();
+    Some(ListEntry {
+        name: (*name).to_owned(),
+        patterns: RulePatterns {
+            block: owned(block),
+            feed_only: owned(feed_only),
+            ..RulePatterns::default()
+        },
+        apps: owned(apps),
+    })
 }
 
 /// Something an edit deleted, so settings that refer to it can follow.
@@ -181,6 +226,21 @@ pub fn apply(
         Edit::SiteTyped(site) => editor.site = site,
         Edit::Action(action) => editor.action = action,
         Edit::AppTyped(typed) => editor.app = typed,
+        Edit::Starter(index) => {
+            if let Some(list) = starter(index)
+                && !settings
+                    .lists
+                    .iter()
+                    .any(|existing| existing.name == list.name)
+            {
+                *editor = Editor {
+                    selected: Some(list.name.clone()),
+                    ..Editor::default()
+                };
+                settings.lists.push(list);
+                settings.lists.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+        }
         other => {
             let name = selected(settings, editor, target)?;
             edit_selected(settings, editor, target, &name, other);
@@ -216,6 +276,7 @@ fn create(settings: &mut EditableSettings, editor: &mut Editor, target: Target) 
         }
         Target::Lists => {
             settings.lists.push(ListEntry {
+                apps: Vec::new(),
                 name: name.clone(),
                 patterns: RulePatterns::default(),
             });
@@ -294,8 +355,34 @@ fn edit_selected(
                 }
             }
         }
+        Edit::AddApp | Edit::PickApp(_) | Edit::RemoveApp(_) => {
+            let apps = match target {
+                Target::Configs => settings
+                    .configs
+                    .iter_mut()
+                    .find(|config| config.name == name)
+                    .map(|config| &mut config.apps),
+                Target::Lists => settings
+                    .lists
+                    .iter_mut()
+                    .find(|list| list.name == name)
+                    .map(|list| &mut list.apps),
+            };
+            let Some(apps) = apps else { return };
+            match edit {
+                Edit::AddApp => {
+                    let app = std::mem::take(&mut editor.app);
+                    add_app(apps, &app);
+                }
+                Edit::PickApp(app) => add_app(apps, &app),
+                Edit::RemoveApp(at) if at < apps.len() => {
+                    apps.remove(at);
+                }
+                _ => {}
+            }
+        }
         other => {
-            // The rest only apply to configurations.
+            // The rest only apply to profiles.
             let Some(config) = settings
                 .configs
                 .iter_mut()
@@ -310,14 +397,6 @@ fn edit_selected(
                     if on {
                         config.include.push(list);
                     }
-                }
-                Edit::AddApp => {
-                    let app = std::mem::take(&mut editor.app);
-                    add_app(&mut config.apps, &app);
-                }
-                Edit::PickApp(app) => add_app(&mut config.apps, &app),
-                Edit::RemoveApp(at) if at < config.apps.len() => {
-                    config.apps.remove(at);
                 }
                 _ => {}
             }
@@ -357,7 +436,7 @@ fn selected(settings: &EditableSettings, editor: &Editor, target: Target) -> Opt
         .cloned()
 }
 
-/// The editor for configurations or lists.
+/// The editor for profiles or lists: every entry down the left, the selected one beside it.
 pub fn view<'a>(
     settings: &'a EditableSettings,
     editor: &'a Editor,
@@ -368,98 +447,202 @@ pub fn view<'a>(
         Target::Configs => Message::Settings(settings::Msg::Config(edit)),
         Target::Lists => Message::Settings(settings::Msg::List(edit)),
     };
-    let names: Vec<String> = match target {
-        Target::Configs => settings.configs.iter().map(|c| c.name.clone()).collect(),
-        Target::Lists => settings.lists.iter().map(|l| l.name.clone()).collect(),
-    };
     let current = selected(settings, editor, target);
-    let (noun, explanation) = match target {
+    row![
+        container(index(settings, editor, target, current.as_deref(), wrap))
+            .width(Length::Fixed(200.0)),
+        container(detail(settings, editor, target, current, open_apps, wrap)).width(Length::Fill),
+    ]
+    .spacing(18)
+    .into()
+}
+
+/// The noun for one entry, and what the kind is for.
+fn noun_and_help(target: Target) -> (&'static str, &'static str) {
+    match target {
         Target::Configs => (
-            "configuration",
-            "What a session runs: which sites are restricted and which apps are closed. To \
-             rename one, create a new one and delete the old.",
+            "profile",
+            "What a session runs: which sites are blocked and which apps are closed. To rename \
+             one, create a new one and delete the old.",
         ),
         Target::Lists => (
             "list",
-            "A group of sites (say, social media) that several configurations can include.",
+            "A group of sites and apps (say, social media) that several profiles can include.",
         ),
-    };
-    // The dropdown lists the existing ones, then a way to make another.
-    let choices: Vec<Choice> = names
-        .into_iter()
-        .map(Choice::Existing)
-        .chain([Choice::New(noun)])
-        .collect();
-    let mut picker = row![
-        pick_list(
-            choices,
-            current.clone().map(Choice::Existing),
-            move |choice| match choice {
-                Choice::Existing(name) => wrap(Edit::Select(name)),
-                Choice::New(_) => wrap(Edit::StartNew),
-            }
-        )
-        .placeholder(format!("No {noun}s yet"))
-        .style(style::picker)
-        .menu_style(style::menu),
-        info(explanation),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    if editor.naming {
-        let create = (!editor.new_name.trim().is_empty()).then(|| wrap(Edit::Create));
-        picker = picker
-            .push(
-                text_input(&format!("New {noun} name"), &editor.new_name)
-                    .style(style::field)
-                    .on_input(move |name| wrap(Edit::NewName(name)))
-                    .on_submit_maybe(create.clone())
-                    .width(Length::Fixed(200.0)),
-            )
-            .push(
-                button("Create")
-                    .style(style::key_accent)
-                    .on_press_maybe(create),
-            )
-            .push(
-                button("Cancel")
-                    .style(style::key)
-                    .on_press(wrap(Edit::CancelNew)),
-            );
     }
-    let mut page = column![picker].spacing(16);
-    // A problem with the new name shows by its box; others by the add bar.
+}
+
+/// Every entry as a key with what's in it, then New and (for lists) the ready-made ones.
+fn index<'a>(
+    settings: &'a EditableSettings,
+    editor: &'a Editor,
+    target: Target,
+    current: Option<&str>,
+    wrap: impl Fn(Edit) -> Message + Copy + 'a,
+) -> Column<'a, Message> {
+    let (noun, help) = noun_and_help(target);
+    let entries: Vec<(&'a str, String)> = match target {
+        Target::Configs => settings
+            .configs
+            .iter()
+            .map(|config| {
+                (
+                    config.name.as_str(),
+                    contents(&config.patterns, &config.apps),
+                )
+            })
+            .collect(),
+        Target::Lists => settings
+            .lists
+            .iter()
+            .map(|list| (list.name.as_str(), contents(&list.patterns, &list.apps)))
+            .collect(),
+    };
+    let mut column = column![
+        row![
+            style::field_label(match target {
+                Target::Configs => "Profiles",
+                Target::Lists => "Lists",
+            }),
+            info(help)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+    ]
+    .spacing(8);
+    for (name, what) in entries {
+        let held = current == Some(name) && !editor.naming;
+        column = column.push(
+            button(column![text(name).size(15), caption(what).size(12)].spacing(2))
+                .width(Length::Fill)
+                .padding([8, 12])
+                .style(if held { style::key_held } else { style::key })
+                .on_press(wrap(Edit::Select(name.to_owned()))),
+        );
+    }
+    column = column.push(
+        button(text(format!("+ New {noun}")).size(14))
+            .width(Length::Fill)
+            .style(style::key_flat)
+            .on_press(wrap(Edit::StartNew)),
+    );
+    if target == Target::Lists {
+        let missing: Vec<(usize, &str)> = STARTERS
+            .iter()
+            .enumerate()
+            .filter(|(_, (name, ..))| !settings.lists.iter().any(|list| list.name == *name))
+            .map(|(at, (name, ..))| (at, *name))
+            .collect();
+        if !missing.is_empty() {
+            let mut starters = column![
+                row![
+                    caption("Ready-made").size(12),
+                    info("Lists with common sites and apps filled in. Edit them after adding.")
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center)
+            ]
+            .spacing(4);
+            for (at, name) in missing {
+                starters = starters.push(
+                    button(text(format!("+ {name}")).size(14))
+                        .width(Length::Fill)
+                        .style(style::key_flat)
+                        .on_press(wrap(Edit::Starter(at))),
+                );
+            }
+            column = column.push(space::vertical().height(Length::Fixed(8.0)));
+            column = column.push(starters);
+        }
+    }
+    column
+}
+
+/// What an entry holds, e.g. `12 sites, 2 apps`.
+fn contents(patterns: &RulePatterns, apps: &[String]) -> String {
+    let sites: usize = focus_core::ACTIONS
+        .iter()
+        .map(|&verdict| patterns.get(verdict).len())
+        .sum();
+    let count = |n: usize, one: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {one}s"),
+    };
+    match (sites, apps.len()) {
+        (0, 0) => "empty".to_owned(),
+        (sites, 0) => count(sites, "site"),
+        (0, apps) => count(apps, "app"),
+        (sites, apps) => format!("{}, {}", count(sites, "site"), count(apps, "app")),
+    }
+}
+
+/// The selected entry's editor, or the name box while making a new one.
+fn detail<'a>(
+    settings: &'a EditableSettings,
+    editor: &'a Editor,
+    target: Target,
+    current: Option<String>,
+    open_apps: &'a [String],
+    wrap: impl Fn(Edit) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let (noun, _) = noun_and_help(target);
     let problem = editor
         .problem
         .as_deref()
         .map(|problem| toned(problem, Tone::Bad).size(14));
-    let (name_problem, site_problem) = if editor.naming {
-        (problem, None)
-    } else {
-        (None, problem)
-    };
-    if let Some(problem) = name_problem {
-        page = page.push(problem);
+    if editor.naming {
+        let create = (!editor.new_name.trim().is_empty()).then(|| wrap(Edit::Create));
+        let mut naming = column![
+            heading(format!("New {noun}")),
+            row![
+                text_input(
+                    &format!(
+                        "Name, e.g. {}",
+                        match target {
+                            Target::Configs => "coding",
+                            Target::Lists => "news",
+                        }
+                    ),
+                    &editor.new_name
+                )
+                .style(style::field)
+                .on_input(move |name| wrap(Edit::NewName(name)))
+                .on_submit_maybe(create.clone()),
+                button("Create")
+                    .style(style::key_accent)
+                    .on_press_maybe(create),
+                button("Cancel")
+                    .style(style::key)
+                    .on_press(wrap(Edit::CancelNew)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12);
+        if let Some(problem) = problem {
+            naming = naming.push(problem);
+        }
+        return card(naming).into();
     }
     let Some(name) = current else {
-        return page
-            .push(caption(format!(
-                "No {noun}s yet. Pick + New {noun} in the list to make one."
-            )))
-            .into();
+        return caption(match target {
+            Target::Configs => "No profiles yet. Press + New profile to make one.",
+            Target::Lists => "No lists yet. Press + New list, or add a ready-made one.",
+        })
+        .into();
     };
-    let (patterns, config) = match target {
+    let (patterns, apps, config) = match target {
         Target::Configs => {
             let Some(config) = settings.configs.iter().find(|c| c.name == name) else {
-                return page.into();
+                return column![].into();
             };
-            (&config.patterns, Some(config))
+            (&config.patterns, &config.apps, Some(config))
         }
         Target::Lists => {
             let Some(list) = settings.lists.iter().find(|l| l.name == name) else {
-                return page.into();
+                return column![].into();
             };
-            (&list.patterns, None)
+            (&list.patterns, &list.apps, None)
         }
     };
 
@@ -473,22 +656,39 @@ pub fn view<'a>(
         .align_y(Alignment::Center)
     ]
     .spacing(16);
-    if let Some(config) = config {
-        sites = sites.push(mode_and_includes(settings, config, wrap));
+    match config {
+        Some(config) => sites = sites.push(mode_and_includes(settings, config, wrap)),
+        None => sites = sites.push(caption(used_by(settings, &name))),
     }
     sites = sites.push(add_bar(editor, wrap));
-    if let Some(problem) = site_problem {
+    if let Some(problem) = problem {
         sites = sites.push(problem);
     }
     sites = sites.push(grouped_sites(patterns, wrap));
     if let Some(config) = config {
         sites = sites.push(try_url(settings, editor, &config.name, wrap));
     }
-    page = page.push(card(sites));
-    if let Some(config) = config {
-        page = page.push(card(apps_editor(config, editor, open_apps, wrap)));
+    column![
+        card(sites),
+        card(apps_editor(apps, editor, open_apps, wrap))
+    ]
+    .spacing(16)
+    .into()
+}
+
+/// Which profiles include the list `name`, so it's clear what an edit affects.
+fn used_by(settings: &EditableSettings, name: &str) -> String {
+    let users: Vec<&str> = settings
+        .configs
+        .iter()
+        .filter(|config| config.include.iter().any(|included| included == name))
+        .map(|config| config.name.as_str())
+        .collect();
+    match users.as_slice() {
+        [] => "Not used yet: include it from a profile on the Profiles tab.".to_owned(),
+        [one] => format!("Used by {one}."),
+        [rest @ .., last] => format!("Used by {} and {last}.", rest.join(", ")),
     }
-    page.into()
 }
 
 /// Delete, asking first.
@@ -536,7 +736,7 @@ fn mode_and_includes<'a>(
             move |mode| wrap(Edit::Mode(mode)),
         ),
         info(
-            "Blocklist: everything opens except what's restricted below. Allowlist: only the \
+            "Blocklist: everything opens except what's blocked below. Allowlist: only the \
              Allow sites open."
         ),
         space::horizontal().width(Length::Fixed(16.0)),
@@ -551,13 +751,17 @@ fn mode_and_includes<'a>(
         let name = list.name.clone();
         line = line.push(
             checkbox(config.include.contains(&list.name))
-                .label(list.name.as_str())
+                .label(format!(
+                    "{} ({})",
+                    list.name,
+                    contents(&list.patterns, &list.apps)
+                ))
                 .text_size(14)
                 .on_toggle(move |on| wrap(Edit::Include(name.clone(), on))),
         );
     }
     line.push(info(
-        "Shared lists whose sites this configuration uses too.",
+        "Shared lists whose sites and apps this profile uses too.",
     ))
     .wrap()
     .into()
@@ -624,14 +828,14 @@ fn grouped_sites<'a>(
 
 /// Apps to close during a session: typed, or picked from what's open now.
 fn apps_editor<'a>(
-    config: &'a ConfigEntry,
+    apps: &'a [String],
     editor: &'a Editor,
     open_apps: &'a [String],
     wrap: impl Fn(Edit) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     let offer: Vec<String> = open_apps
         .iter()
-        .filter(|app| !config.apps.iter().any(|added| same_app(added, app)))
+        .filter(|app| !apps.iter().any(|added| same_app(added, app)))
         .cloned()
         .collect();
     column![
@@ -640,7 +844,7 @@ fn apps_editor<'a>(
             "Closed during a session, by program name (no .exe). Each is asked to close first, \
              then ended if it's still open. Focus never closes itself or Windows.",
             "program name, e.g. discord",
-            &config.apps,
+            apps,
             &editor.app,
             move |typed| wrap(Edit::AppTyped(typed)),
             wrap(Edit::AddApp),
@@ -687,7 +891,7 @@ fn try_url<'a>(
             text_input("reddit.com/r/rust/comments/abc", &editor.try_url)
                 .style(style::field)
                 .on_input(move |url| wrap(Edit::TryUrl(url))),
-            info("What this configuration does with the address, unsaved edits included."),
+            info("What this profile does with the address, unsaved edits included."),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -707,6 +911,7 @@ mod tests {
         EditableSettings {
             start_at_login: true,
             lists: vec![ListEntry {
+                apps: Vec::new(),
                 name: "social".into(),
                 patterns: RulePatterns::default(),
             }],
@@ -873,5 +1078,62 @@ mod tests {
         );
         assert!(settings.lists.is_empty());
         assert!(settings.configs[0].include.is_empty(), "no longer included");
+    }
+
+    #[test]
+    fn lists_hold_apps_that_profiles_get() {
+        let mut settings = settings();
+        let mut editor = Editor::default();
+        let lists = Target::Lists;
+        apply(
+            &mut settings,
+            &mut editor,
+            lists,
+            Edit::PickApp("Discord.exe".into()),
+        );
+        apply(
+            &mut settings,
+            &mut editor,
+            lists,
+            Edit::PickApp("discord".into()),
+        );
+        assert_eq!(settings.lists[0].apps, ["Discord"], "no .exe, not twice");
+        assert_eq!(settings.resolve("coding").unwrap().apps, ["Discord"]);
+        apply(&mut settings, &mut editor, lists, Edit::RemoveApp(0));
+        assert!(settings.lists[0].apps.is_empty());
+    }
+
+    #[test]
+    fn ready_made_lists_are_added_once() {
+        let mut settings = settings();
+        let mut editor = Editor::default();
+        apply(&mut settings, &mut editor, Target::Lists, Edit::Starter(2));
+        apply(&mut settings, &mut editor, Target::Lists, Edit::Starter(2));
+        let games: Vec<&ListEntry> = settings
+            .lists
+            .iter()
+            .filter(|list| list.name == "games")
+            .collect();
+        assert_eq!(games.len(), 1);
+        assert!(games[0].apps.contains(&"steam".to_owned()));
+        assert_eq!(
+            selected(&settings, &editor, Target::Lists).as_deref(),
+            Some("games")
+        );
+    }
+
+    #[test]
+    fn describes_contents_and_users() {
+        let mut patterns = RulePatterns::default();
+        assert_eq!(contents(&patterns, &[]), "empty");
+        patterns.block = vec!["x.com".into()];
+        assert_eq!(
+            contents(&patterns, &["steam".into(), "discord".into()]),
+            "1 site, 2 apps"
+        );
+        let mut settings = settings();
+        assert_eq!(used_by(&settings, "social"), "Used by coding.");
+        settings.configs[0].include.clear();
+        assert!(used_by(&settings, "social").starts_with("Not used yet"));
     }
 }

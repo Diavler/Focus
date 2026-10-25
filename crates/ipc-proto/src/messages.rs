@@ -355,7 +355,7 @@ pub enum DaemonError {
         message: String,
     },
     /// No configuration with that name is in effect.
-    #[error("there is no configuration named \"{name}\"")]
+    #[error("there is no profile named \"{name}\"")]
     UnknownConfig {
         /// The name asked for.
         name: String,

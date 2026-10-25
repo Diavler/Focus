@@ -31,6 +31,7 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
                 SharedList {
                     name: name.clone(),
                     rules,
+                    apps: table.apps.clone(),
                 },
             )
         })
@@ -53,7 +54,7 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
             }
             let own = build_rules(&format!("configs.{name}"), table.groups(), &mut problems);
             config.rules.extend(own);
-            config.apps.clone_from(&table.apps);
+            config.add_apps(&table.apps);
             let allows_something = config
                 .rules
                 .iter()
@@ -394,7 +395,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the settings have problems:\n\
-             - configs.writing: an allowlist needs at least one `allow` entry, or every site is blocked"
+             - profile \"writing\": an allowlist needs at least one Allow site, or every site is blocked"
         );
     }
 
@@ -507,5 +508,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains("alow"), "names the bad key: {message}");
+    }
+
+    #[test]
+    fn lists_bring_their_apps() {
+        let text = "[lists.games]
+block = [\"steampowered.com\"]
+apps = [\"steam\"]
+
+                    [configs.study]
+include = [\"games\"]
+apps = [\"discord\", \"Steam\"]
+";
+        let settings = parse_settings(text).unwrap();
+        let study = settings
+            .configs
+            .iter()
+            .find(|config| config.name == "study")
+            .unwrap();
+        assert_eq!(study.apps, ["steam", "discord"], "Steam only once");
     }
 }

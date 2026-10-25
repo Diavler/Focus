@@ -74,7 +74,7 @@ fn main() -> iced::Result {
         app = app.font(font);
     }
     app.default_font(style::SANS)
-        .title("Focus")
+        .title(App::title)
         .subscription(App::subscription)
         .theme(App::theme)
         .window(iced::window::Settings {
@@ -160,6 +160,16 @@ pub(crate) struct App {
     session_seen: bool,
     /// The window's size before it became the card, to grow back to.
     full_size: Option<iced::Size>,
+    /// What the tray's tooltip says now, so it's only set when it changes.
+    tray_tooltip: String,
+    /// When the last finished session ended, as last seen; a newer one sets the start choices.
+    last_ended: Option<focus_core::Timestamp>,
+    /// When the daemon last started answering, so a browser extension gets time to check in.
+    connected_since: Option<focus_core::Timestamp>,
+    /// What the pages are drawn with until the daemon first answers.
+    waiting: StatusReport,
+    /// Status polls in a row the daemon hasn't answered, for the sidebar's note.
+    unanswered: u32,
     /// The overlay open on top of the page, if any.
     panel: Option<Panel>,
     configs: Vec<BlockConfig>,
@@ -264,6 +274,10 @@ pub(crate) enum Message {
     )]
     Tray(tray::TrayAction),
     OpenPanel(Panel),
+    /// Open Rules on the Configurations tab, to make the first one.
+    CreateConfig,
+    /// Hide the error line.
+    DismissError,
     ClosePanel,
     ConfigPicked(String),
     StrictnessPicked(Strictness),
@@ -324,6 +338,11 @@ impl App {
             page: Page::Overview,
             native_window: None,
             tray: tray::Tray::create(),
+            tray_tooltip: String::new(),
+            connected_since: None,
+            last_ended: None,
+            waiting: sessions::blank_status(wall_clock()),
+            unanswered: 0,
             compact: false,
             session_seen: false,
             full_size: None,
@@ -375,7 +394,15 @@ impl App {
                 .map(Message::NativeWindow),
         ];
         if minimized {
-            boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
+            // Started at login (or by the daemon): out of the way, in the tray if there is one.
+            let hide = app.tray.is_some();
+            boot.push(iced::window::oldest().and_then(move |id| {
+                if hide {
+                    iced::window::set_mode(id, iced::window::Mode::Hidden)
+                } else {
+                    iced::window::minimize(id, true)
+                }
+            }));
         }
         (app, Task::batch(boot))
     }
@@ -388,6 +415,11 @@ impl App {
                 match *result {
                     Ok(status) => {
                         let revision = status.parking_lot.revision;
+                        // An open Rules or Settings panel couldn't load without the daemon.
+                        let reconnected = !self.connected() && self.panel.is_some();
+                        if !self.connected() {
+                            self.connected_since = Some(status.now);
+                        }
                         let running = status.session.running().is_some();
                         let on_top = status.timer_on_top;
                         let on_top_changed =
@@ -396,7 +428,13 @@ impl App {
                         self.refresh_theme();
                         self.unreachable = None;
                         self.failed_polls = 0;
+                        self.unanswered = 0;
+                        self.refresh_tray_tooltip();
+                        self.reuse_last_choices();
                         let mut tasks = vec![self.follow_session(running)];
+                        if reconnected {
+                            tasks.push(self.open_settings());
+                        }
                         if on_top_changed && self.compact {
                             tasks.push(compact::keep_on_top(on_top));
                         }
@@ -408,6 +446,7 @@ impl App {
                     }
                     Err(problem) => {
                         self.unreachable = Some(problem.message);
+                        self.unanswered = self.unanswered.saturating_add(1);
                         if problem.not_running {
                             self.restart_daemon_if_gone();
                         } else {
@@ -429,6 +468,11 @@ impl App {
                     self.plan = Some(plan);
                 }
             }
+            Message::CreateConfig => {
+                self.settings_tab = settings::Tab::Configs;
+                return self.update(Message::OpenPanel(Panel::Rules));
+            }
+            Message::DismissError => self.error = None,
             Message::Navigate(page) => {
                 self.page = page;
                 self.panel = None;
@@ -726,7 +770,8 @@ impl App {
                 if let Some(draft) = &mut self.settings {
                     draft.error = None;
                 }
-                if tab == settings::Tab::Configs {
+                // Both editors offer the apps that are open now.
+                if matches!(tab, settings::Tab::Configs | settings::Tab::Lists) {
                     return self.fetch_apps();
                 }
                 return Task::none();
@@ -784,7 +829,10 @@ impl App {
 
     fn open_settings(&mut self) -> Task<Message> {
         let mut tasks = vec![self.fetch_settings()];
-        if self.settings_tab == settings::Tab::Configs {
+        if matches!(
+            self.settings_tab,
+            settings::Tab::Configs | settings::Tab::Lists
+        ) {
             tasks.push(self.fetch_apps());
         }
         Task::batch(tasks)
@@ -889,7 +937,34 @@ impl App {
     /// `message`, unless an action is still waiting for the daemon (so double clicks don't send
     /// it twice).
     pub(crate) fn idle_then(&self, message: Message) -> Option<Message> {
-        (!self.action_pending).then_some(message)
+        (!self.action_pending && self.connected()).then_some(message)
+    }
+
+    /// Whether the daemon is answering. Until it does, the window is drawn but its actions are
+    /// greyed out.
+    pub(crate) fn connected(&self) -> bool {
+        self.status.is_some() && self.unreachable.is_none()
+    }
+
+    /// `key` with a hover saying why it's greyed out, while the daemon isn't answering.
+    pub(crate) fn needs_daemon<'a>(
+        &self,
+        key: impl Into<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        if self.connected() {
+            key.into()
+        } else {
+            help::tip(key, "Waiting for the background service")
+        }
+    }
+
+    /// Why there's no profile to pick: none made yet, or not heard from the daemon yet.
+    pub(crate) fn profiles_missing<'a>(&self) -> Element<'a, Message> {
+        if self.connected() {
+            sessions::no_configurations()
+        } else {
+            caption("Profiles load once the background service answers.").into()
+        }
     }
 
     /// Polls the daemon once a second, and follows the system's light or dark mode.
@@ -943,6 +1018,27 @@ impl App {
         }
     }
 
+    /// Starts the Session page's choices (profile, strictness, length) from the last finished
+    /// session, once per session the daemon reports, so they survive a restart.
+    fn reuse_last_choices(&mut self) {
+        let Some(ended) = self
+            .status
+            .as_ref()
+            .and_then(|status| status.session.ended())
+        else {
+            return;
+        };
+        if self.last_ended == Some(ended.ended_at()) {
+            return;
+        }
+        self.last_ended = Some(ended.ended_at());
+        let spec = ended.spec();
+        self.selected = Some(spec.config.name.clone());
+        self.strictness = spec.strictness;
+        self.minutes = sessions::minutes_from(spec.duration);
+        self.minutes_text = sessions::minutes_label(self.minutes);
+    }
+
     /// Enters minimal mode when a session starts and leaves it when the session ends.
     fn follow_session(&mut self, running: bool) -> Task<Message> {
         if running == self.session_seen {
@@ -982,28 +1078,43 @@ impl App {
         compact::grow_window(self.full_size.unwrap_or(FULL_WINDOW))
     }
 
+    /// The window title: the session and its time left while one runs.
+    fn title(&self) -> String {
+        match self.status.as_ref().and_then(sessions::session_summary) {
+            Some(summary) => format!("{summary} · Focus"),
+            None => "Focus".to_owned(),
+        }
+    }
+
+    /// Sets the tray's tooltip to the session and its time left, or says Focus is running.
+    fn refresh_tray_tooltip(&mut self) {
+        let tooltip = match self.status.as_ref().and_then(sessions::session_summary) {
+            Some(summary) => format!("Focus · {summary}"),
+            None => tray::IDLE_TOOLTIP.to_owned(),
+        };
+        if tooltip != self.tray_tooltip {
+            if let Some(tray) = &self.tray {
+                tray.set_tooltip(&tooltip);
+            }
+            self.tray_tooltip = tooltip;
+        }
+    }
+
     fn view(&self) -> Element<'_, Message> {
         if let Some(status) = self.status.as_ref().filter(|_| self.compact) {
             return self.compact_card(status);
         }
-        let content: Element<'_, Message> = match (&self.status, &self.unreachable) {
-            (_, Some(problem)) => column![
-                style::title("Focus's background service isn't responding"),
-                text("Starting it again; this window reconnects by itself."),
-                caption(problem.as_str()),
-            ]
-            .spacing(10)
-            .into(),
-            (None, None) => style::title("Connecting to Focus…").into(),
-            (Some(status), None) => match self.page {
-                Page::Overview => self.overview_page(status),
-                Page::Sessions => self.sessions_page(status),
-                Page::Calendar => self.calendar_page(status),
-                Page::Todoist => self.todoist_page(status),
-            },
+        // Before the daemon answers (or while it doesn't), the pages still draw: from a blank
+        // status at first, or from the last one it sent. The sidebar says what's going on.
+        let status = self.status.as_ref().unwrap_or(&self.waiting);
+        let content: Element<'_, Message> = match self.page {
+            Page::Overview => self.overview_page(status),
+            Page::Sessions => self.sessions_page(status),
+            Page::Calendar => self.calendar_page(status),
+            Page::Todoist => self.todoist_page(status),
         };
         let page = self.scrolling(content);
-        let Some((panel, status)) = self.panel.zip(self.status.as_ref()) else {
+        let Some(panel) = self.panel else {
             return row![self.sidebar(), page].into();
         };
         let content = match panel {
@@ -1022,7 +1133,17 @@ impl App {
     fn scrolling<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let mut main: Column<'_, Message> = column![content].spacing(18);
         if let Some(error) = &self.error {
-            main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
+            main = main.push(
+                row![
+                    style::toned(error.as_str(), Tone::Bad).size(14),
+                    space::horizontal(),
+                    button(text("×").size(16))
+                        .style(style::key_flat)
+                        .on_press(Message::DismissError),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            );
         }
         scrollable(container(main).padding([28, 32]).width(Length::Fill))
             .style(style::scrollbar)
@@ -1038,6 +1159,25 @@ impl App {
             .on_press(Message::ClosePanel)
             .style(style::key)
             .into()
+    }
+
+    /// The sidebar's line while the daemon isn't answering: starting at first, then a problem
+    /// if it stays quiet. Hover for the error.
+    fn service_note(&self) -> Element<'_, Message> {
+        /// Polls (about seconds) before a slow start counts as a problem.
+        const PATIENCE: u32 = 10;
+        let (words, tone) = if self.status.is_none() && self.unanswered < PATIENCE {
+            ("Starting background service…", Tone::Warn)
+        } else {
+            ("Background service isn't responding", Tone::Bad)
+        };
+        let line = row![dot(tone), caption(words).size(13)]
+            .spacing(6)
+            .align_y(Alignment::Center);
+        match &self.unreachable {
+            Some(problem) => help::tip(line, problem.as_str()),
+            None => line.into(),
+        }
     }
 
     /// The app name, what's happening now, the pages, and the sources' sync status.
@@ -1064,7 +1204,9 @@ impl App {
         )
         .width(Length::Fill);
         let mut sources = column![].spacing(6);
-        if let Some(status) = &self.status {
+        if !self.connected() {
+            sources = sources.push(self.service_note());
+        } else if let Some(status) = &self.status {
             for (name, source) in [
                 ("Calendar", &status.plan.calendar),
                 ("Todoist", &status.plan.tasks),
@@ -1076,16 +1218,23 @@ impl App {
                     SourceState::NotConfigured => ("not connected", Tone::Quiet),
                     SourceState::Unknown => ("checking", Tone::Quiet),
                 };
+                // Synced (and still checking) needs no line; only problems show.
+                if matches!(source.state, SourceState::Ok | SourceState::Unknown) {
+                    continue;
+                }
                 sources = sources.push(
-                    row![dot(tone), style::label(&format!("{name} {label}"))]
+                    row![dot(tone), caption(format!("{name} {label}")).size(13)]
                         .spacing(6)
                         .align_y(Alignment::Center),
                 );
             }
             // Which browsers the extension protects (a browser without it is closed in sessions).
-            for line in sessions::browser_lines(status) {
+            for line in sessions::browser_lines(status, self.connected_since) {
+                if line.tone == Tone::Good {
+                    continue;
+                }
                 sources = sources.push(
-                    row![dot(line.tone), style::label(&line.text)]
+                    row![dot(line.tone), caption(line.text).size(13)]
                         .spacing(6)
                         .align_y(Alignment::Center),
                 );
@@ -1119,12 +1268,12 @@ impl App {
                 readouts,
                 space::vertical().height(Length::Fixed(12.0)),
                 nav(
-                    "Overview",
+                    "Today",
                     self.page == Page::Overview,
                     Message::Navigate(Page::Overview)
                 ),
                 nav(
-                    "Sessions",
+                    "Session",
                     self.page == Page::Sessions,
                     Message::Navigate(Page::Sessions)
                 ),
@@ -1169,4 +1318,14 @@ fn show_window() -> Task<Message> {
             iced::window::gain_focus(id),
         ])
     })
+}
+
+/// Now, from the computer's clock: only for dating the blank status the window starts with.
+fn wall_clock() -> focus_core::Timestamp {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    focus_core::Timestamp::from_millis(millis)
 }

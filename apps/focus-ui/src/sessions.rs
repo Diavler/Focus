@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use chrono::{Local, TimeZone};
 use focus_core::{
-    BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, OverridePolicy,
-    RunningSession, Strictness, Timestamp, ports::Silencing,
+    BlockConfig, BrowserPolicy, EndEarlyPolicy, OverridePolicy, RunningSession, Strictness,
+    Timestamp, ports::Silencing,
 };
 use iced::widget::{button, column, container, pick_list, row, slider, space, text, text_input};
 use iced::{Alignment, Element, Length};
@@ -22,7 +22,7 @@ impl App {
     /// The Sessions page.
     pub(crate) fn sessions_page<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let header = row![
-            title("Sessions"),
+            title("Session"),
             info("Sessions run in the background; closing this window doesn't end them."),
         ]
         .spacing(12)
@@ -40,7 +40,7 @@ impl App {
         // The session on the left, the parking lot beside it, as on the panel's face.
         let main: Element<'a, Message> = match status.session.running() {
             Some(running) => self.running_card(running, status),
-            None => self.new_session_card(status),
+            None => self.new_session_card(),
         };
         let mut side = column![self.parking_card(status)].spacing(18);
         if let Some(pending) = pending_summary(status) {
@@ -174,18 +174,21 @@ impl App {
     }
 
     /// Starting a session by hand, under how the last one went (if there was one).
-    fn new_session_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
-        let mut config = row![
-            pick_list(
-                self.config_names.as_slice(),
-                self.selected.as_ref(),
-                Message::ConfigPicked
-            )
-            .placeholder("no configurations")
-            .style(style::picker)
-            .menu_style(style::menu),
-            info("Which sites and apps are restricted. Edit in Rules → Configurations."),
-        ]
+    fn new_session_card(&self) -> Element<'_, Message> {
+        let mut config = if self.config_names.is_empty() {
+            row![self.profiles_missing()]
+        } else {
+            row![
+                pick_list(
+                    self.config_names.as_slice(),
+                    self.selected.as_ref(),
+                    Message::ConfigPicked
+                )
+                .style(style::picker)
+                .menu_style(style::menu),
+                info("Which sites and apps are blocked. Edit in Rules → Profiles."),
+            ]
+        }
         .spacing(10)
         .align_y(Alignment::Center);
         if let Some(summary) = self.selected_config().map(config_summary) {
@@ -211,7 +214,7 @@ impl App {
             slider(MINUTES, self.minutes, Message::MinutesChanged).style(style::fader),
         ]
         .spacing(10);
-        let can_start = self.selected.is_some() && !self.action_pending;
+        let can_start = self.selected.is_some() && !self.action_pending && self.connected();
         let controls = row![
             style::segmented(
                 &Strictness::ALL,
@@ -221,18 +224,16 @@ impl App {
             ),
             info(strictness_help()),
             space::horizontal(),
-            button(text("Start session").size(15))
-                .padding([10, 20])
-                .style(style::key_accent)
-                .on_press_maybe(can_start.then_some(Message::Start)),
+            self.needs_daemon(
+                button(text("Start session").size(15))
+                    .padding([10, 20])
+                    .style(style::key_accent)
+                    .on_press_maybe(can_start.then_some(Message::Start)),
+            ),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
-        let mut body = column![heading("Start a session")].spacing(16);
-        if let Some(ended) = status.session.ended() {
-            body = body.push(caption(last_session_summary(ended)));
-        }
-        card(body.push(config).push(duration).push(controls)).into()
+        card(column![heading("Start a session"), config, duration, controls].spacing(16)).into()
     }
 
     /// End-early controls, which depend on the session's strictness.
@@ -313,8 +314,12 @@ pub(crate) fn when_label(at: Timestamp, now: Timestamp) -> String {
 
 /// One short line per browser whose extension is checking in, or one saying none is. A browser
 /// whose extension can't run in private windows still counts, with a warning light: it's closed
-/// during sessions until that's allowed.
-pub(crate) fn browser_lines(status: &StatusReport) -> Vec<Line> {
+/// during sessions until that's allowed. For one heartbeat window after the daemon answered
+/// (`connected_since`), no extension yet means it may still be on its way, not missing.
+pub(crate) fn browser_lines(
+    status: &StatusReport,
+    connected_since: Option<Timestamp>,
+) -> Vec<Line> {
     let lines: Vec<Line> = status
         .browsers
         .iter()
@@ -324,7 +329,7 @@ pub(crate) fn browser_lines(status: &StatusReport) -> Vec<Line> {
                 <= BrowserPolicy::default().heartbeat_timeout
         })
         .map(|browser| Line {
-            text: format!("{} connected", browser_name(&browser.browser)),
+            text: format!("{} extension connected", browser_name(&browser.browser)),
             tone: if browser.incognito_allowed {
                 Tone::Good
             } else {
@@ -333,26 +338,62 @@ pub(crate) fn browser_lines(status: &StatusReport) -> Vec<Line> {
         })
         .collect();
     if lines.is_empty() {
-        vec![Line {
-            text: "No browser connected".to_owned(),
-            tone: Tone::Bad,
+        let starting = connected_since.is_some_and(|since| {
+            status.now.saturating_duration_since(since) < BrowserPolicy::default().heartbeat_timeout
+        });
+        vec![if starting {
+            Line {
+                text: "Waiting for browser extension…".to_owned(),
+                tone: Tone::Warn,
+            }
+        } else {
+            Line {
+                text: "No browser extension connected".to_owned(),
+                tone: Tone::Bad,
+            }
         }]
     } else {
         lines
     }
 }
 
-/// A browser's heartbeat name as people write it.
+/// A browser's heartbeat name as people write it. Many Chromium browsers (Helium, Vivaldi, ...)
+/// report themselves as Chrome, so those are just "Browser".
 fn browser_name(heartbeat: &str) -> String {
     match heartbeat {
-        "chrome" => "Chrome".to_owned(),
+        "chrome" | "chromium" => "Browser".to_owned(),
         "edge" => "Edge".to_owned(),
         "brave" => "Brave".to_owned(),
         "opera" => "Opera".to_owned(),
-        "chromium" => "Chromium".to_owned(),
         "firefox" => "Firefox".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// Says there's no configuration to start a session with, with a key to make one.
+pub(crate) fn no_configurations<'a>() -> Element<'a, Message> {
+    row![
+        caption("No profiles yet: they say what a session blocks."),
+        button(text("Create one").size(14))
+            .style(style::key_accent)
+            .on_press(Message::CreateConfig),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The running session in a few words, e.g. `coding · 24 min left`, for the window title and
+/// the tray.
+pub(crate) fn session_summary(status: &StatusReport) -> Option<String> {
+    let running = status.session.running()?;
+    let left = running.time_left(status.now).as_secs().div_ceil(60);
+    let left = if left <= 1 {
+        "under a minute left".to_owned()
+    } else {
+        format!("{left} min left")
+    };
+    Some(format!("{} · {left}", running.spec().config.name))
 }
 
 /// Whether Focus starts at login, and when a requested switch-off takes effect.
@@ -464,31 +505,6 @@ fn unlock_line(running: &RunningSession, status: &StatusReport) -> String {
     }
 }
 
-/// How the last session went.
-fn last_session_summary(ended: &EndedSession) -> String {
-    let how = match ended.reason() {
-        EndReason::Completed => "completed".to_owned(),
-        EndReason::EndedEarly { reason: None } => "ended early".to_owned(),
-        EndReason::EndedEarly {
-            reason: Some(reason),
-        } => format!("ended early (\"{reason}\")"),
-        EndReason::Stopped { reason: None } => "stopped with the kill switch".to_owned(),
-        EndReason::Stopped {
-            reason: Some(reason),
-        } => format!("stopped with the kill switch (\"{reason}\")"),
-    };
-    let spec = ended.spec();
-    let length = ended
-        .ended_at()
-        .saturating_duration_since(ended.started_at());
-    format!(
-        "Last session: {} · {}, {how} after {}.",
-        spec.config.name,
-        spec.strictness,
-        format_duration(length)
-    )
-}
-
 /// `m:ss` or `h:mm:ss`, rounding up so a countdown shows `0:00` only when it's over.
 pub(crate) fn format_duration(duration: Duration) -> String {
     let total = duration.as_millis().div_ceil(1000);
@@ -498,6 +514,12 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
+}
+
+/// A session length in whole minutes, kept within [`MINUTES`].
+pub(crate) fn minutes_from(duration: Duration) -> u16 {
+    let minutes = u16::try_from(duration.as_secs() / 60).unwrap_or(u16::MAX);
+    minutes.clamp(*MINUTES.start(), *MINUTES.end())
 }
 
 /// `minutes` as the readout shows it, e.g. `25:00` or `1:30:00`.
@@ -523,9 +545,36 @@ pub(crate) fn parse_minutes(text: &str) -> Option<u16> {
     Some(minutes.clamp(*MINUTES.start(), *MINUTES.end()))
 }
 
+/// A status with nothing in it, dated `now`: what the window draws with until the daemon
+/// first answers. Anything that needs the daemon is greyed out meanwhile (`App::connected`).
+pub(crate) fn blank_status(now: Timestamp) -> StatusReport {
+    StatusReport {
+        now,
+        session: focus_core::SessionState::Idle,
+        pending_changes: Vec::new(),
+        settings_problem: None,
+        browsers: Vec::new(),
+        foreground_app: None,
+        start_at_login: true,
+        start_at_login_off_after: None,
+        start_at_login_problem: None,
+        plan: ipc_proto::PlanStatus::default(),
+        stop_allowed_at: None,
+        stop_reason_required: false,
+        friction: focus_core::Friction::default(),
+        friction_loosen_after: None,
+        unlocks_left: 3,
+        parking_lot: ipc_proto::ParkingStatus::default(),
+        notifications: None,
+        parking_hotkey: focus_core::Hotkey::default(),
+        theme: focus_core::Theme::default(),
+        timer_on_top: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use focus_core::{SessionState, Timestamp};
+    use focus_core::Timestamp;
     use ipc_proto::PendingSummary;
 
     use super::*;
@@ -562,28 +611,7 @@ mod tests {
     }
 
     pub(crate) fn status_at(now: u64) -> StatusReport {
-        StatusReport {
-            now: Timestamp::from_millis(now),
-            session: SessionState::Idle,
-            pending_changes: Vec::new(),
-            settings_problem: None,
-            browsers: Vec::new(),
-            foreground_app: None,
-            start_at_login: true,
-            start_at_login_off_after: None,
-            start_at_login_problem: None,
-            plan: ipc_proto::PlanStatus::default(),
-            stop_allowed_at: None,
-            stop_reason_required: false,
-            friction: focus_core::Friction::default(),
-            friction_loosen_after: None,
-            unlocks_left: 3,
-            parking_lot: ipc_proto::ParkingStatus::default(),
-            notifications: None,
-            parking_hotkey: focus_core::Hotkey::default(),
-            theme: focus_core::Theme::default(),
-            timer_on_top: true,
-        }
+        blank_status(Timestamp::from_millis(now))
     }
 
     fn beat(browser: &str, at: u64, incognito_allowed: bool) -> ipc_proto::BrowserStatus {
@@ -595,12 +623,40 @@ mod tests {
     }
 
     #[test]
+    fn keeps_lengths_in_range() {
+        assert_eq!(minutes_from(Duration::from_secs(50 * 60 + 30)), 50);
+        assert_eq!(minutes_from(Duration::from_secs(10)), *MINUTES.start());
+        assert_eq!(minutes_from(Duration::from_secs(24 * 3600)), *MINUTES.end());
+    }
+
+    #[test]
+    fn summarises_the_running_session() {
+        let mut status = status_at(100_000);
+        assert_eq!(session_summary(&status), None);
+        let spec = focus_core::SessionSpec {
+            config: BlockConfig::new("coding", focus_core::Mode::Blocklist),
+            strictness: Strictness::Deep,
+            duration: Duration::from_secs(25 * 60),
+        };
+        status.session.start(spec, status.now).unwrap();
+        assert_eq!(
+            session_summary(&status).as_deref(),
+            Some("coding · 25 min left")
+        );
+    }
+
+    #[test]
     fn names_the_connected_browsers() {
         let mut status = status_at(100_000);
         assert_eq!(
-            browser_lines(&status),
+            browser_lines(&status, Some(Timestamp::from_millis(90_000)))[0].text,
+            "Waiting for browser extension…",
+            "just after the daemon answered"
+        );
+        assert_eq!(
+            browser_lines(&status, None),
             vec![Line {
-                text: "No browser connected".into(),
+                text: "No browser extension connected".into(),
                 tone: Tone::Bad
             }]
         );
@@ -611,14 +667,14 @@ mod tests {
             beat("brave", 1_000, true),
         ];
         assert_eq!(
-            browser_lines(&status),
+            browser_lines(&status, None),
             vec![
                 Line {
-                    text: "Chrome connected".into(),
+                    text: "Browser extension connected".into(),
                     tone: Tone::Good
                 },
                 Line {
-                    text: "Edge connected".into(),
+                    text: "Edge extension connected".into(),
                     tone: Tone::Warn
                 },
             ],
@@ -626,7 +682,10 @@ mod tests {
         );
 
         status.browsers = vec![beat("brave", 1_000, true)];
-        assert_eq!(browser_lines(&status)[0].text, "No browser connected");
+        assert_eq!(
+            browser_lines(&status, None)[0].text,
+            "No browser extension connected"
+        );
     }
 
     #[test]
