@@ -23,9 +23,10 @@ use crate::style::{Tone, bold, caption, entry, now_rule, pill, toned};
 const MIN_SPAN: u32 = 5;
 /// No box is drawn shorter than this many minutes, so its title fits (except at the very end of
 /// the day).
-const MIN_MINUTES: u32 = 25;
-/// Height of one hour on the grid, in pixels.
-const HOUR_HEIGHT: f32 = 52.0;
+const MIN_MINUTES: u32 = 36;
+/// Height of one hour on the grid, in pixels: short enough that a working day fits without
+/// much scrolling.
+const HOUR_HEIGHT: f32 = 36.0;
 /// Width of the hour labels down the left.
 const LABEL_WIDTH: f32 = 46.0;
 /// Height of an hour label; labels are centred on their line, so the grid starts half of it down.
@@ -452,9 +453,10 @@ mod tests {
                 vec![vec!["Coding"]],
             ]
         );
+        // Coffee is shorter than the smallest box, so it's drawn past 11:00.
         assert_eq!(
             (timeline.clusters[0].start, timeline.clusters[0].end),
-            (9 * 60, 11 * 60)
+            (9 * 60, 10 * 60 + 30 + MIN_MINUTES)
         );
     }
 

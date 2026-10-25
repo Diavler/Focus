@@ -909,21 +909,16 @@ pub fn pill<'a>(label: impl text::IntoFragment<'a>, tone: Tone) -> Element<'a, M
 }
 
 /// A task's priority as a small dot in Todoist's colours (P1 red, P2 orange, P3 blue), so it
-/// reads the same as in Todoist. P4 isn't flagged and gets nothing.
-pub fn priority_flag<'a>(priority: focus_core::TaskPriority) -> Element<'a, Message> {
+/// reads the same as in Todoist; `None` for P4, which isn't flagged.
+pub fn priority_flag<'a>(priority: focus_core::TaskPriority) -> Option<Element<'a, Message>> {
     use focus_core::TaskPriority;
-    let color = match priority {
-        TaskPriority::P1 => Color::from_rgb8(0xD1, 0x45, 0x3B),
-        TaskPriority::P2 => Color::from_rgb8(0xEB, 0x89, 0x09),
-        TaskPriority::P3 => Color::from_rgb8(0x24, 0x6F, 0xE0),
-        TaskPriority::P4 => return space::horizontal().width(Length::Fixed(0.0)).into(),
+    let (color, name) = match priority {
+        TaskPriority::P1 => (Color::from_rgb8(0xD1, 0x45, 0x3B), "Priority 1"),
+        TaskPriority::P2 => (Color::from_rgb8(0xEB, 0x89, 0x09), "Priority 2"),
+        TaskPriority::P3 => (Color::from_rgb8(0x24, 0x6F, 0xE0), "Priority 3"),
+        TaskPriority::P4 => return None,
     };
-    let name = match priority {
-        TaskPriority::P1 => "Priority 1",
-        TaskPriority::P2 => "Priority 2",
-        _ => "Priority 3",
-    };
-    crate::help::tip(
+    Some(crate::help::tip(
         container(space::horizontal().width(Length::Fixed(10.0)))
             .height(Length::Fixed(10.0))
             .style(move |_: &Theme| container::Style {
@@ -935,7 +930,7 @@ pub fn priority_flag<'a>(priority: focus_core::TaskPriority) -> Element<'a, Mess
                 ..container::Style::default()
             }),
         name,
-    )
+    ))
 }
 
 /// An LED for a status line, unlit for Quiet.
