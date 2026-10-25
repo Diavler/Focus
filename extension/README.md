@@ -18,6 +18,15 @@ Manifest V3, TypeScript, for Chromium browsers and Firefox (ADR 0013). It talks 
 - `src/platform/`: browser-specific code, `chromium.ts` and `firefox.ts`; the build points `./platform` at one of them.
 - `manifests/<browser>.json`: one manifest per browser. The `key` fixes the Chromium extension ID at `hjeodjhhiiaojdakfafaebijlmdckebo`; Firefox's ID is `focus@focus-app.local`.
 
+## Install from a release
+
+Install the Focus app first (it registers the native messaging host), then take the file for your browser from the same [release](https://github.com/Diavler/FocusApp/releases) (ADR 0018):
+
+- **Chrome, Edge, Brave and other Chromium browsers:** unzip `Focus-<version>-chromium-extension.zip` somewhere it can stay, such as `Documents`. Open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick the unzipped `Focus-<version>-chromium-extension` folder. To update, unzip the new release over the old folder and click the reload arrow on the Focus card.
+- **Firefox 128 or later:** open `Focus-<version>-firefox-extension.xpi` in Firefox (drag it onto a window) and confirm. Then in `about:addons` → Focus, allow **Run in Private Windows**, or Focus closes Firefox during sessions. To update, open the new `.xpi`.
+
+Keep the extension's version the same as the app's.
+
 ## Develop
 
 ```sh
@@ -28,7 +37,7 @@ npm run build   # bundles into dist/chromium/ and dist/firefox/
 
 ## Try it in Chrome or Edge
 
-With the Windows MSI installed, the host is already registered; skip step 1 and `cargo build`, and just load the extension (step 3).
+With the Windows MSI installed, the host is already registered; skip step 1 and `cargo build`, and just load `dist/chromium` (step 3).
 
 1. Build the Rust side and register the host for your user: `cargo build`, then `target/debug/focus-nmh --register` (add `--dry-run` to see what it would change first).
 2. Start the daemon: `cargo run -p focus-daemon`.
@@ -41,6 +50,6 @@ To undo the registration: `target/debug/focus-nmh --unregister`.
 
 1. Register the host as above; `--register` covers Firefox too (a second manifest, and `HKCU\Software\Mozilla\NativeMessagingHosts` on Windows or `~/.mozilla/native-messaging-hosts` on Linux).
 2. Start the daemon.
-3. Open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `extension/dist/firefox/manifest.json`. A temporary add-on is gone after Firefox restarts; a lasting install needs the signed `.xpi` from step 10b.
+3. Open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `extension/dist/firefox/manifest.json`. A temporary add-on is gone after Firefox restarts; a lasting install needs the signed `.xpi` from a release.
 4. In `about:addons` → Focus, allow **Run in Private Windows**, or Focus closes Firefox during sessions.
 5. Start a session and visit a blocked site.
