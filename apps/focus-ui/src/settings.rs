@@ -2,6 +2,8 @@
 //! general settings with the kill switch. Edits are kept in a draft until Save sends them to the
 //! daemon, which writes `settings.toml`.
 
+use std::time::{Duration, Instant};
+
 use focus_core::{AutoStartRule, EditableSettings};
 use iced::widget::{Column, button, column, pick_list, row, space, text, text_input, toggler};
 use iced::{Alignment, Element, Length};
@@ -28,6 +30,10 @@ pub enum Tab {
     General,
 }
 
+/// How long after the last edit the settings save themselves, so typing isn't saved on every
+/// key.
+pub const AUTOSAVE_AFTER: Duration = Duration::from_secs(1);
+
 /// The settings being edited.
 #[derive(Debug, Clone)]
 pub struct Draft {
@@ -45,6 +51,8 @@ pub struct Draft {
     pub error: Option<String>,
     /// What the save on its way sent, until the settings are read back.
     pub sent: Option<EditableSettings>,
+    /// When the last edit not yet saved was made.
+    edited_at: Option<Instant>,
 }
 
 impl Draft {
@@ -63,6 +71,7 @@ impl Draft {
             lists: configs::Editor::default(),
             error: None,
             sent: None,
+            edited_at: None,
         }
     }
 
@@ -89,13 +98,24 @@ impl Draft {
         // with "Reload from file".
     }
 
-    /// Throws the edits away, back to what was last read.
-    pub fn discard(&mut self) {
-        *self = Self::new(self.saved.clone());
+    /// Notes an edit made at `now`, which restarts the wait before saving.
+    pub fn touch(&mut self, now: Instant) {
+        self.edited_at = Some(now);
     }
 
-    /// What Save sends.
-    pub fn to_save(&self) -> EditableSettings {
+    /// Whether the edits should be saved at `now`: something changed, nothing has been edited for
+    /// [`AUTOSAVE_AFTER`], and no save is on its way.
+    pub fn autosave_due(&self, now: Instant) -> bool {
+        self.sent.is_none()
+            && self
+                .edited_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= AUTOSAVE_AFTER)
+            && self.dirty()
+    }
+
+    /// What saving sends; the edits count as saved from here on.
+    pub fn take_save(&mut self) -> EditableSettings {
+        self.edited_at = None;
         let mut settings = self.edited.clone();
         settings.auto_start = self.edited_rules().cloned().collect();
         settings
@@ -158,7 +178,6 @@ pub enum Msg {
     ParkingHotkey(focus_core::Hotkey),
     Theme(focus_core::Theme),
     Save,
-    Discard,
     Reload,
 }
 
@@ -190,6 +209,13 @@ impl App {
             },
             |tab| Message::Settings(Msg::Tab(tab)),
         );
+        let tabs = match &self.settings {
+            Some(draft) => row![tabs, space::horizontal(), self.save_status(draft)]
+                .spacing(12)
+                .align_y(Alignment::Center)
+                .into(),
+            None => tabs,
+        };
         let mut page: Column<'a, Message> = column![header, tabs].spacing(18);
         if let Some(pending) = pending_summary(status) {
             page = page.push(card(
@@ -212,7 +238,7 @@ impl App {
             Tab::Lists => configs::view(&draft.edited, &draft.lists, Target::Lists, &self.apps),
             Tab::General => self.general_tab(draft, status),
         };
-        page.push(body).push(self.save_bar(draft)).into()
+        page.push(body).into()
     }
 
     /// Why there are no settings to edit: still loading, or the file can't be read.
@@ -237,39 +263,29 @@ impl App {
         .into()
     }
 
-    /// Save, Discard and the result of the last save.
-    fn save_bar<'a>(&'a self, draft: &'a Draft) -> Element<'a, Message> {
-        let dirty = draft.dirty();
-        let problem = rules::problem(&draft.rules, &self.rule_configs);
-        let save = (dirty && problem.is_none())
-            .then_some(Message::Settings(Msg::Save))
-            .and_then(|message| self.idle_then(message));
-        let mut bar = row![].spacing(10).align_y(Alignment::Center);
-        bar = bar.push(if dirty {
-            toned("Unsaved changes", Tone::Warn).size(14)
-        } else {
-            caption("Everything is saved to settings.toml.")
-        });
-        bar = bar.push(space::horizontal());
-        if draft.error.is_some() {
-            bar = bar.push(
-                button("Reload from file")
+    /// Whether the edits are saved. Saving happens by itself shortly after an edit.
+    fn save_status<'a>(&'a self, draft: &'a Draft) -> Element<'a, Message> {
+        if let Some(error) = &draft.error {
+            return row![
+                toned(format!("Not saved: {error}"), Tone::Bad).size(13),
+                button(text("Reload from file").size(13))
                     .style(style::key)
                     .on_press(Message::Settings(Msg::Reload)),
-            );
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into();
         }
-        bar = bar
-            .push(
-                button("Discard")
-                    .style(style::key)
-                    .on_press_maybe(dirty.then_some(Message::Settings(Msg::Discard))),
-            )
-            .push(button("Save").style(style::key_accent).on_press_maybe(save));
-        let mut column = column![bar].spacing(8);
-        if let Some(error) = &draft.error {
-            column = column.push(toned(error.as_str(), Tone::Bad).size(14));
+        if rules::problem(&draft.rules, &self.rule_configs).is_some() {
+            return toned("Not saved until the rule is fixed", Tone::Warn)
+                .size(13)
+                .into();
         }
-        card(column).into()
+        if draft.dirty() || draft.sent.is_some() {
+            caption("Saving…").into()
+        } else {
+            caption("Saved").into()
+        }
     }
 
     /// Start at login, friction limits and the kill switch.
@@ -465,12 +481,33 @@ mod tests {
     }
 
     #[test]
+    fn saves_itself_after_a_pause_in_editing() {
+        let start = Instant::now();
+        let mut draft = Draft::new(settings("1"));
+        draft.touch(start);
+        assert!(
+            !draft.autosave_due(start + AUTOSAVE_AFTER),
+            "nothing changed"
+        );
+        draft.edited.start_at_login = false;
+        draft.touch(start);
+        assert!(!draft.autosave_due(start), "still editing");
+        assert!(draft.autosave_due(start + AUTOSAVE_AFTER));
+        let sent = draft.take_save();
+        draft.sent = Some(sent);
+        assert!(
+            !draft.autosave_due(start + AUTOSAVE_AFTER * 2),
+            "once is enough"
+        );
+    }
+
+    #[test]
     fn dirty_follows_edits_and_rules() {
         let mut draft = Draft::new(settings("1"));
         assert!(!draft.dirty());
         draft.edited.start_at_login = false;
         assert!(draft.dirty());
-        draft.discard();
+        let mut draft = Draft::new(settings("1"));
         draft.rules.push(rules::Draft::from_rule(rule("coding")));
         assert!(draft.dirty());
     }
@@ -490,7 +527,7 @@ mod tests {
         let mut changed = settings("2");
         changed.start_at_login = false;
         draft.reload(changed.clone());
-        assert_eq!(draft.to_save(), changed);
+        assert_eq!(draft.take_save(), changed);
         assert!(!draft.dirty());
     }
 
@@ -498,14 +535,14 @@ mod tests {
     fn edits_made_while_saving_stay_on_top_of_the_save() {
         let mut draft = Draft::new(settings("1"));
         draft.edited.start_at_login = false;
-        draft.sent = Some(draft.to_save());
+        draft.sent = Some(draft.take_save());
         // Typed while the save was on its way.
         draft.rules.push(rules::Draft::from_rule(rule("coding")));
 
         let mut stored = settings("2");
         stored.start_at_login = false;
         draft.reload(stored);
-        let next = draft.to_save();
+        let next = draft.take_save();
         assert_eq!(
             next.revision, "2",
             "the next save won't be refused as stale"
@@ -526,7 +563,7 @@ mod tests {
         });
         draft.reload(elsewhere);
         assert_eq!(
-            draft.to_save().revision,
+            draft.take_save().revision,
             "1",
             "so saving is refused as stale"
         );

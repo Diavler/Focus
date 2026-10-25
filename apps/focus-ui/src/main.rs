@@ -22,7 +22,7 @@ mod style;
 mod timeline;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use focus_core::ports::SecretKey;
 use focus_core::{BlockConfig, EditableSettings, ParkedItem, Strictness};
@@ -425,6 +425,7 @@ impl App {
             Message::Rule(edit) => {
                 if let Some(draft) = &mut self.settings {
                     rules::apply(&mut draft.rules, edit, &self.rule_configs);
+                    draft.touch(Instant::now());
                 }
             }
             Message::RequestStop => {
@@ -509,6 +510,14 @@ impl App {
         if plan_due && !self.plan_pending {
             tasks.push(self.fetch_plan());
         }
+        // Edited settings save themselves once editing pauses (and the rules make sense).
+        let autosave = self.settings.as_ref().is_some_and(|draft| {
+            draft.autosave_due(Instant::now())
+                && rules::problem(&draft.rules, &self.rule_configs).is_none()
+        });
+        if autosave && !self.action_pending {
+            tasks.push(self.settings_message(settings::Msg::Save));
+        }
         Task::batch(tasks)
     }
 
@@ -580,6 +589,9 @@ impl App {
             return Task::none();
         };
         draft.error = None;
+        if !matches!(message, settings::Msg::Save) {
+            draft.touch(Instant::now());
+        }
         match message {
             settings::Msg::Tab(_) | settings::Msg::Reload => {}
             settings::Msg::Config(edit) => {
@@ -608,13 +620,9 @@ impl App {
             settings::Msg::ParkingHotkey(hotkey) => draft.edited.parking_hotkey = hotkey,
             settings::Msg::Theme(theme) => draft.edited.theme = theme,
             settings::Msg::Save => {
-                let settings = draft.to_save();
+                let settings = draft.take_save();
                 draft.sent = Some(settings.clone());
                 return self.act_saving(Saving::Settings, Request::SaveSettings { settings });
-            }
-            settings::Msg::Discard => {
-                draft.discard();
-                self.refresh_rule_configs();
             }
         }
         Task::none()
