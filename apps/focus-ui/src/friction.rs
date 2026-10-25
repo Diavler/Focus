@@ -1,4 +1,4 @@
-//! The friction limits on Settings → General: unlocks, the tab cap and the drift prompt.
+//! The friction limits on the Rules page's Limits tab: unlocks, the tab cap and the drift prompt.
 
 use focus_core::{Friction, Timestamp};
 use iced::widget::{Column, column, row, slider};
@@ -138,7 +138,7 @@ fn limit<'a>(
     control: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     column![
-        row![style::label(&label), info(help)]
+        row![style::field_label(label), info(help)]
             .spacing(8)
             .align_y(Alignment::Center),
         control.into(),

@@ -222,6 +222,11 @@ pub fn mono<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     text(content).font(MONO)
 }
 
+/// A field's label: plain text at full contrast, for forms.
+pub fn field_label<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
+    text(content).size(14)
+}
+
 /// A section label: small grey capitals in the readout font, like the legend on a panel.
 pub fn label<'a>(content: &str) -> Text<'a> {
     text(content.to_uppercase())

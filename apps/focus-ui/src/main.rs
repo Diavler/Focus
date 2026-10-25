@@ -16,6 +16,7 @@ mod overview;
 mod parking;
 mod plan_pages;
 mod rules;
+mod rules_page;
 mod sessions;
 mod settings;
 mod style;
@@ -107,9 +108,11 @@ pub(crate) enum Page {
     /// Today's calendar and tasks; the window opens on it.
     Overview,
     Sessions,
+    /// Configurations, lists, automatic starts and limits.
+    Rules,
     Calendar,
     Todoist,
-    /// Opened from Sessions.
+    /// Focus's own settings, from the foot of the sidebar.
     Settings,
 }
 
@@ -223,7 +226,6 @@ pub(crate) enum Message {
     SecretInput(SecretKey, String),
     SaveSecret(SecretKey),
     RemoveSecret(SecretKey),
-    OpenSettings,
     /// Boxed like the other large answers.
     SettingsLoaded(Box<Result<EditableSettings, String>>),
     AppsLoaded(Result<Vec<String>, String>),
@@ -352,7 +354,7 @@ impl App {
             }
             Message::Navigate(page) => {
                 self.page = page;
-                if page == Page::Settings {
+                if matches!(page, Page::Rules | Page::Settings) {
                     return self.open_settings();
                 }
             }
@@ -409,10 +411,6 @@ impl App {
             Message::RemoveSecret(key) => {
                 self.secret_input(key).clear();
                 return self.act(Request::SetSecret { key, value: None });
-            }
-            Message::OpenSettings => {
-                self.page = Page::Settings;
-                return self.open_settings();
             }
             Message::SettingsLoaded(result) => match *result {
                 Ok(settings) => {
@@ -797,6 +795,7 @@ impl App {
                 Page::Sessions => self.sessions_page(status),
                 Page::Calendar => self.calendar_page(status),
                 Page::Todoist => self.todoist_page(status),
+                Page::Rules => self.rules_page(status),
                 Page::Settings => self.settings_page(status),
             },
         };
@@ -837,7 +836,6 @@ impl App {
             .spacing(6),
         )
         .width(Length::Fill);
-        let on_sessions = matches!(self.page, Page::Sessions | Page::Settings);
         let mut sources = column![].spacing(6);
         if let Some(status) = &self.status {
             for (name, source) in [
@@ -884,7 +882,16 @@ impl App {
                     self.page == Page::Overview,
                     Message::Navigate(Page::Overview)
                 ),
-                nav("Sessions", on_sessions, Message::Navigate(Page::Sessions)),
+                nav(
+                    "Sessions",
+                    self.page == Page::Sessions,
+                    Message::Navigate(Page::Sessions)
+                ),
+                nav(
+                    "Rules",
+                    self.page == Page::Rules,
+                    Message::Navigate(Page::Rules)
+                ),
                 nav(
                     "Calendar",
                     self.page == Page::Calendar,
@@ -897,6 +904,11 @@ impl App {
                 ),
                 space::vertical(),
                 sources,
+                nav(
+                    "Settings",
+                    self.page == Page::Settings,
+                    Message::Navigate(Page::Settings)
+                ),
             ]
             .spacing(8),
         )

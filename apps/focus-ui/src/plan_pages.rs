@@ -46,7 +46,7 @@ impl App {
             "Calendar",
             source,
             "Your calendar for the coming week. Events marked \"Starts ...\" begin a session by \
-             themselves; set that up in Sessions → Settings → Automatic starts.",
+             themselves; set that up in Rules → Automatic starts.",
             groups,
             "Nothing on the calendar.",
             connection,
