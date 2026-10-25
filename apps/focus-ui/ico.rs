@@ -1,6 +1,6 @@
-//! Writes the app icon as an `.ico` and embeds it in an exe. Shared by the UI's and the daemon's
-//! build scripts (each includes this file and `src/icon.rs` with `#[path]`), so both exes carry
-//! the same icon from one drawing.
+//! Writes the app icon as an `.ico` and embeds it in an exe. Shared by the UI's, the daemon's and
+//! the native messaging host's build scripts (each includes this file and `src/icon.rs` with
+//! `#[path]`), so every exe carries the same icon from one drawing.
 
 use std::path::Path;
 

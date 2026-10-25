@@ -22,6 +22,10 @@ thiserror.workspace = true
 # `io-std`: the browser talks to the host over stdin/stdout.
 tokio = { workspace = true, features = ["io-std"] }
 
+[build-dependencies]
+# Embeds the app icon in the Windows exe (see build.rs).
+winresource.workspace = true
+
 [dev-dependencies]
 focus-core = { workspace = true, features = ["testing"] }
 focus-daemon = { path = "../focus-daemon" }
