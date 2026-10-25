@@ -9,6 +9,7 @@
 //! state.
 
 mod agenda;
+mod compact;
 mod configs;
 mod daemon;
 mod frame;
@@ -77,7 +78,7 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .window(iced::window::Settings {
-            size: iced::Size::new(1120.0, 780.0),
+            size: FULL_WINDOW,
             min_size: Some(MIN_WINDOW),
             position: iced::window::Position::Centered,
             icon: iced::window::icon::from_rgba(icon::rgba(64), 64, 64).ok(),
@@ -88,10 +89,13 @@ fn main() -> iced::Result {
         .run()
 }
 
+/// The window's size when it opens.
+const FULL_WINDOW: iced::Size = iced::Size::new(1120.0, 780.0);
+
 /// The smallest the window can be made. The width keeps the Sessions start card's strictness
 /// keys and Start key on one line beside the parking lot (sidebar 210 + padding + a 3:2 split);
 /// the height keeps the sidebar's readouts, pages and status lines clear of each other.
-const MIN_WINDOW: iced::Size = iced::Size::new(1080.0, 640.0);
+pub(crate) const MIN_WINDOW: iced::Size = iced::Size::new(1080.0, 640.0);
 
 /// How often (in polls, about seconds) a shortcut another app held is tried again.
 const HOTKEY_RETRY_POLLS: u32 = 30;
@@ -150,6 +154,12 @@ pub(crate) struct App {
     native_window: Option<u64>,
     /// The tray icon, where there is one; closing the window hides it there.
     tray: Option<tray::Tray>,
+    /// Minimal mode: the window is the small session card.
+    compact: bool,
+    /// Whether the last status had a session running, to notice sessions starting and ending.
+    session_seen: bool,
+    /// The window's size before it became the card, to grow back to.
+    full_size: Option<iced::Size>,
     /// The overlay open on top of the page, if any.
     panel: Option<Panel>,
     configs: Vec<BlockConfig>,
@@ -238,6 +248,12 @@ pub(crate) enum Message {
     Navigate(Page),
     /// The window's native handle (an HWND on Windows).
     NativeWindow(u64),
+    /// The window's size, reported just before it becomes the card.
+    FullSize(iced::Size),
+    /// Leave minimal mode.
+    Expand,
+    /// End early from the card: open the full window, where the reason is typed.
+    EndFromCard,
     /// The window's close button was pressed.
     CloseRequested,
     Tray(tray::TrayAction),
@@ -302,6 +318,9 @@ impl App {
             page: Page::Overview,
             native_window: None,
             tray: tray::Tray::create(),
+            compact: false,
+            session_seen: false,
+            full_size: None,
             panel: None,
             configs: Vec::new(),
             config_names: Vec::new(),
@@ -363,14 +382,17 @@ impl App {
                 match *result {
                     Ok(status) => {
                         let revision = status.parking_lot.revision;
+                        let running = status.session.running().is_some();
                         self.status = Some(status);
                         self.refresh_theme();
                         self.unreachable = None;
                         self.failed_polls = 0;
+                        let mut tasks = vec![self.follow_session(running)];
                         if self.parked_revision != Some(revision) && !self.parked_pending {
                             self.parked_revision = Some(revision);
-                            return self.fetch_parked();
+                            tasks.push(self.fetch_parked());
                         }
+                        return Task::batch(tasks);
                     }
                     Err(problem) => {
                         self.unreachable = Some(problem.message);
@@ -402,6 +424,26 @@ impl App {
             Message::NativeWindow(handle) => {
                 self.native_window = Some(handle);
                 frame::paint(handle, &self.theme);
+            }
+            Message::FullSize(size) => {
+                // Not the card's own size, if it was already the card.
+                if size.width >= MIN_WINDOW.width {
+                    self.full_size = Some(size);
+                }
+            }
+            Message::Expand => return self.expand(),
+            Message::EndFromCard => {
+                self.page = Page::Sessions;
+                let asked = self
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.session.running())
+                    .is_some_and(|running| running.end_allowed_at().is_some());
+                let expand = self.expand();
+                if asked {
+                    return expand;
+                }
+                return Task::batch([expand, self.act(Request::EndSession)]);
             }
             Message::CloseRequested => {
                 // With nowhere to hide, it minimises instead.
@@ -544,6 +586,7 @@ impl App {
                 self.panel = None;
                 self.capturing = true;
                 return Task::batch([
+                    self.expand(),
                     iced::window::oldest().and_then(|id| {
                         Task::batch([
                             iced::window::set_mode(id, iced::window::Mode::Windowed),
@@ -868,7 +911,34 @@ impl App {
         }
     }
 
+    /// Enters minimal mode when a session starts and leaves it when the session ends.
+    fn follow_session(&mut self, running: bool) -> Task<Message> {
+        if running == self.session_seen {
+            return Task::none();
+        }
+        self.session_seen = running;
+        if running {
+            self.compact = true;
+            self.panel = None;
+            compact::shrink_window()
+        } else {
+            self.expand()
+        }
+    }
+
+    /// Leaves minimal mode, if the window is the card.
+    fn expand(&mut self) -> Task<Message> {
+        if !self.compact {
+            return Task::none();
+        }
+        self.compact = false;
+        compact::grow_window(self.full_size.unwrap_or(FULL_WINDOW))
+    }
+
     fn view(&self) -> Element<'_, Message> {
+        if let Some(status) = self.status.as_ref().filter(|_| self.compact) {
+            return self.compact_card(status);
+        }
         let content: Element<'_, Message> = match (&self.status, &self.unreachable) {
             (_, Some(problem)) => column![
                 style::title("Can't reach the Focus daemon"),
