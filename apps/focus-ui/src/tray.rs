@@ -1,6 +1,7 @@
-//! The tray icon: closing the window hides it there and clicking the icon brings it back. The
-//! window has no plain quit: Focus is either hidden (still working) or stopped through the
-//! Emergency exit, which the menu's Stop Focus… opens. Windows only for now; Linux gets `ksni` in
+//! The tray icon: closing the window hides it there and clicking the icon brings it back. There's
+//! no quit that only closes the window: Focus is either hidden (still working) or closed through
+//! the Emergency exit, which the menu opens. With no session that's "Close Focus" (no wait);
+//! during one it's "Stop Focus…", which waits. Windows only for now; Linux gets `ksni` in
 //! step 9, and until then closing the window minimises it.
 
 use iced::Subscription;
@@ -16,7 +17,7 @@ use crate::Message;
 pub(crate) enum TrayAction {
     /// Come back from the tray.
     Show,
-    /// Open Settings at the Emergency exit, the one way to stop Focus.
+    /// Start closing Focus through the Emergency exit in Settings.
     StopFocus,
 }
 
@@ -24,6 +25,9 @@ pub(crate) enum TrayAction {
 pub(crate) struct Tray {
     #[cfg(windows)]
     _icon: tray_icon::TrayIcon,
+    /// The menu entry that closes or stops Focus; its label follows the session.
+    #[cfg(windows)]
+    stop: tray_icon::menu::MenuItem,
 }
 
 /// The menu entries' ids.
@@ -40,10 +44,11 @@ impl Tray {
         use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 
         let menu = Menu::new();
+        let stop = MenuItem::with_id(STOP, stop_label(false), true, None);
         menu.append_items(&[
             &MenuItem::with_id(OPEN, "Open Focus", true, None),
             &PredefinedMenuItem::separator(),
-            &MenuItem::with_id(STOP, "Stop Focus…", true, None),
+            &stop,
         ])
         .ok()?;
         let icon = tray_icon::Icon::from_rgba(crate::icon::rgba(32), 32, 32).ok()?;
@@ -54,8 +59,18 @@ impl Tray {
             .with_menu_on_left_click(false)
             .build()
             .ok()?;
-        Some(Self { _icon: icon })
+        Some(Self { _icon: icon, stop })
     }
+
+    /// Names the stop entry for whether a session is `running`.
+    #[cfg(windows)]
+    pub(crate) fn show_session(&self, running: bool) {
+        self.stop.set_text(stop_label(running));
+    }
+
+    /// Nothing to name without a tray.
+    #[cfg(not(windows))]
+    pub(crate) fn show_session(&self, _running: bool) {}
 
     /// There's no tray here yet.
     #[cfg(not(windows))]
@@ -104,4 +119,14 @@ fn actions() -> impl iced::futures::Stream<Item = TrayAction> {
         }
     }));
     receiver
+}
+
+/// The stop entry's label: closing is immediate with no session, stopping one waits.
+#[cfg(windows)]
+fn stop_label(running: bool) -> &'static str {
+    if running {
+        "Stop Focus…"
+    } else {
+        "Close Focus"
+    }
 }

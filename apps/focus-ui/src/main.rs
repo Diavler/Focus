@@ -471,9 +471,17 @@ impl App {
             }
             Message::Tray(tray::TrayAction::Show) => return show_window(),
             Message::Tray(tray::TrayAction::StopFocus) => {
-                // The full window, with Settings open; its Emergency exit sits at the bottom.
+                // The full window on Settings, with the Emergency exit asked for: it confirms at
+                // once with no session, and counts down during one.
                 let expand = self.expand();
+                let ask = match &self.status {
+                    Some(status) if status.stop_allowed_at.is_none() => {
+                        self.update(Message::RequestStop)
+                    }
+                    _ => Task::none(),
+                };
                 return Task::batch([
+                    ask,
                     expand,
                     show_window(),
                     self.update(Message::OpenPanel(Panel::Settings)),
@@ -939,6 +947,9 @@ impl App {
             return Task::none();
         }
         self.session_seen = running;
+        if let Some(tray) = &self.tray {
+            tray.show_session(running);
+        }
         if running {
             self.shrink()
         } else {

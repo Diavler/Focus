@@ -323,19 +323,28 @@ impl App {
         let header = row![
             heading("Emergency exit"),
             info(
-                "Ends any session, lifts blocking and closes Focus. Waits 1 minute first (5 and a \
-                 reason during a Locked session). Focus starts again at login or when opened."
+                "Ends any session, lifts blocking and closes Focus. With no session it closes at \
+                 once; during one it waits 1 minute first (5 and a reason when Locked). Focus \
+                 starts again at login or when opened."
             ),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
         let body: Element<'a, Message> = match status.stop_allowed_at {
             None => row![
-                caption("Stop Focus completely, for when something has gone wrong."),
+                caption(if status.session.running().is_some() {
+                    "Stop Focus completely, for when something has gone wrong."
+                } else {
+                    "Close Focus until you next log in or open it."
+                }),
                 space::horizontal(),
-                button("Stop Focus…")
-                    .style(style::key)
-                    .on_press_maybe(self.idle_then(Message::RequestStop)),
+                button(if status.session.running().is_some() {
+                    "Stop Focus…"
+                } else {
+                    "Close Focus…"
+                })
+                .style(style::key)
+                .on_press_maybe(self.idle_then(Message::RequestStop)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -369,7 +378,17 @@ impl App {
                         running.spec().config.name,
                         format_duration(running.time_left(status.now))
                     ),
-                    None => "This closes Focus. Nothing is blocked until it runs again.".to_owned(),
+                    None => match self.plan.as_ref().and_then(|plan| plan.upcoming.first()) {
+                        Some(next) => format!(
+                            "This closes Focus. Nothing is blocked until it runs again, and {} \
+                             ({}) won't start by itself.",
+                            next.title,
+                            crate::sessions::when_label(next.starts_at, status.now)
+                        ),
+                        None => {
+                            "This closes Focus. Nothing is blocked until it runs again.".to_owned()
+                        }
+                    },
                 };
                 let mut confirm_column = column![
                     toned("Are you sure?", Tone::Bad).size(17),

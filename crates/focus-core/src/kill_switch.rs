@@ -1,6 +1,7 @@
 //! The kill switch: stopping Focus entirely, ending any session. It's an emergency exit, so it
-//! always works, but only after a wait (and, during a Locked session, a longer wait plus a typed
-//! reason), so it isn't an easy way out of an urge.
+//! always works. During a session it waits first (during a Locked one, longer and with a typed
+//! reason), so it isn't an easy way out of an urge; with no session there's nothing to protect,
+//! so Focus closes at once.
 
 use std::time::Duration;
 
@@ -24,7 +25,7 @@ pub struct StopPolicy {
 }
 
 impl StopPolicy {
-    /// The wait outside Locked sessions.
+    /// The wait during sessions that aren't Locked.
     pub const WAIT: Duration = Duration::from_secs(60);
     /// The wait during a Locked session.
     pub const LOCKED_WAIT: Duration = Duration::from_secs(5 * 60);
@@ -38,8 +39,13 @@ impl StopPolicy {
                 reason_required: true,
                 since,
             },
-            _ => Self {
+            Some(_) => Self {
                 wait: Self::WAIT,
+                reason_required: false,
+                since,
+            },
+            None => Self {
+                wait: Duration::ZERO,
                 reason_required: false,
                 since,
             },
@@ -136,9 +142,19 @@ mod tests {
     }
 
     #[test]
-    fn waits_a_minute_then_stops() {
+    fn stops_at_once_with_no_session() {
         let clock = FakeClock::default();
         let policy = StopPolicy::for_session(None);
+        let mut switch = KillSwitch::default();
+        assert_eq!(switch.request(clock.now(), policy), clock.now());
+        assert_eq!(switch.confirm(clock.now(), "", policy), Ok(()));
+    }
+
+    #[test]
+    fn waits_a_minute_during_a_session_then_stops() {
+        let clock = FakeClock::default();
+        let light = session(Strictness::Light, clock.now());
+        let policy = StopPolicy::for_session(light.running());
         let mut switch = KillSwitch::default();
         assert_eq!(
             switch.confirm(clock.now(), "", policy),
@@ -209,7 +225,8 @@ mod tests {
     #[test]
     fn cancelling_restarts_the_wait() {
         let clock = FakeClock::default();
-        let policy = StopPolicy::for_session(None);
+        let light = session(Strictness::Light, clock.now());
+        let policy = StopPolicy::for_session(light.running());
         let mut switch = KillSwitch::default();
         switch.request(clock.now(), policy);
         clock.advance(StopPolicy::WAIT);
