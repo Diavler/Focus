@@ -9,7 +9,7 @@ use iced::{Alignment, Element, Subscription};
 use ipc_proto::{SourceState, StatusReport};
 
 use crate::help::info;
-use crate::style::{Tone, caption, card, heading, pill, toned};
+use crate::style::{self, Tone, caption, card, heading, pill, toned};
 use crate::{App, Message};
 
 /// The id of the box the shortcut focuses.
@@ -77,7 +77,7 @@ impl App {
                     .id(INPUT)
                     .on_input(Message::ParkInput)
                     .on_submit_maybe(park.clone()),
-                button("Park").style(button::primary).on_press_maybe(park),
+                button("Park").style(style::key_accent).on_press_maybe(park),
             ]
             .spacing(10)
             .align_y(Alignment::Center),
@@ -101,7 +101,7 @@ impl App {
         if self.parked.iter().any(|item| item.sent_at.is_some()) {
             body = body.push(
                 button(text("Clear what's in Todoist").size(14))
-                    .style(button::secondary)
+                    .style(style::key)
                     .on_press_maybe(self.idle_then(Message::ClearSentParked)),
             );
         }
@@ -159,7 +159,7 @@ fn item_row(item: &ParkedItem, idle: bool) -> Element<'_, Message> {
         space::horizontal(),
         place,
         button(text("×").size(14))
-            .style(button::text)
+            .style(style::key_flat)
             .on_press_maybe(idle.then_some(Message::Unpark(item.id))),
     ]
     .spacing(10)

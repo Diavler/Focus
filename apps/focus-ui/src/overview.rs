@@ -6,7 +6,7 @@ use ipc_proto::{SourceState, StatusReport};
 
 use crate::agenda::{self, Group};
 use crate::help::info;
-use crate::style::{caption, card, heading, title};
+use crate::style::{self, caption, card, heading, title};
 use crate::{App, Message, Page, timeline};
 
 impl App {
@@ -74,7 +74,9 @@ fn due_today((overdue, today): (Group, Group)) -> Element<'static, Message> {
 fn not_connected(name: &'static str, page: Page) -> Element<'static, Message> {
     column![
         caption(format!("{name} isn't connected yet.")),
-        button("Connect").on_press(Message::Navigate(page)),
+        button("Connect")
+            .style(style::key_accent)
+            .on_press(Message::Navigate(page)),
     ]
     .spacing(10)
     .into()

@@ -17,7 +17,7 @@ use ipc_proto::StatusReport;
 use crate::agenda::clock;
 use crate::help::info;
 use crate::plan_pages::Line;
-use crate::style::{Tone, bold, caption, card, dot, heading, hero, pill, title, toned};
+use crate::style::{self, Tone, bold, caption, card, dot, heading, hero, pill, title, toned};
 use crate::{App, MINUTES, Message};
 
 impl App {
@@ -28,7 +28,7 @@ impl App {
             space::horizontal(),
             button(text("Settings").size(15))
                 .padding([8, 16])
-                .style(button::primary)
+                .style(style::key)
                 .on_press(Message::OpenSettings),
         ]
         .align_y(Alignment::Center);
@@ -73,7 +73,11 @@ impl App {
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
-                bold(format_duration(running.time_left(status.now))).size(64),
+                style::readout(
+                    style::mono(format_duration(running.time_left(status.now))).size(56)
+                )
+                .padding([14, 20])
+                .width(Length::Fill),
                 caption(format!("Ends at {}.", clock(running.ends_at(), &Local))),
                 caption(unlock_line(running, status)),
                 self.do_not_disturb(status),
@@ -91,7 +95,7 @@ impl App {
         }
         row![
             button(text("Turn on Do Not Disturb").size(14))
-                .style(button::secondary)
+                .style(style::key)
                 .on_press_maybe(self.idle_then(Message::OpenNotificationSettings)),
             info(
                 "Windows doesn't let apps switch Do Not Disturb on, so this opens the setting for \
@@ -207,7 +211,7 @@ impl App {
         let can_start = self.selected.is_some() && !self.action_pending;
         let start = button(text("Start session").size(15))
             .padding([10, 20])
-            .style(button::success)
+            .style(style::key_accent)
             .on_press_maybe(can_start.then_some(Message::Start));
         let mut body = column![heading("Start a session"), config].spacing(16);
         if let Some(summary) = self.selected_config().map(config_summary) {
@@ -224,7 +228,7 @@ impl App {
     ) -> Element<'a, Message> {
         match running.spec().strictness.end_early_policy() {
             EndEarlyPolicy::Immediate => button("End session")
-                .style(button::danger)
+                .style(style::key_danger)
                 .on_press_maybe(self.idle_then(Message::EndEarly))
                 .into(),
             EndEarlyPolicy::Forbidden => {
@@ -232,7 +236,7 @@ impl App {
             }
             EndEarlyPolicy::WaitAndReason { .. } => match running.end_allowed_at() {
                 None => button("Ask to end early")
-                    .style(button::secondary)
+                    .style(style::key)
                     .on_press_maybe(self.idle_then(Message::EndEarly))
                     .into(),
                 Some(allowed_at) => {
@@ -265,9 +269,11 @@ impl App {
                 .on_submit_maybe(confirm.clone()),
             row![
                 button("End session")
-                    .style(button::danger)
+                    .style(style::key_danger)
                     .on_press_maybe(confirm),
-                button("Keep focusing").on_press_maybe(self.idle_then(Message::CancelEnd)),
+                button("Keep focusing")
+                    .style(style::key_accent)
+                    .on_press_maybe(self.idle_then(Message::CancelEnd)),
             ]
             .spacing(12),
         ]
