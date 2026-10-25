@@ -186,7 +186,7 @@ fn plan_page<'a>(
     connection: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let header = row![title(name), info(explanation)]
-        .spacing(10)
+        .spacing(12)
         .align_y(Alignment::Center);
     let page: Column<'a, Message> = column![header].spacing(18);
     let connected = !matches!(source.state, SourceState::NotConfigured);

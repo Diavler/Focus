@@ -74,7 +74,7 @@ fn main() -> iced::Result {
         app = app.font(font);
     }
     app.default_font(style::SANS)
-        .title("Focus")
+        .title(App::title)
         .subscription(App::subscription)
         .theme(App::theme)
         .window(iced::window::Settings {
@@ -160,6 +160,8 @@ pub(crate) struct App {
     session_seen: bool,
     /// The window's size before it became the card, to grow back to.
     full_size: Option<iced::Size>,
+    /// What the tray's tooltip says now, so it's only set when it changes.
+    tray_tooltip: String,
     /// The overlay open on top of the page, if any.
     panel: Option<Panel>,
     configs: Vec<BlockConfig>,
@@ -264,6 +266,10 @@ pub(crate) enum Message {
     )]
     Tray(tray::TrayAction),
     OpenPanel(Panel),
+    /// Open Rules on the Configurations tab, to make the first one.
+    CreateConfig,
+    /// Hide the error line.
+    DismissError,
     ClosePanel,
     ConfigPicked(String),
     StrictnessPicked(Strictness),
@@ -324,6 +330,7 @@ impl App {
             page: Page::Overview,
             native_window: None,
             tray: tray::Tray::create(),
+            tray_tooltip: String::new(),
             compact: false,
             session_seen: false,
             full_size: None,
@@ -396,6 +403,7 @@ impl App {
                         self.refresh_theme();
                         self.unreachable = None;
                         self.failed_polls = 0;
+                        self.refresh_tray_tooltip();
                         let mut tasks = vec![self.follow_session(running)];
                         if on_top_changed && self.compact {
                             tasks.push(compact::keep_on_top(on_top));
@@ -429,6 +437,11 @@ impl App {
                     self.plan = Some(plan);
                 }
             }
+            Message::CreateConfig => {
+                self.settings_tab = settings::Tab::Configs;
+                return self.update(Message::OpenPanel(Panel::Rules));
+            }
+            Message::DismissError => self.error = None,
             Message::Navigate(page) => {
                 self.page = page;
                 self.panel = None;
@@ -982,6 +995,28 @@ impl App {
         compact::grow_window(self.full_size.unwrap_or(FULL_WINDOW))
     }
 
+    /// The window title: the session and its time left while one runs.
+    fn title(&self) -> String {
+        match self.status.as_ref().and_then(sessions::session_summary) {
+            Some(summary) => format!("{summary} · Focus"),
+            None => "Focus".to_owned(),
+        }
+    }
+
+    /// Sets the tray's tooltip to the session and its time left, or says Focus is running.
+    fn refresh_tray_tooltip(&mut self) {
+        let tooltip = match self.status.as_ref().and_then(sessions::session_summary) {
+            Some(summary) => format!("Focus · {summary}"),
+            None => tray::IDLE_TOOLTIP.to_owned(),
+        };
+        if tooltip != self.tray_tooltip {
+            if let Some(tray) = &self.tray {
+                tray.set_tooltip(&tooltip);
+            }
+            self.tray_tooltip = tooltip;
+        }
+    }
+
     fn view(&self) -> Element<'_, Message> {
         if let Some(status) = self.status.as_ref().filter(|_| self.compact) {
             return self.compact_card(status);
@@ -994,7 +1029,7 @@ impl App {
             ]
             .spacing(10)
             .into(),
-            (None, None) => style::title("Connecting to Focus…").into(),
+            (None, None) => caption("Connecting to Focus…").into(),
             (Some(status), None) => match self.page {
                 Page::Overview => self.overview_page(status),
                 Page::Sessions => self.sessions_page(status),
@@ -1022,7 +1057,17 @@ impl App {
     fn scrolling<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let mut main: Column<'_, Message> = column![content].spacing(18);
         if let Some(error) = &self.error {
-            main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
+            main = main.push(
+                row![
+                    style::toned(error.as_str(), Tone::Bad).size(14),
+                    space::horizontal(),
+                    button(text("×").size(16))
+                        .style(style::key_flat)
+                        .on_press(Message::DismissError),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            );
         }
         scrollable(container(main).padding([28, 32]).width(Length::Fill))
             .style(style::scrollbar)
@@ -1077,7 +1122,7 @@ impl App {
                     SourceState::Unknown => ("checking", Tone::Quiet),
                 };
                 sources = sources.push(
-                    row![dot(tone), style::label(&format!("{name} {label}"))]
+                    row![dot(tone), caption(format!("{name} {label}")).size(13)]
                         .spacing(6)
                         .align_y(Alignment::Center),
                 );
@@ -1085,7 +1130,7 @@ impl App {
             // Which browsers the extension protects (a browser without it is closed in sessions).
             for line in sessions::browser_lines(status) {
                 sources = sources.push(
-                    row![dot(line.tone), style::label(&line.text)]
+                    row![dot(line.tone), caption(line.text).size(13)]
                         .spacing(6)
                         .align_y(Alignment::Center),
                 );

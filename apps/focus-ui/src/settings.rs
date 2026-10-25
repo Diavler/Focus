@@ -213,7 +213,7 @@ impl App {
     /// Why there are no settings to edit: still loading, or the file can't be read.
     pub(crate) fn settings_unavailable<'a>(&'a self) -> Element<'a, Message> {
         let Some(problem) = &self.settings_problem else {
-            return caption("Loading the settings…").into();
+            return caption("Loading…").into();
         };
         card(
             column![

@@ -24,11 +24,14 @@ pub(crate) enum TrayAction {
 /// The icon in the notification area; it goes away when this is dropped.
 pub(crate) struct Tray {
     #[cfg(windows)]
-    _icon: tray_icon::TrayIcon,
+    icon: tray_icon::TrayIcon,
     /// The menu entry that closes or stops Focus; its label follows the session.
     #[cfg(windows)]
     stop: tray_icon::menu::MenuItem,
 }
+
+/// What hovering the icon says with no session running.
+pub(crate) const IDLE_TOOLTIP: &str = "Focus keeps running in the background";
 
 /// The menu entries' ids.
 #[cfg(windows)]
@@ -54,12 +57,12 @@ impl Tray {
         let icon = tray_icon::Icon::from_rgba(crate::icon::rgba(32), 32, 32).ok()?;
         let icon = tray_icon::TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip("Focus keeps running in the background")
+            .with_tooltip(IDLE_TOOLTIP)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .build()
             .ok()?;
-        Some(Self { _icon: icon, stop })
+        Some(Self { icon, stop })
     }
 
     /// Names the stop entry for whether a session is `running`.
@@ -71,6 +74,17 @@ impl Tray {
     /// Nothing to name without a tray.
     #[cfg(not(windows))]
     pub(crate) fn show_session(&self, _running: bool) {}
+
+    /// Changes what hovering the icon says.
+    #[cfg(windows)]
+    pub(crate) fn set_tooltip(&self, tooltip: &str) {
+        // A failure only leaves the old tooltip showing.
+        let _ = self.icon.set_tooltip(Some(tooltip));
+    }
+
+    /// Nothing to change without a tray.
+    #[cfg(not(windows))]
+    pub(crate) fn set_tooltip(&self, _tooltip: &str) {}
 
     /// There's no tray here yet.
     #[cfg(not(windows))]
