@@ -516,6 +516,12 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// A session length in whole minutes, kept within [`MINUTES`].
+pub(crate) fn minutes_from(duration: Duration) -> u16 {
+    let minutes = u16::try_from(duration.as_secs() / 60).unwrap_or(u16::MAX);
+    minutes.clamp(*MINUTES.start(), *MINUTES.end())
+}
+
 /// `minutes` as the readout shows it, e.g. `25:00` or `1:30:00`.
 pub(crate) fn minutes_label(minutes: u16) -> String {
     format_duration(Duration::from_secs(u64::from(minutes) * 60))
@@ -614,6 +620,13 @@ mod tests {
             last_seen: Timestamp::from_millis(at),
             incognito_allowed,
         }
+    }
+
+    #[test]
+    fn keeps_lengths_in_range() {
+        assert_eq!(minutes_from(Duration::from_secs(50 * 60 + 30)), 50);
+        assert_eq!(minutes_from(Duration::from_secs(10)), *MINUTES.start());
+        assert_eq!(minutes_from(Duration::from_secs(24 * 3600)), *MINUTES.end());
     }
 
     #[test]

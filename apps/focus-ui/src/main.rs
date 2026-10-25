@@ -162,6 +162,8 @@ pub(crate) struct App {
     full_size: Option<iced::Size>,
     /// What the tray's tooltip says now, so it's only set when it changes.
     tray_tooltip: String,
+    /// When the last finished session ended, as last seen; a newer one sets the start choices.
+    last_ended: Option<focus_core::Timestamp>,
     /// When the daemon last started answering, so a browser extension gets time to check in.
     connected_since: Option<focus_core::Timestamp>,
     /// What the pages are drawn with until the daemon first answers.
@@ -338,6 +340,7 @@ impl App {
             tray: tray::Tray::create(),
             tray_tooltip: String::new(),
             connected_since: None,
+            last_ended: None,
             waiting: sessions::blank_status(wall_clock()),
             unanswered: 0,
             compact: false,
@@ -419,6 +422,7 @@ impl App {
                         self.failed_polls = 0;
                         self.unanswered = 0;
                         self.refresh_tray_tooltip();
+                        self.reuse_last_choices();
                         let mut tasks = vec![self.follow_session(running)];
                         if reconnected {
                             tasks.push(self.open_settings());
@@ -1004,6 +1008,27 @@ impl App {
                 frame::paint(handle, &self.theme);
             }
         }
+    }
+
+    /// Starts the Session page's choices (profile, strictness, length) from the last finished
+    /// session, once per session the daemon reports, so they survive a restart.
+    fn reuse_last_choices(&mut self) {
+        let Some(ended) = self
+            .status
+            .as_ref()
+            .and_then(|status| status.session.ended())
+        else {
+            return;
+        };
+        if self.last_ended == Some(ended.ended_at()) {
+            return;
+        }
+        self.last_ended = Some(ended.ended_at());
+        let spec = ended.spec();
+        self.selected = Some(spec.config.name.clone());
+        self.strictness = spec.strictness;
+        self.minutes = sessions::minutes_from(spec.duration);
+        self.minutes_text = sessions::minutes_label(self.minutes);
     }
 
     /// Enters minimal mode when a session starts and leaves it when the session ends.
