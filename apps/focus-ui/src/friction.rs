@@ -1,8 +1,8 @@
 //! The friction limits on the Rules page's Limits tab: unlocks, the tab cap and the drift prompt.
 
 use focus_core::{Friction, Timestamp};
-use iced::widget::{Column, column, row, slider};
-use iced::{Alignment, Element};
+use iced::widget::{Column, column, container, row, slider, space, toggler};
+use iced::{Alignment, Element, Length};
 
 use crate::help::info;
 use crate::sessions::format_duration;
@@ -14,32 +14,36 @@ use crate::{Message, settings};
 pub enum Edit {
     Unlocks(u8),
     UnlockMinutes(u16),
+    TabCapOn(bool),
     TabCap(u8),
+    DriftHopsOn(bool),
     DriftHops(u8),
 }
 
-/// Applies `edit` to the limits being edited.
+/// Applies `edit` to the limits being edited. Turning a cap or the drift prompt on brings back
+/// its default (0 means off).
 pub fn apply(friction: &mut Friction, edit: Edit) {
+    let defaults = Friction::default();
     match edit {
         Edit::Unlocks(unlocks) => friction.unlocks_per_day = unlocks,
         Edit::UnlockMinutes(minutes) => friction.unlock_minutes = minutes,
-        Edit::TabCap(cap) => friction.tab_cap = from_slider(cap, Friction::TAB_CAP.0),
-        Edit::DriftHops(hops) => friction.drift_hops = from_slider(hops, Friction::DRIFT_HOPS.0),
+        Edit::TabCapOn(on) => {
+            friction.tab_cap = if on {
+                defaults.tab_cap.max(Friction::TAB_CAP.0)
+            } else {
+                0
+            };
+        }
+        Edit::TabCap(cap) => friction.tab_cap = cap,
+        Edit::DriftHopsOn(on) => {
+            friction.drift_hops = if on {
+                defaults.drift_hops.max(Friction::DRIFT_HOPS.0)
+            } else {
+                0
+            };
+        }
+        Edit::DriftHops(hops) => friction.drift_hops = hops,
     }
-}
-
-/// A limit where 0 is off, as its slider shows it: one step below the smallest limit is "off".
-fn to_slider(value: u8, smallest: u8) -> u8 {
-    if value == 0 {
-        smallest.saturating_sub(1)
-    } else {
-        value
-    }
-}
-
-/// The limit a slider position stands for (0, off, below the smallest limit).
-fn from_slider(position: u8, smallest: u8) -> u8 {
-    if position < smallest { 0 } else { position }
 }
 
 /// The card: a slider with an explanation for each limit, and a pending loosening if any.
@@ -61,61 +65,76 @@ pub fn view<'a>(
         .spacing(8)
         .align_y(Alignment::Center),
         limit(
-            format!(
-                "Unlocks per day in Deep sessions: {}",
-                friction.unlocks_per_day
+            "Unlocks per day",
+            "Blocked pages a Deep session lets you open \"just this once\" in any 24 hours, \
+             each with a typed reason. Light sessions unlock freely; Locked never do.",
+            None,
+            Some(
+                slider(
+                    0..=Friction::MAX_UNLOCKS_PER_DAY,
+                    friction.unlocks_per_day,
+                    move |n| wrap(Edit::Unlocks(n)),
+                )
+                .style(style::fader)
+                .into(),
             ),
-            "How many blocked pages Deep sessions let you open \"just this once\" in any 24 \
-             hours, each with a typed reason. Light sessions unlock for free; Locked sessions \
-             never do.",
-            slider(
-                0..=Friction::MAX_UNLOCKS_PER_DAY,
-                friction.unlocks_per_day,
-                move |n| { wrap(Edit::Unlocks(n)) }
-            )
-            .style(style::fader),
+            friction.unlocks_per_day.to_string(),
         ),
         limit(
-            format!("Each unlock lasts: {} min", friction.unlock_minutes),
-            "How long an unlocked page stays open in that tab.",
-            slider(
-                minutes_low..=minutes_high,
-                friction.unlock_minutes,
-                move |m| { wrap(Edit::UnlockMinutes(m)) }
-            )
-            .style(style::fader),
+            "Unlock length",
+            "How long an unlocked page stays open in its tab.",
+            None,
+            Some(
+                slider(
+                    minutes_low..=minutes_high,
+                    friction.unlock_minutes,
+                    move |m| wrap(Edit::UnlockMinutes(m)),
+                )
+                .style(style::fader)
+                .into(),
+            ),
+            format!("{} MIN", friction.unlock_minutes),
         ),
         limit(
+            "Tab cap",
+            "During a session, opening more tabs than this asks you to close one first.",
+            Some(switch(friction.tab_cap > 0, move |on| {
+                wrap(Edit::TabCapOn(on))
+            })),
+            (friction.tab_cap > 0).then(|| {
+                slider(tab_low..=tab_high, friction.tab_cap, move |cap| {
+                    wrap(Edit::TabCap(cap))
+                })
+                .style(style::fader)
+                .into()
+            }),
             match friction.tab_cap {
-                0 => "Tab cap: off".to_owned(),
-                cap => format!("Tab cap: {cap} tabs"),
+                0 => "OFF".to_owned(),
+                cap => format!("{cap} TABS"),
             },
-            "During a session, opening more tabs than this asks you to close one first. Slide \
-             all the way left to turn it off.",
-            slider(
-                tab_low.saturating_sub(1)..=tab_high,
-                to_slider(friction.tab_cap, tab_low),
-                move |cap| wrap(Edit::TabCap(cap)),
-            )
-            .style(style::fader),
         ),
         limit(
+            "Drift prompt",
+            "When a tab hops this many times away from the sites you started on (those of a \
+             session's first 5 minutes, plus allowed sites), Focus shows the trail and offers a \
+             way back.",
+            Some(switch(friction.drift_hops > 0, move |on| {
+                wrap(Edit::DriftHopsOn(on))
+            })),
+            (friction.drift_hops > 0).then(|| {
+                slider(hops_low..=hops_high, friction.drift_hops, move |hops| {
+                    wrap(Edit::DriftHops(hops))
+                })
+                .style(style::fader)
+                .into()
+            }),
             match friction.drift_hops {
-                0 => "Drift prompt: off".to_owned(),
-                hops => format!("Drift prompt after {hops} hops"),
+                0 => "OFF".to_owned(),
+                hops => format!("{hops} HOPS"),
             },
-            "When a tab hops this many times to new sites away from the ones you started on (the \
-             sites you visit in a session's first 5 minutes, plus allowed sites), it shows the \
-             trail and offers a way back. Slide all the way left to turn it off.",
-            slider(
-                hops_low.saturating_sub(1)..=hops_high,
-                to_slider(friction.drift_hops, hops_low),
-                move |hops| wrap(Edit::DriftHops(hops)),
-            )
-            .style(style::fader),
         ),
     ]
-    .spacing(14);
+    .spacing(16);
     if let Some((at, now)) = loosen_after {
         body = body.push(
             toned(
@@ -131,20 +150,38 @@ pub fn view<'a>(
     card(body).into()
 }
 
-/// One labelled slider with its explanation.
+/// One limit on one line: its name, an on/off switch if it can be off, its slider while it's
+/// on, and its value on a readout.
 fn limit<'a>(
-    label: String,
+    name: &'a str,
     help: &'static str,
-    control: impl Into<Element<'a, Message>>,
+    switch: Option<Element<'a, Message>>,
+    control: Option<Element<'a, Message>>,
+    value: String,
 ) -> Element<'a, Message> {
-    column![
-        row![style::field_label(label), info(help)]
+    row![
+        row![style::field_label(name), info(help)]
             .spacing(8)
-            .align_y(Alignment::Center),
-        control.into(),
+            .align_y(Alignment::Center)
+            .width(Length::Fixed(170.0)),
+        container(switch.unwrap_or_else(|| space::horizontal().into())).width(Length::Fixed(52.0)),
+        control.unwrap_or_else(|| space::horizontal().into()),
+        style::readout(style::mono(value).size(13))
+            .width(Length::Fixed(96.0))
+            .align_x(Alignment::End),
     ]
-    .spacing(6)
+    .spacing(16)
+    .align_y(Alignment::Center)
     .into()
+}
+
+/// A square on/off switch.
+fn switch<'a>(on: bool, on_toggle: impl Fn(bool) -> Message + 'a) -> Element<'a, Message> {
+    toggler(on)
+        .size(20)
+        .style(style::switch)
+        .on_toggle(on_toggle)
+        .into()
 }
 
 #[cfg(test)]
@@ -152,17 +189,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_leftmost_slider_position_turns_a_cap_off() {
+    fn switching_a_cap_off_and_on_brings_back_its_default() {
         let mut friction = Friction::default();
-        apply(&mut friction, Edit::TabCap(1));
+        apply(&mut friction, Edit::TabCapOn(false));
         assert_eq!(friction.tab_cap, 0);
-        assert_eq!(to_slider(friction.tab_cap, Friction::TAB_CAP.0), 1);
-        apply(&mut friction, Edit::TabCap(2));
-        assert_eq!(friction.tab_cap, 2);
-        apply(&mut friction, Edit::DriftHops(1));
+        apply(&mut friction, Edit::TabCapOn(true));
+        assert_eq!(
+            friction.tab_cap,
+            Friction::default().tab_cap.max(Friction::TAB_CAP.0)
+        );
+        apply(&mut friction, Edit::TabCap(Friction::TAB_CAP.1));
+        assert_eq!(friction.tab_cap, Friction::TAB_CAP.1);
+        apply(&mut friction, Edit::DriftHopsOn(false));
         assert_eq!(friction.drift_hops, 0);
+        apply(&mut friction, Edit::DriftHopsOn(true));
+        assert!(friction.drift_hops >= Friction::DRIFT_HOPS.0);
         apply(&mut friction, Edit::Unlocks(0));
         assert_eq!(friction.unlocks_per_day, 0);
-        assert!(friction.problems().is_empty(), "every position is valid");
+        assert!(friction.problems().is_empty(), "every setting is valid");
     }
 }

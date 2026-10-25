@@ -9,8 +9,8 @@ use iced::{Alignment, Element};
 use ipc_proto::{SourceState, SourceStatus, StatusReport};
 
 use crate::agenda::{self, Group};
-use crate::help::{info, tip};
-use crate::style::{self, Tone, caption, card, dot, heading, pill, title, toned};
+use crate::help::info;
+use crate::style::{self, Tone, caption, card, dot, heading, title, toned};
 use crate::{App, Message};
 
 /// How many days the Calendar page shows.
@@ -22,6 +22,7 @@ impl App {
         let source = &status.plan.calendar;
         let connection = self.connection_card(
             SecretKey::CalendarUrl,
+            source,
             source_line("Calendar", "events", source, status.now),
             "Paste your calendar's secret iCal address",
             "In Google Calendar on the web: Settings → click your calendar under \"Settings for \
@@ -58,6 +59,7 @@ impl App {
         let source = &status.plan.tasks;
         let connection = self.connection_card(
             SecretKey::TodoistToken,
+            source,
             source_line("Todoist", "tasks", source, status.now),
             "Paste your Todoist API token",
             "In Todoist: Settings → Integrations → Developer → copy the API token. It lets Focus \
@@ -83,43 +85,89 @@ impl App {
         )
     }
 
-    /// Where a source's address or token goes, with its status.
+    /// A source's connection: one status line with Change and Disconnect once it's connected,
+    /// or the box to paste its address or token into.
     fn connection_card<'a>(
         &'a self,
         key: SecretKey,
+        source: &SourceStatus,
         line: Line,
         placeholder: &'a str,
         how_to: &'a str,
         value: &'a str,
     ) -> Element<'a, Message> {
+        let connected = !matches!(source.state, SourceState::NotConfigured);
+        let status = row![dot(line.tone), toned(line.text, line.tone).size(14)]
+            .spacing(8)
+            .align_y(Alignment::Center);
+        if connected && self.changing_secret != Some(key) {
+            let disconnect: Element<'a, Message> = if self.confirm_disconnect == Some(key) {
+                row![
+                    toned("Disconnect and forget what was fetched?", Tone::Bad).size(14),
+                    button("Disconnect")
+                        .style(style::key_danger)
+                        .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
+                    button("Keep")
+                        .style(style::key)
+                        .on_press(Message::AskDisconnect(None)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into()
+            } else {
+                button("Disconnect")
+                    .style(style::key)
+                    .on_press(Message::AskDisconnect(Some(key)))
+                    .into()
+            };
+            return card(
+                row![
+                    status,
+                    space::horizontal(),
+                    button("Change")
+                        .style(style::key)
+                        .on_press(Message::ChangeSecret(Some(key))),
+                    disconnect,
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .into();
+        }
         let save = (!value.trim().is_empty())
             .then_some(Message::SaveSecret(key))
             .and_then(|message| self.idle_then(message));
+        let mut form = row![
+            text_input(placeholder, value)
+                .secure(true)
+                .style(style::field)
+                .on_input(move |value| Message::SecretInput(key, value))
+                .on_submit_maybe(save.clone()),
+            button("Save").style(style::key_accent).on_press_maybe(save),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if connected {
+            form = form.push(
+                button("Cancel")
+                    .style(style::key)
+                    .on_press(Message::ChangeSecret(None)),
+            );
+        }
         card(
             column![
-                row![heading("Connection"), info(how_to)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                row![dot(line.tone), toned(line.text, line.tone).size(14)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
                 row![
-                    text_input(placeholder, value)
-                        .secure(true)
-                        .style(style::field)
-                        .on_input(move |value| Message::SecretInput(key, value))
-                        .on_submit_maybe(save.clone()),
-                    button("Save").style(style::key_accent).on_press_maybe(save),
-                    tip(
-                        button("Remove")
-                            .style(style::key)
-                            .on_press_maybe(self.idle_then(Message::RemoveSecret(key))),
-                        "Deletes the saved address or token, and the events or tasks kept \
-                         from it."
-                    ),
+                    heading(if connected {
+                        "Change connection"
+                    } else {
+                        "Connect"
+                    }),
+                    info(how_to)
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
+                status,
+                form,
             ]
             .spacing(12),
         )
@@ -137,20 +185,16 @@ fn plan_page<'a>(
     empty: &'a str,
     connection: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    let (label, tone) = source_pill(source);
-    let header = row![
-        title(name),
-        info(explanation),
-        space::horizontal(),
-        pill(label, tone)
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let mut page: Column<'a, Message> = column![header].spacing(18);
+    let header = row![title(name), info(explanation)]
+        .spacing(10)
+        .align_y(Alignment::Center);
+    let page: Column<'a, Message> = column![header].spacing(18);
     let connected = !matches!(source.state, SourceState::NotConfigured);
     if !connected {
         return page.push(connection).into();
     }
+    // The days (or task groups) as sections of one card.
+    let mut sections = column![].spacing(22);
     for group in groups {
         let mut heading_row = row![heading(group.title)]
             .spacing(10)
@@ -163,20 +207,9 @@ fn plan_page<'a>(
         } else {
             agenda::rows_view(group.rows).into()
         };
-        page = page.push(card(column![heading_row, body].spacing(12)));
+        sections = sections.push(column![heading_row, body].spacing(10));
     }
-    page.push(connection).into()
-}
-
-/// The pill next to a page title.
-fn source_pill(source: &SourceStatus) -> (&'static str, Tone) {
-    match &source.state {
-        SourceState::Unknown => ("Checking…", Tone::Quiet),
-        SourceState::NotConfigured => ("Not connected", Tone::Quiet),
-        SourceState::Ok => ("Synced", Tone::Good),
-        SourceState::Failing { offline: true, .. } => ("Offline", Tone::Warn),
-        SourceState::Failing { .. } => ("Problem", Tone::Bad),
-    }
+    page.push(card(sections)).push(connection).into()
 }
 
 /// One status line.
@@ -278,16 +311,5 @@ mod tests {
         assert_eq!(format_ago(Duration::from_secs(5 * 60)), "5 min ago");
         assert_eq!(format_ago(Duration::from_secs(3 * 3600 + 59)), "3 h ago");
         assert_eq!(format_ago(Duration::from_secs(50 * 3600)), "2 days ago");
-    }
-
-    #[test]
-    fn pills_follow_the_source_state() {
-        let mut source = SourceStatus::default();
-        assert_eq!(source_pill(&source).0, "Checking…");
-        source.state = SourceState::Failing {
-            problem: "x".into(),
-            offline: false,
-        };
-        assert_eq!(source_pill(&source), ("Problem", Tone::Bad));
     }
 }

@@ -146,6 +146,10 @@ pub(crate) struct App {
     calendar_input: String,
     /// A Todoist token being typed or pasted.
     token_input: String,
+    /// The connected source whose address or token is being replaced, if any.
+    changing_secret: Option<SecretKey>,
+    /// The source waiting for a yes to disconnect, if any.
+    confirm_disconnect: Option<SecretKey>,
     /// The settings being edited; loaded when Settings opens.
     settings: Option<settings::Draft>,
     /// Why the settings couldn't be read, if the last try failed.
@@ -226,6 +230,10 @@ pub(crate) enum Message {
     SecretInput(SecretKey, String),
     SaveSecret(SecretKey),
     RemoveSecret(SecretKey),
+    /// Opens (or, with `None`, closes) the box to replace a connected source's secret.
+    ChangeSecret(Option<SecretKey>),
+    /// Asks (or, with `None`, stops asking) whether to disconnect a source.
+    AskDisconnect(Option<SecretKey>),
     /// Boxed like the other large answers.
     SettingsLoaded(Box<Result<EditableSettings, String>>),
     AppsLoaded(Result<Vec<String>, String>),
@@ -275,6 +283,8 @@ impl App {
             plan: None,
             calendar_input: String::new(),
             token_input: String::new(),
+            changing_secret: None,
+            confirm_disconnect: None,
             settings: None,
             settings_problem: None,
             settings_tab: settings::Tab::default(),
@@ -410,8 +420,19 @@ impl App {
             }
             Message::RemoveSecret(key) => {
                 self.secret_input(key).clear();
+                self.confirm_disconnect = None;
+                self.changing_secret = None;
                 return self.act(Request::SetSecret { key, value: None });
             }
+            Message::ChangeSecret(key) => {
+                // What was typed for a box that's closing goes with it.
+                if let Some(open) = self.changing_secret.filter(|open| Some(*open) != key) {
+                    self.secret_input(open).clear();
+                }
+                self.changing_secret = key;
+                self.confirm_disconnect = None;
+            }
+            Message::AskDisconnect(key) => self.confirm_disconnect = key,
             Message::SettingsLoaded(result) => match *result {
                 Ok(settings) => {
                     self.settings_problem = None;
@@ -537,7 +558,10 @@ impl App {
                 // The daemon has ended the session and is exiting; the window goes too.
                 return iced::exit();
             }
-            (Some(Saving::Secret(key)), Ok(())) => self.secret_input(key).clear(),
+            (Some(Saving::Secret(key)), Ok(())) => {
+                self.secret_input(key).clear();
+                self.changing_secret = None;
+            }
             // A failed park leaves the window up, with the error, so the thought isn't lost.
             (Some(Saving::Park), Err(_)) => self.capturing = false,
             (Some(Saving::Park), Ok(())) => {

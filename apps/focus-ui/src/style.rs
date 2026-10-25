@@ -88,6 +88,8 @@ struct Look {
     unlit: Color,
     /// Whether LEDs glow (they only show it on a dark panel).
     glow: bool,
+    /// Secondary text: hints, labels, details. Dimmer than the text, still easy to read.
+    muted: Color,
 }
 
 /// What `FIELD` needs besides its palette.
@@ -119,6 +121,7 @@ const FIELD_LOOK: Look = Look {
     well: Color::from_rgb8(0xD6, 0xCE, 0xC0),
     unlit: Color::from_rgb8(0xB9, 0xAF, 0x9F),
     glow: false,
+    muted: Color::from_rgb8(0x5A, 0x51, 0x47),
 };
 
 /// What `BAKELITE` needs besides its palette.
@@ -153,6 +156,7 @@ const BAKELITE_LOOK: Look = Look {
     well: Color::from_rgb8(0x12, 0x0E, 0x0B),
     unlit: Color::from_rgb8(0x4A, 0x3D, 0x31),
     glow: true,
+    muted: Color::from_rgb8(0xB5, 0xA5, 0x8F),
 };
 
 /// The mode the window shows: the `chosen` one, or the `system`'s when following it.
@@ -212,9 +216,16 @@ pub fn heading<'a>(content: impl AsRef<str>) -> Text<'a> {
     label(content.as_ref())
 }
 
-/// Small grey text for details.
+/// Secondary text for details and hints: dimmer than the text, but easy to read.
 pub fn caption<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
-    text(content).size(13).style(text::secondary)
+    text(content).size(14).style(muted)
+}
+
+/// The colour of secondary text.
+pub fn muted(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(look(theme).muted),
+    }
 }
 
 /// Text in the readout font, for times and counts on a [`readout`].
@@ -232,7 +243,7 @@ pub fn label<'a>(content: &str) -> Text<'a> {
     text(content.to_uppercase())
         .font(MONO)
         .size(11)
-        .style(text::secondary)
+        .style(muted)
 }
 
 /// Big readout digits the user can type into, on a [`readout`]'s glass.
@@ -867,13 +878,10 @@ fn darken(color: Color) -> Color {
 
 /// The app's name in the sidebar, with a model number like a device's badge.
 pub fn brand<'a>() -> Element<'a, Message> {
-    row![
-        bold("focus").size(18),
-        mono("FX-1").size(11).style(text::secondary),
-    ]
-    .spacing(6)
-    .align_y(Alignment::End)
-    .into()
+    row![bold("focus").size(18), mono("FX-1").size(11).style(muted),]
+        .spacing(6)
+        .align_y(Alignment::End)
+        .into()
 }
 
 /// A small label outlined in its tone, e.g. "Synced" or "Offline".

@@ -21,5 +21,5 @@ pub fn tip<'a>(
 
 /// A small "(?)" that explains the thing next to it on hover.
 pub fn info<'a>(explanation: impl text::IntoFragment<'a>) -> Element<'a, Message> {
-    tip(text("(?)").size(13).style(text::secondary), explanation)
+    tip(text("(?)").size(13).style(crate::style::muted), explanation)
 }

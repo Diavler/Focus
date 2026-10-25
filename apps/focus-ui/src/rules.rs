@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use focus_core::{AutoStartRule, Strictness};
-use iced::widget::{Column, button, column, container, pick_list, row, slider, text, text_input};
+use iced::widget::{Column, button, column, pick_list, row, slider, space, text, text_input};
 use iced::{Alignment, Element, Length};
 
 use crate::Message;
@@ -22,6 +22,8 @@ pub struct Draft {
     pub rule: AutoStartRule,
     keyword: String,
     label: String,
+    /// Whether removing it is waiting for a yes.
+    confirm_remove: bool,
 }
 
 impl Draft {
@@ -31,6 +33,7 @@ impl Draft {
             rule,
             keyword: String::new(),
             label: String::new(),
+            confirm_remove: false,
         }
     }
 
@@ -50,6 +53,8 @@ impl Draft {
 #[derive(Debug, Clone)]
 pub enum Edit {
     Add,
+    AskRemove(usize),
+    KeepRule(usize),
     Remove(usize),
     Config(usize, String),
     Strictness(usize, Strictness),
@@ -75,7 +80,9 @@ pub fn apply(drafts: &mut Vec<Draft>, edit: Edit, configs: &[String]) {
         return;
     }
     let index = match &edit {
-        Edit::Config(i, _)
+        Edit::AskRemove(i)
+        | Edit::KeepRule(i)
+        | Edit::Config(i, _)
         | Edit::Strictness(i, _)
         | Edit::TaskMinutes(i, _)
         | Edit::KeywordTyped(i, _)
@@ -90,6 +97,8 @@ pub fn apply(drafts: &mut Vec<Draft>, edit: Edit, configs: &[String]) {
         return;
     };
     match edit {
+        Edit::AskRemove(_) => draft.confirm_remove = true,
+        Edit::KeepRule(_) => draft.confirm_remove = false,
         Edit::Config(_, config) => draft.rule.config = config,
         Edit::Strictness(_, strictness) => draft.rule.strictness = strictness,
         Edit::TaskMinutes(_, minutes) => {
@@ -181,74 +190,131 @@ pub fn view<'a>(drafts: &'a [Draft], configs: &'a [String]) -> Element<'a, Messa
 fn card<'a>(index: usize, draft: &'a Draft, configs: &'a [String]) -> Element<'a, Message> {
     let rule = &draft.rule;
     let selected = configs.iter().find(|name| **name == rule.config);
-    let top = row![
-        text(format!("Rule {}", index + 1)),
-        tip(
-            pick_list(configs, selected, move |config| {
-                Message::Rule(Edit::Config(index, config))
-            })
-            .placeholder("configuration")
-            .style(style::picker)
-            .menu_style(style::menu),
-            "The block configuration this rule runs: which sites and apps are blocked."
+    // Read as a sentence: when an event or task matches, run a configuration at a strictness.
+    let when = row![
+        style::field_label("When an event title has"),
+        inline_entries(
+            &rule.calendar_keywords,
+            &draft.keyword,
+            "+ keyword",
+            move |typed| Message::Rule(Edit::KeywordTyped(index, typed)),
+            Message::Rule(Edit::AddKeyword(index)),
+            move |at| Message::Rule(Edit::RemoveKeyword(index, at)),
         ),
-        tip(
-            pick_list(&Strictness::ALL[..], Some(rule.strictness), move |level| {
-                Message::Rule(Edit::Strictness(index, level))
-            })
-            .style(style::picker)
-            .menu_style(style::menu),
-            "Light: end any time. Deep: end early only after a 30-second wait and a typed \
-             reason. Locked: no ending early."
+        style::field_label("or a task is labelled"),
+        inline_entries(
+            &rule.task_labels,
+            &draft.label,
+            "+ label",
+            move |typed| Message::Rule(Edit::LabelTyped(index, typed)),
+            Message::Rule(Edit::AddLabel(index)),
+            move |at| Message::Rule(Edit::RemoveLabel(index, at)),
         ),
-        container(
-            button("Remove")
-                .style(style::key_danger)
-                .on_press(Message::Rule(Edit::Remove(index)))
-        )
-        .align_right(Length::Fill),
+        info(
+            "Events: the title contains a keyword, in any case (a tag like #focus is easy to \
+             add). Tasks: one of the labels (no @) and due at a time of day. Press Enter to add."
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .wrap();
+    let run = row![
+        style::field_label("run"),
+        pick_list(configs, selected, move |config| {
+            Message::Rule(Edit::Config(index, config))
+        })
+        .placeholder("configuration")
+        .style(style::picker)
+        .menu_style(style::menu),
+        style::field_label("at"),
+        style::segmented(
+            &Strictness::ALL,
+            rule.strictness,
+            |level| level.to_string(),
+            move |level| Message::Rule(Edit::Strictness(index, level)),
+        ),
+        space::horizontal(),
+        remove_control(index, draft.confirm_remove),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let keywords = entries(
-        "Calendar keywords",
-        "An event starts this rule if its title contains one of these, ignoring case. A tag \
-         like #focus is easy to add to an event title without changing how it reads.",
-        "#focus",
-        &rule.calendar_keywords,
-        &draft.keyword,
-        move |typed| Message::Rule(Edit::KeywordTyped(index, typed)),
-        Message::Rule(Edit::AddKeyword(index)),
-        move |at| Message::Rule(Edit::RemoveKeyword(index, at)),
-    );
-    let labels = entries(
-        "Todoist labels",
-        "A task starts this rule if it has one of these labels (without the @) and is due at a \
-         time of day. Tasks due on a day without a time don't start sessions.",
-        "deep",
-        &rule.task_labels,
-        &draft.label,
-        move |typed| Message::Rule(Edit::LabelTyped(index, typed)),
-        Message::Rule(Edit::AddLabel(index)),
-        move |at| Message::Rule(Edit::RemoveLabel(index, at)),
-    );
     let minutes = u16::try_from(rule.task_duration.as_secs() / 60).unwrap_or(u16::MAX);
-    let task_length = column![
-        row![
-            style::field_label(format!("Task session length: {minutes} min")),
-            info("For Todoist tasks without a duration."),
-        ]
-        .spacing(8),
+    let task_length = row![
+        style::caption(format!("Tasks without a length run {minutes} min")),
         slider(
             TASK_MINUTES,
             minutes.clamp(*TASK_MINUTES.start(), *TASK_MINUTES.end()),
             move |minutes| Message::Rule(Edit::TaskMinutes(index, minutes))
         )
         .step(5u16)
+        .width(Length::Fixed(220.0))
         .style(style::fader),
     ]
-    .spacing(6);
-    style::card(column![top, keywords, labels, task_length].spacing(12)).into()
+    .spacing(12)
+    .align_y(Alignment::Center);
+    style::card(column![when, run, task_length].spacing(14)).into()
+}
+
+/// A small × that asks before removing the rule.
+fn remove_control<'a>(index: usize, confirming: bool) -> Element<'a, Message> {
+    if confirming {
+        row![
+            toned("Remove this rule?", Tone::Bad).size(14),
+            button("Remove")
+                .style(style::key_danger)
+                .on_press(Message::Rule(Edit::Remove(index))),
+            button("Keep")
+                .style(style::key)
+                .on_press(Message::Rule(Edit::KeepRule(index))),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        tip(
+            button(text("×").size(18))
+                .style(style::key_flat)
+                .on_press(Message::Rule(Edit::AskRemove(index))),
+            "Remove this rule",
+        )
+    }
+}
+
+/// Removable chips followed by a small box that adds what's typed on Enter.
+fn inline_entries<'a>(
+    entries: &'a [String],
+    typed: &'a str,
+    placeholder: &'a str,
+    on_type: impl Fn(String) -> Message + 'a,
+    on_add: Message,
+    on_remove: impl Fn(usize) -> Message + 'a,
+) -> Element<'a, Message> {
+    let add = (!typed.trim().is_empty()).then_some(on_add);
+    entries
+        .iter()
+        .enumerate()
+        .fold(
+            row![].spacing(6).align_y(Alignment::Center),
+            |chips, (at, entry)| chips.push(chip(entry, on_remove(at))),
+        )
+        .push(
+            text_input(placeholder, typed)
+                .style(style::field)
+                .on_input(on_type)
+                .on_submit_maybe(add)
+                .width(Length::Fixed(110.0)),
+        )
+        .into()
+}
+
+/// One removable entry: its text and a ×; clicking removes it.
+pub(crate) fn chip<'a>(entry: &str, on_remove: Message) -> Element<'a, Message> {
+    tip(
+        button(text(format!("{entry}  ×")).size(14))
+            .style(style::key)
+            .on_press(on_remove),
+        "Click to remove.",
+    )
 }
 
 /// A list of removable entries with a box and button to add more; shared with the
@@ -266,12 +332,7 @@ pub(crate) fn entries<'a>(
 ) -> Column<'a, Message> {
     let mut chips = row![].spacing(6);
     for (at, entry) in entries.iter().enumerate() {
-        chips = chips.push(tip(
-            button(text(format!("{entry}  ×")).size(14))
-                .style(style::key)
-                .on_press(on_remove(at)),
-            "Click to remove.",
-        ));
+        chips = chips.push(chip(entry, on_remove(at)));
     }
     let add = (!typed.trim().is_empty()).then_some(on_add);
     column![
