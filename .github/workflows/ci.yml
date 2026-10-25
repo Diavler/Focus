@@ -1,7 +1,9 @@
 name: CI
 
 on:
+  # Branches run once, as a PR; main still runs on push to keep the Rust cache warm.
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -12,31 +14,64 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The checks are required on main, so docs-only PRs skip them with `if:` (a skipped job counts as passed)
+  # rather than with a workflow `paths` filter (which would leave them pending forever).
+  changes:
+    name: Code changed?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          code=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && files=$(gh pr diff "$PR" --name-only --repo "$GITHUB_REPOSITORY"); then
+            echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE-)' || code=false
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   rust:
     name: Rust (${{ matrix.os }})
+    # Steps skip one by one: a matrix job skipped as a whole reports under an unexpanded name that fails the required check.
+    needs: changes
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
+      - if: needs.changes.outputs.code == 'true'
+        uses: Swatinem/rust-cache@v2
+      - if: needs.changes.outputs.code == 'true'
+        name: Format
         run: cargo fmt --all -- --check
-      - name: Clippy
+      - if: needs.changes.outputs.code == 'true'
+        name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Test
+      - if: needs.changes.outputs.code == 'true'
+        name: Test
         run: cargo test --all
-      - name: focus-core has no I/O or workspace dependencies
+      - if: needs.changes.outputs.code == 'true'
+        name: focus-core has no I/O or workspace dependencies
         shell: bash
         run: bash scripts/check-core-deps.sh
 
   deny:
     name: cargo-deny
+    needs: changes
+        if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +79,8 @@ jobs:
 
   extension:
     name: Extension
+    needs: changes
+        if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
