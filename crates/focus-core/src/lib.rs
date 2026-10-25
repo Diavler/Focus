@@ -18,6 +18,7 @@ pub mod ports;
 mod rule;
 mod session;
 mod strictness;
+mod theme;
 mod time;
 mod unlock;
 mod url;
@@ -50,5 +51,6 @@ pub use session::{
     SessionState,
 };
 pub use strictness::{EndEarlyPolicy, OverridePolicy, Strictness};
+pub use theme::Theme;
 pub use time::Timestamp;
 pub use unlock::{UNLOCK_WINDOW, UnlockError, UnlockLedger};

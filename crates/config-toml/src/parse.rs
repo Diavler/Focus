@@ -89,6 +89,7 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
             auto_start,
             friction,
             parking_hotkey: file.parking_hotkey,
+            theme: file.theme,
         })
     } else {
         Err(SettingsError::Invalid { problems })
@@ -177,7 +178,7 @@ fn check_name(table: &'static str, name: &str, problems: &mut Vec<Problem>) {
 
 #[cfg(test)]
 mod tests {
-    use focus_core::{Hotkey, PatternError, RuleAction};
+    use focus_core::{Hotkey, PatternError, RuleAction, Theme};
 
     use super::*;
 
@@ -284,6 +285,19 @@ mod tests {
                 "parking_hotkey = \"ctrl+q\"
 "
             ),
+            Err(SettingsError::Syntax { .. })
+        ));
+    }
+
+    #[test]
+    fn the_theme_is_one_of_the_choices() {
+        assert_eq!(parse_settings("").unwrap().theme, Theme::System);
+        assert_eq!(
+            parse_settings("theme = \"dark\"\n").unwrap().theme,
+            Theme::Dark
+        );
+        assert!(matches!(
+            parse_settings("theme = \"blue\"\n"),
             Err(SettingsError::Syntax { .. })
         ));
     }

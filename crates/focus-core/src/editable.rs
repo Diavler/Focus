@@ -10,6 +10,7 @@ use crate::friction::Friction;
 use crate::hotkey::Hotkey;
 use crate::pattern::UrlPattern;
 use crate::rule::{Rule, RuleAction, Verdict};
+use crate::theme::Theme;
 
 /// Every editable setting, plus the revision of the text it was read from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,9 @@ pub struct EditableSettings {
     /// The shortcut that opens the parking lot.
     #[serde(default)]
     pub parking_hotkey: Hotkey,
+    /// Whether the window is light, dark or follows the system.
+    #[serde(default)]
+    pub theme: Theme,
     /// Identifies the text these were read from, so saving can refuse to overwrite edits made to
     /// the file in the meantime.
     pub revision: String,
@@ -168,6 +172,7 @@ mod tests {
             auto_start: Vec::new(),
             friction: Friction::default(),
             parking_hotkey: Hotkey::default(),
+            theme: Theme::default(),
             revision: "1".into(),
         }
     }

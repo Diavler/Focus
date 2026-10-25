@@ -155,6 +155,15 @@ const BAKELITE_LOOK: Look = Look {
     glow: true,
 };
 
+/// The mode the window shows: the `chosen` one, or the `system`'s when following it.
+pub fn mode_for(chosen: focus_core::Theme, system: Mode) -> Mode {
+    match chosen {
+        focus_core::Theme::System => system,
+        focus_core::Theme::Light => Mode::Light,
+        focus_core::Theme::Dark => Mode::Dark,
+    }
+}
+
 /// The theme for the system's `mode` (dark unless the system says light).
 pub fn theme(mode: Mode) -> Theme {
     match mode {
@@ -876,6 +885,15 @@ fn fade(color: Color, faded: bool, alpha: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_theme_setting_overrides_the_system() {
+        use focus_core::Theme;
+        assert_eq!(mode_for(Theme::System, Mode::Light), Mode::Light);
+        assert_eq!(mode_for(Theme::System, Mode::Dark), Mode::Dark);
+        assert_eq!(mode_for(Theme::Light, Mode::Dark), Mode::Light);
+        assert_eq!(mode_for(Theme::Dark, Mode::Light), Mode::Dark);
+    }
 
     #[test]
     fn a_meter_lights_a_cell_as_soon_as_progress_starts() {

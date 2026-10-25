@@ -92,7 +92,7 @@ mod tests {
     use focus_core::{
         AutoStartRule, BlockConfig, CalendarEvent, ConfigEntry, EditableSettings, EndEarlyResponse,
         Friction, Hotkey, Mode, ParkError, ParkingLot, PlanSource, PlannedStart, RuleAction,
-        RulePatterns, SessionError, SessionSpec, SessionState, StopError, Strictness, Task,
+        RulePatterns, SessionError, SessionSpec, SessionState, StopError, Strictness, Task, Theme,
         Timestamp, UnlockError, Verdict,
     };
 
@@ -138,6 +138,7 @@ mod tests {
                 ..Friction::default()
             },
             parking_hotkey: Hotkey::Off,
+            theme: Theme::Dark,
             revision: "abc".into(),
         }
     }
@@ -246,6 +247,7 @@ mod tests {
                 },
                 notifications: Some(Silencing::AskUser),
                 parking_hotkey: Hotkey::CtrlAltP,
+                theme: Theme::Light,
                 plan: PlanStatus {
                     calendar: SourceStatus {
                         state: SourceState::Failing {

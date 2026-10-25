@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 
 use focus_core::{
     ACTIONS, AutoStartRule, ConfigEntry, EditableSettings, Friction, Hotkey, ListEntry, Mode,
-    RulePatterns, Strictness, Verdict,
+    RulePatterns, Strictness, Theme, Verdict,
 };
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -57,8 +57,18 @@ pub fn editable(text: &str) -> Result<EditableSettings, SettingsError> {
         auto_start: file.auto_start.iter().map(rule_from_table).collect(),
         friction: file.friction.friction(),
         parking_hotkey: file.parking_hotkey,
+        theme: file.theme,
         revision: revision(text),
     })
+}
+
+/// Sets the top-level `key` to `wanted`, written only when it changes (or isn't `default`), so a
+/// comment beside it stays.
+fn set_choice(document: &mut DocumentMut, key: &str, wanted: &str, default: &str) {
+    let written = document.get(key).and_then(Item::as_str);
+    if written != Some(wanted) && (written.is_some() || wanted != default) {
+        document.insert(key, value(wanted));
+    }
 }
 
 /// Identifies a version of the settings text.
@@ -107,11 +117,18 @@ pub fn with_settings(text: &str, settings: &EditableSettings) -> Result<String, 
     }
     drop_if_empty(&mut document, "configs");
 
-    let written = document.get("parking_hotkey").and_then(Item::as_str);
-    let wanted = settings.parking_hotkey;
-    if written != Some(wanted.key()) && (written.is_some() || wanted != Hotkey::default()) {
-        document.insert("parking_hotkey", value(wanted.key()));
-    }
+    set_choice(
+        &mut document,
+        "parking_hotkey",
+        settings.parking_hotkey.key(),
+        Hotkey::default().key(),
+    );
+    set_choice(
+        &mut document,
+        "theme",
+        settings.theme.key(),
+        Theme::default().key(),
+    );
     set_friction(&mut document, settings.friction);
 
     document.remove("auto_start");
@@ -429,6 +446,7 @@ allow = ["docs.google.com"]
             auto_start: Vec::new(),
             friction: Friction::default(),
             parking_hotkey: Hotkey::default(),
+            theme: Theme::default(),
             revision: String::new(),
         };
         let written = with_settings("", &settings).unwrap();
@@ -463,6 +481,24 @@ allow = ["docs.google.com"]
         assert_eq!(
             parse_settings(&written).unwrap().parking_hotkey,
             Hotkey::Off
+        );
+    }
+
+    #[test]
+    fn the_theme_round_trips() {
+        let text = "theme = \"light\"  # bright room
+";
+        let mut settings = editable(text).unwrap();
+        assert_eq!(settings.theme, Theme::Light);
+        assert_eq!(with_settings(text, &settings).unwrap(), text, "unchanged");
+        settings.theme = Theme::Dark;
+        let written = with_settings(text, &settings).unwrap();
+        assert!(written.contains("theme = \"dark\""), "{written}");
+        assert_eq!(parse_settings(&written).unwrap().theme, Theme::Dark);
+        settings.theme = Theme::System;
+        assert!(
+            !with_settings("", &settings).unwrap().contains("theme"),
+            "the default isn't written"
         );
     }
 

@@ -75,6 +75,7 @@ mod tests {
             auto_start: Vec::new(),
             friction: crate::Friction::default(),
             parking_hotkey: crate::Hotkey::default(),
+            theme: crate::Theme::default(),
             revision: String::new(),
         });
         settings_editor_contract(&settings, &settings);
