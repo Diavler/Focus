@@ -117,13 +117,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: |
+          # The section for this version: from its "## [x.y.z]" heading up to the next heading or link list.
+          v="${GITHUB_REF_NAME#v}"
+          awk -v h="## [$v]" 'index($0, h) == 1 { on = 1; next } on && /^(## |\[)/ { exit } on' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "::error::CHANGELOG.md has no section for $v"; exit 1; }
       - name: Create the draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create '${{ github.ref_name }}' --repo '${{ github.repository }}' --draft
-          --title 'Focus ${{ github.ref_name }}' --generate-notes release/*
+          --title 'Focus ${{ github.ref_name }}' --notes-file notes.md release/*

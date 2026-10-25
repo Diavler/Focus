@@ -65,7 +65,7 @@ cd extension && npm test && npm run build
 
 ### Making a release
 
-`scripts/package-windows.ps1` builds the Windows zip and MSI into `target/release-artifacts/` (`-SkipMsi` if you don't have the WiX v5 tool: `dotnet tool install --global wix --version 5.0.2`). To publish, bump `version` in `[workspace.package]` of `Cargo.toml` and in `extension/package.json`, `package-lock.json` and both `extension/manifests/*.json`, merge, then push a matching tag (`git tag v0.1.0 && git push origin v0.1.0`). `.github/workflows/release.yml` builds the zip, the MSI, the Chromium extension zip and the Firefox `.xpi` (signed as unlisted on AMO; needs the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` repository secrets) and attaches them to a **draft** GitHub release, which you check and publish by hand. See ADRs 0017 and 0018.
+`scripts/package-windows.ps1` builds the Windows zip and MSI into `target/release-artifacts/` (`-SkipMsi` if you don't have the WiX v5 tool: `dotnet tool install --global wix --version 5.0.2`). To publish, bump `version` in `[workspace.package]` of `Cargo.toml` and in `extension/package.json`, `package-lock.json` and both `extension/manifests/*.json`, add a `## [x.y.z]` section to `CHANGELOG.md` (it becomes the release notes), merge, then push a matching tag (`git tag v0.1.0 && git push origin v0.1.0`). `.github/workflows/release.yml` builds the zip, the MSI, the Chromium extension zip and the Firefox `.xpi` (signed as unlisted on AMO; needs the `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` repository secrets) and attaches them to a **draft** GitHub release, which you check and publish by hand. See ADRs 0017 and 0018.
 
 ## License
 
