@@ -1,7 +1,7 @@
 //! The `TaskSource` adapter for Todoist's API (v1), using a personal API token.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
@@ -36,6 +36,9 @@ pub struct TodoistTasks<H = UreqHttp> {
     secrets: Arc<dyn Secrets>,
     http: H,
     zone: Tz,
+    /// Project and section names from the last good lookups. They rarely change, so they're
+    /// only looked up again when a task refers to one not seen yet.
+    names: Mutex<Names>,
 }
 
 impl TodoistTasks {
@@ -52,6 +55,7 @@ impl<H: HttpGet> TodoistTasks<H> {
             secrets,
             http,
             zone,
+            names: Mutex::new(Names::default()),
         }
     }
 
@@ -69,9 +73,10 @@ impl<H: HttpGet> TodoistTasks<H> {
         })
     }
 
-    /// Names by ID from a paged list of projects or sections at `url`. Best effort: a failed
-    /// lookup only means tasks show no project or section, so it never fails the fetch.
-    fn names(&self, url: &str, token: &str) -> HashMap<String, String> {
+    /// Every name by ID from the paged list of projects or sections at `url`, or `None` if any
+    /// page fails or there are too many, so a partial list is never taken for the whole. The
+    /// Inbox is listed without a name: a tag saying "Inbox" on most tasks says nothing.
+    fn names(&self, url: &str, token: &str) -> Option<NameMap> {
         let mut names = HashMap::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
@@ -79,19 +84,34 @@ impl<H: HttpGet> TodoistTasks<H> {
             if let Some(cursor) = cursor.as_deref() {
                 query.push(("cursor", cursor));
             }
-            let page: Option<NamePage> = self
-                .http
-                .get(url, &query, Some(token))
-                .ok()
-                .and_then(|body| serde_json::from_str(&body).ok());
-            let Some(page) = page else { break };
-            names.extend(page.results.into_iter().map(|named| (named.id, named.name)));
+            let body = self.http.get(url, &query, Some(token)).ok()?;
+            let page: NamePage = serde_json::from_str(&body).ok()?;
+            names.extend(page.results.into_iter().map(|named| {
+                let name = (!named.inbox_project).then_some(named.name);
+                (named.id, name)
+            }));
             cursor = page.next_cursor;
             if cursor.is_none() {
-                break;
+                return Some(names);
             }
         }
-        names
+        None
+    }
+
+    /// Looks the names at `url` up again if any of `ids` isn't in `known`. Best effort: if the
+    /// lookup fails, the names from before stay, so tags don't vanish on a flaky connection.
+    fn refresh<'a>(
+        &self,
+        known: &mut NameMap,
+        url: &str,
+        token: &str,
+        mut ids: impl Iterator<Item = &'a str>,
+    ) {
+        if ids.any(|id| !known.contains_key(id))
+            && let Some(fresh) = self.names(url, token)
+        {
+            *known = fresh;
+        }
     }
 }
 
@@ -141,24 +161,14 @@ impl<H: HttpGet> TaskSource for TodoistTasks<H> {
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
-                // Names are only looked up when some task needs them.
-                let lookup = |url, needed: bool| {
-                    if needed {
-                        self.names(url, token)
-                    } else {
-                        HashMap::new()
-                    }
-                };
-                let names = Names {
-                    projects: lookup(
-                        PROJECTS_URL,
-                        raws.iter().any(|raw| raw.project_id.is_some()),
-                    ),
-                    sections: lookup(
-                        SECTIONS_URL,
-                        raws.iter().any(|raw| raw.section_id.is_some()),
-                    ),
-                };
+                // A poisoned lock only means an earlier sync panicked mid-update; the names
+                // inside are still a usable cache.
+                let mut names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
+                let Names { projects, sections } = &mut *names;
+                let project_ids = raws.iter().filter_map(|raw| raw.project_id.as_deref());
+                self.refresh(projects, PROJECTS_URL, token, project_ids);
+                let section_ids = raws.iter().filter_map(|raw| raw.section_id.as_deref());
+                self.refresh(sections, SECTIONS_URL, token, section_ids);
                 return Ok(raws
                     .into_iter()
                     .map(|raw| raw.into_task(self.zone, &names))
@@ -201,17 +211,23 @@ struct NamePage {
     next_cursor: Option<String>,
 }
 
-/// A project or section: all a task needs is its name.
+/// A project or section: all a task needs is its name (and whether it's the Inbox).
 #[derive(Debug, Deserialize)]
 struct Named {
     id: String,
     name: String,
+    #[serde(default)]
+    inbox_project: bool,
 }
 
+/// Names by ID; `None` for one that's known but shown without a name (the Inbox).
+type NameMap = HashMap<String, Option<String>>;
+
 /// Project and section names by ID.
+#[derive(Debug, Default)]
 struct Names {
-    projects: HashMap<String, String>,
-    sections: HashMap<String, String>,
+    projects: NameMap,
+    sections: NameMap,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,13 +256,11 @@ impl RawTask {
             project: self
                 .project_id
                 .as_ref()
-                .and_then(|id| names.projects.get(id))
-                .cloned(),
+                .and_then(|id| names.projects.get(id).cloned().flatten()),
             section: self
                 .section_id
                 .as_ref()
-                .and_then(|id| names.sections.get(id))
-                .cloned(),
+                .and_then(|id| names.sections.get(id).cloned().flatten()),
             due_date: self.due.as_ref().and_then(|due| due_day(&due.date, zone)),
             due_at: self.due.and_then(|due| due_time(&due.date, zone)),
             duration: self.duration.and_then(|duration| {
@@ -379,10 +393,12 @@ mod tests {
             [TaskPriority::P1, TaskPriority::P4, TaskPriority::P3],
             "Todoist's 4 is P1, 1 is unflagged"
         );
-        assert!(
-            tasks
-                .iter()
-                .all(|task| task.project.as_deref() == Some("Uni"))
+        let projects: Vec<Option<&str>> =
+            tasks.iter().map(|task| task.project.as_deref()).collect();
+        assert_eq!(
+            projects,
+            [Some("Uni"), Some("Uni"), None],
+            "an Inbox task gets no project tag"
         );
         let sections: Vec<Option<&str>> =
             tasks.iter().map(|task| task.section.as_deref()).collect();
@@ -405,6 +421,20 @@ mod tests {
             tasks
                 .iter()
                 .all(|task| task.project.is_none() && task.section.is_none())
+        );
+    }
+
+    #[test]
+    fn remembers_names_between_syncs() {
+        let source = source(recorded());
+        source.tasks().unwrap();
+        let tasks = source.tasks().unwrap();
+        assert_eq!(tasks[0].project.as_deref(), Some("Uni"));
+        assert_eq!(tasks[0].section.as_deref(), Some("Lectures"));
+        assert_eq!(
+            source.http.tokens().len(),
+            4 + 2,
+            "the second sync only reads the task pages"
         );
     }
 

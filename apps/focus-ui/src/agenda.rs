@@ -38,8 +38,8 @@ pub struct Row {
     pub past: bool,
     /// Needs attention (an overdue task).
     pub warning: bool,
-    /// A task's priority, if it's flagged (P1 to P3).
-    pub priority: Option<TaskPriority>,
+    /// A task's priority (P4, unflagged, for events).
+    pub priority: TaskPriority,
     /// A task's project, if known.
     pub project: Option<String>,
     /// A task's section within its project, if any.
@@ -118,7 +118,7 @@ where
                 starts: planned.map(starts),
                 past: event.end <= now,
                 warning: false,
-                priority: None,
+                priority: TaskPriority::P4,
                 project: None,
                 section: None,
             };
@@ -175,14 +175,17 @@ where
             .filter_map(|task| Some((due_day(task, zone)?, task)))
             .collect();
         // Within a day, the most urgent first, then by time.
-        due.sort_by_key(|(day, task)| {
-            (
-                *day,
-                task.priority,
-                task.due_at.is_none(),
-                task.due_at,
-                task.title.clone(),
-            )
+        due.sort_by(|(a_day, a), (b_day, b)| {
+            let key = |day: &NaiveDate, task: &'a Task| {
+                (
+                    *day,
+                    task.priority,
+                    task.due_at.is_none(),
+                    task.due_at,
+                    task.title.as_str(),
+                )
+            };
+            key(a_day, a).cmp(&key(b_day, b))
         });
         Self {
             view,
@@ -253,7 +256,7 @@ where
         starts: planned.map(starts),
         past: false,
         warning: day < today,
-        priority: (task.priority != TaskPriority::P4).then_some(task.priority),
+        priority: task.priority,
         project: task.project.clone(),
         section: task.section.clone(),
     }
@@ -375,12 +378,12 @@ impl Row {
 fn title_line(
     title: String,
     past: bool,
-    priority: Option<TaskPriority>,
+    priority: TaskPriority,
     tags: impl IntoIterator<Item = String>,
 ) -> Element<'static, Message> {
     let mut line = row![].spacing(8).align_y(Alignment::Center);
-    if let Some(priority) = priority {
-        line = line.push(priority_flag(priority));
+    if let Some(flag) = priority_flag(priority) {
+        line = line.push(flag);
     }
     line = line.push(item_title(title, past));
     for tag in tags {
@@ -542,7 +545,7 @@ mod tests {
         let report = &groups[1].rows[0];
         assert_eq!(report.note.as_deref(), Some("@deep"));
         assert_eq!(report.starts.as_deref(), Some("Starts coding (Deep)"));
-        assert_eq!(report.priority, None, "P4 isn't flagged");
+        assert_eq!(report.priority, TaskPriority::P4);
     }
 
     #[test]
@@ -559,7 +562,7 @@ mod tests {
         let today = &task_groups(&plan, &zone())[1];
         let titles: Vec<&str> = today.rows.iter().map(|row| row.title.as_str()).collect();
         assert_eq!(titles, ["Buy milk", "Write the report"]);
-        assert_eq!(today.rows[0].priority, Some(TaskPriority::P1));
+        assert_eq!(today.rows[0].priority, TaskPriority::P1);
         assert_eq!(today.rows[0].project.as_deref(), Some("Home"));
         assert_eq!(today.rows[0].section.as_deref(), Some("Errands"));
     }
