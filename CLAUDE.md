@@ -44,9 +44,20 @@ Offline-first focus app (Rust, Iced) for Windows and KDE Plasma on Wayland. It b
 
 - Start each task by restating the goal and listing the files you'll touch; ask if the step in `docs/BUILD_PLAN.md` is ambiguous.
 - Small, reviewable changes. Conventional commit messages (`feat(core): ...`, `fix(nmh): ...`).
-- Work on a feature branch, never directly on `main`. When a step's checks pass, commit, push, open the PR, then run `/code-review --comment` on it. Otherwise commit only when asked.
-- At the end of a task, summarise what changed, what's tested, what needs manual testing, and anything you deferred.
+- Work on a feature branch, never directly on `main`. When a step's checks pass, commit, push and open the PR. Don't run `/code-review` unless the developer asks for it. Otherwise commit only when asked.
+- One build step (or sub-step) per PR. If a step needs more than about 15 files or several crates plus the extension, propose splitting it before starting. Don't add extra work (another browser, a refactor) to an open step; suggest it as its own step.
+- At the end of a task, summarise briefly what changed, what's tested, what needs manual testing, and anything you deferred.
 - The developer is a CS student learning Rust: briefly explain non-obvious Rust (lifetimes, trait objects, async, `Send`/`Sync`) in your summary when you use it.
+
+## Keeping usage down
+
+The developer has a limited usage budget. Prefer the cheaper path:
+
+- While iterating, run only the affected crate's tests (`cargo test -p <crate>`), or `npm test` for the extension. Run the full command list below once, before committing.
+- Read files in parts (`grep -n`, then the relevant lines), not whole large files. Don't re-read a file you just edited.
+- Don't try to drive or click the UI window. A screenshot of a page that needs no clicks is fine if it's quick; otherwise list the visual checks for the developer.
+- Keep PR descriptions, ADRs and summaries short: bullet points, no repeated detail. The manual checklist belongs in the PR, not repeated in chat.
+- Don't investigate things outside the task (old logs, unrelated machine state) unless they block it; mention them in one line instead.
 
 ## Commands
 
