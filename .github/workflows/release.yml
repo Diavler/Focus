@@ -1,0 +1,62 @@
+name: Release
+
+# A `v*` tag builds the Windows zip and MSI and attaches them to a draft GitHub release
+# (ADR 0017). Pull requests that touch the packaging build both without releasing.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - installer/**
+      - scripts/package-windows.ps1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows zip and MSI
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix --version
+      - name: Tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ((Get-Content -Raw Cargo.toml) -notmatch "(?m)^version = `"$([regex]::Escape($tag))`"") {
+            throw "Tag $tag doesn't match [workspace.package] version in Cargo.toml"
+          }
+      - name: Build and package
+        shell: pwsh
+        run: scripts/package-windows.ps1
+      - name: Validate the MSI
+        shell: pwsh
+        run: wix msi validate (Get-Item target/release-artifacts/*.msi).FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            target/release-artifacts/*.zip
+            target/release-artifacts/*.msi
+      - name: Draft the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create '${{ github.ref_name }}' --draft --title 'Focus ${{ github.ref_name }}'
+          --generate-notes (Get-Item target/release-artifacts/*.zip, target/release-artifacts/*.msi).FullName

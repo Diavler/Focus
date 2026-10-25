@@ -181,7 +181,7 @@ Each is a Cargo feature, off by default; the core never depends on any of them.
 | Build | Feature branches and pull requests, conventional commits, `rustfmt`, `clippy` |
 | Test | Unit tests against fakes for every port, `proptest` for rule matching, IPC integration tests |
 | CI | GitHub Actions on Windows and Ubuntu: format, lint, test, `cargo-deny` |
-| Release | Semantic versioning, changelog, `cargo-dist`: portable zip, MSI, `.deb`/`.rpm` |
+| Release | Semantic versioning, changelog, own GitHub Actions workflow (ADR 0017): portable zip and per-user WiX MSI; `.deb`/`.rpm` with step 9 |
 
 Test enforcement in a Windows VM and a KDE Plasma VM, skip Flatpak and Snap (their sandboxes block native messaging and process control), and dogfood from week one.
 
