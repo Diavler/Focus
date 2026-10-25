@@ -5,9 +5,7 @@
 use focus_core::{
     ConfigEntry, EditableSettings, ListEntry, Mode, RulePatterns, UrlPattern, same_app,
 };
-use iced::widget::{
-    Column, button, checkbox, column, pick_list, radio, row, space, text, text_input,
-};
+use iced::widget::{Column, button, checkbox, column, pick_list, row, space, text_input};
 use iced::{Alignment, Element, Length};
 
 use crate::help::info;
@@ -336,10 +334,13 @@ pub fn view<'a>(
     let create = (!editor.new_name.trim().is_empty()).then(|| wrap(Edit::Create));
     let picker = row![
         pick_list(names, current.clone(), move |name| wrap(Edit::Select(name)))
-            .placeholder(format!("No {noun}s yet")),
+            .placeholder(format!("No {noun}s yet"))
+            .style(style::picker)
+            .menu_style(style::menu),
         info(explanation),
         space::horizontal(),
         text_input(&format!("New {noun} name"), &editor.new_name)
+            .style(style::field)
             .on_input(move |name| wrap(Edit::NewName(name)))
             .on_submit_maybe(create.clone())
             .width(Length::Fixed(200.0)),
@@ -432,29 +433,24 @@ fn mode_picker<'a>(
 ) -> Element<'a, Message> {
     column![
         row![
-            text("Mode").size(14),
+            style::label("Mode"),
             info(
                 "Blocklist: everything opens except what the rules restrict. Allowlist: only \
                  the Allow patterns open; everything else is blocked (good for writing or \
                  studying with a few reference sites)."
             ),
         ]
-        .spacing(8),
-        row![
-            radio(
-                "Blocklist: block what's listed",
-                Mode::Blocklist,
-                Some(config.mode),
-                move |mode| wrap(Edit::Mode(mode))
-            ),
-            radio(
-                "Allowlist: allow only what's listed",
-                Mode::Allowlist,
-                Some(config.mode),
-                move |mode| wrap(Edit::Mode(mode))
-            ),
-        ]
-        .spacing(20),
+        .spacing(8)
+        .align_y(Alignment::Center),
+        style::segmented(
+            &[Mode::Blocklist, Mode::Allowlist],
+            config.mode,
+            |mode| match mode {
+                Mode::Blocklist => "Blocklist: block what's listed".to_owned(),
+                Mode::Allowlist => "Allowlist: allow only what's listed".to_owned(),
+            },
+            move |mode| wrap(Edit::Mode(mode)),
+        ),
     ]
     .spacing(8)
     .into()
@@ -481,7 +477,7 @@ fn include_picker<'a>(
     };
     column![
         row![
-            text("Includes").size(14),
+            style::label("Includes"),
             info("Shared lists whose rules this configuration uses too.")
         ]
         .spacing(8),
@@ -516,7 +512,9 @@ fn apps_editor<'a>(
             move |at| wrap(Edit::RemoveApp(at)),
         ),
         pick_list(offer, None::<String>, move |app| wrap(Edit::PickApp(app)))
-            .placeholder("…or pick an app that's open now"),
+            .placeholder("…or pick an app that's open now")
+            .style(style::picker)
+            .menu_style(style::menu),
     ]
     .spacing(8)
     .into()
@@ -539,11 +537,12 @@ fn try_url<'a>(
     };
     column![
         row![
-            text("Try a URL").size(14),
+            style::label("Try a URL"),
             info("Checks an address against the rules above, including edits not saved yet. Nothing is opened."),
         ]
         .spacing(8),
         text_input("reddit.com/r/rust/comments/abc", &editor.try_url)
+            .style(style::field)
             .on_input(move |url| wrap(Edit::TryUrl(url))),
         caption(result),
     ]

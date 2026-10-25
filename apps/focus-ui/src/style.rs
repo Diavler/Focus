@@ -6,9 +6,11 @@
 use std::f32::consts::PI;
 
 use iced::gradient::Linear;
+use iced::overlay::menu;
 use iced::theme::{Mode, Palette};
 use iced::widget::{
-    Button, Container, Text, button, container, row, rule, space, stack, text, toggler,
+    Button, Container, Text, button, container, pick_list, row, rule, scrollable, slider, space,
+    stack, text, text_input, toggler,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Gradient, Length, Padding, Radians,
@@ -79,6 +81,8 @@ struct Look {
     glass: Color,
     glass_edge: Color,
     digits: Color,
+    /// A text box's well.
+    inset: Color,
     /// A switch's track, and an LED that's off.
     well: Color,
     unlit: Color,
@@ -111,6 +115,7 @@ const FIELD_LOOK: Look = Look {
     glass: Color::from_rgb8(0x2B, 0x2A, 0x26),
     glass_edge: Color::from_rgb8(0x1F, 0x1E, 0x1B),
     digits: Color::from_rgb8(0xFF, 0x8A, 0x3D),
+    inset: Color::from_rgb8(0xFD, 0xFB, 0xF7),
     well: Color::from_rgb8(0xD6, 0xCE, 0xC0),
     unlit: Color::from_rgb8(0xB9, 0xAF, 0x9F),
     glow: false,
@@ -144,6 +149,7 @@ const BAKELITE_LOOK: Look = Look {
     glass: Color::from_rgb8(0x12, 0x0E, 0x0B),
     glass_edge: Color::from_rgb8(0x2E, 0x26, 0x1F),
     digits: Color::from_rgb8(0xF2, 0xA3, 0x3A),
+    inset: Color::from_rgb8(0x1A, 0x15, 0x11),
     well: Color::from_rgb8(0x12, 0x0E, 0x0B),
     unlit: Color::from_rgb8(0x4A, 0x3D, 0x31),
     glow: true,
@@ -205,6 +211,21 @@ pub fn caption<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
 /// Text in the readout font, for times and counts on a [`readout`].
 pub fn mono<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     text(content).font(MONO)
+}
+
+/// A section label: small grey capitals in the readout font, like the legend on a panel.
+pub fn label<'a>(content: &str) -> Text<'a> {
+    text(content.to_uppercase())
+        .font(MONO)
+        .size(11)
+        .style(text::secondary)
+}
+
+/// Readout text in the glowing digit colour, for text on glass outside a [`readout`].
+pub fn lcd<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
+    mono(content).style(|theme: &Theme| text::Style {
+        color: Some(look(theme).digits),
+    })
 }
 
 /// `content` on a raised panel that fills the width.
@@ -441,6 +462,233 @@ pub fn switch(theme: &Theme, status: toggler::Status) -> toggler::Style {
     }
 }
 
+/// A row of keys for picking one of `options`: the picked one is held down and lit.
+pub fn segmented<'a, T: Copy + PartialEq>(
+    options: &[T],
+    picked: T,
+    name: impl Fn(T) -> String,
+    on_pick: impl Fn(T) -> Message,
+) -> Element<'a, Message> {
+    options
+        .iter()
+        .fold(row![].spacing(4), |keys, &option| {
+            let held = option == picked;
+            let face = if held { Face::Accent } else { Face::Plain };
+            keys.push(
+                button(text(name(option)).size(14).width(Length::Fill).center())
+                    .width(Length::Fill)
+                    .padding([8, 10])
+                    .on_press(on_pick(option))
+                    .style(move |theme: &Theme, status| key_style(theme, status, face, held)),
+            )
+        })
+        .into()
+}
+
+/// The number of cells in a [`meter`].
+const METER_CELLS: usize = 30;
+
+/// A bar of LCD cells on readout glass, lit for `fraction` (0 to 1) of the way.
+pub fn meter<'a>(fraction: f32) -> Element<'a, Message> {
+    let lit = lit_cells(fraction, METER_CELLS);
+    let cells = (0..METER_CELLS).fold(row![].spacing(3), |cells, index| {
+        cells.push(
+            container(space::horizontal().width(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fixed(10.0))
+                .style(move |theme: &Theme| {
+                    let look = look(theme);
+                    let color = if index < lit {
+                        look.digits
+                    } else {
+                        blend(look.glass, look.digits.scale_alpha(0.14))
+                    };
+                    container::Style {
+                        background: Some(Background::Color(color)),
+                        border: Border {
+                            radius: 1.0.into(),
+                            ..Border::default()
+                        },
+                        ..container::Style::default()
+                    }
+                }),
+        )
+    });
+    readout(cells).padding([8, 10]).width(Length::Fill).into()
+}
+
+/// How many of `cells` are lit for `fraction`, rounding up so any progress lights one.
+fn lit_cells(fraction: f32, cells: usize) -> usize {
+    // The cast can't overflow or go negative: the value is clamped to 0..=cells first (and a
+    // NaN fraction casts to 0).
+    (fraction.clamp(0.0, 1.0) * cells as f32).ceil() as usize
+}
+
+/// The colours of the running session's dial.
+pub struct DialColors {
+    /// The glass face.
+    pub glass: Color,
+    /// The rim around the glass.
+    pub rim: Color,
+    /// The unlit ring.
+    pub track: Color,
+    /// The lit arc on the ring.
+    pub lit: Color,
+}
+
+/// The dial's colours for `theme`, matching a [`readout`].
+pub fn dial_colors(theme: &Theme) -> DialColors {
+    let look = look(theme);
+    DialColors {
+        glass: look.glass,
+        rim: look.glass_edge,
+        track: blend(look.glass, look.digits.scale_alpha(0.14)),
+        lit: look.digits,
+    }
+}
+
+/// A text box: a well sunk into the panel, rimmed in the accent while it has the cursor.
+pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let look = look(theme);
+    let palette = theme.extended_palette();
+    let edge = match status {
+        text_input::Status::Focused { .. } => palette.primary.base.color,
+        text_input::Status::Hovered => look.hover_edge,
+        text_input::Status::Active | text_input::Status::Disabled => look.key_edge,
+    };
+    text_input::Style {
+        background: if status == text_input::Status::Disabled {
+            Background::Color(look.disabled)
+        } else {
+            sunk(look.inset, look.shade)
+        },
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: edge,
+        },
+        icon: look.disabled_text,
+        placeholder: look.disabled_text,
+        value: palette.background.base.text,
+        selection: palette.primary.base.color.scale_alpha(0.3),
+    }
+}
+
+/// A drop-down: a key face with an accent arrow, held down while its list is open.
+pub fn picker(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let look = look(theme);
+    let key = key_style(
+        theme,
+        match status {
+            pick_list::Status::Active => button::Status::Active,
+            pick_list::Status::Hovered => button::Status::Hovered,
+            pick_list::Status::Opened { .. } => button::Status::Pressed,
+        },
+        Face::Plain,
+        false,
+    );
+    pick_list::Style {
+        text_color: key.text_color,
+        placeholder_color: look.disabled_text,
+        handle_color: theme.extended_palette().primary.base.color,
+        background: key.background.unwrap_or(Background::Color(look.key.0)),
+        border: key.border,
+    }
+}
+
+/// The list a drop-down opens: a raised panel with the hovered entry lit in the accent.
+pub fn menu(theme: &Theme) -> menu::Style {
+    let look = look(theme);
+    let palette = theme.extended_palette();
+    menu::Style {
+        background: Background::Color(look.panel.0),
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: look.panel_edge,
+        },
+        text_color: palette.background.base.text,
+        selected_text_color: palette.primary.base.text,
+        selected_background: Background::Color(palette.primary.base.color),
+        shadow: Shadow {
+            color: look.panel_shadow,
+            offset: Vector::new(0.0, 6.0),
+            blur_radius: 14.0,
+        },
+    }
+}
+
+/// A slider: a sunk track lit in the accent up to a square, key-like knob.
+pub fn fader(theme: &Theme, status: slider::Status) -> slider::Style {
+    let look = look(theme);
+    let (knob, edge) = match status {
+        slider::Status::Active => (look.key.0, look.key_edge),
+        slider::Status::Hovered => (look.hover.0, look.hover_edge),
+        slider::Status::Dragged => (look.pressed, look.hover_edge),
+    };
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                Background::Color(theme.extended_palette().primary.base.color),
+                Background::Color(look.well),
+            ),
+            width: 6.0,
+            border: Border {
+                radius: 3.0.into(),
+                ..Border::default()
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Rectangle {
+                width: 14,
+                border_radius: 3.0.into(),
+            },
+            background: Background::Color(knob),
+            border_width: 1.0,
+            border_color: edge,
+        },
+    }
+}
+
+/// A scroll bar: a slim well whose thumb lights in the accent while the pointer is on it.
+pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let look = look(theme);
+    let lit = match status {
+        scrollable::Status::Active { .. } => false,
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered,
+            ..
+        } => is_vertical_scrollbar_hovered,
+        scrollable::Status::Dragged {
+            is_vertical_scrollbar_dragged,
+            ..
+        } => is_vertical_scrollbar_dragged,
+    };
+    let rail = scrollable::Rail {
+        background: Some(Background::Color(look.well.scale_alpha(0.6))),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        scroller: scrollable::Scroller {
+            background: Background::Color(if lit {
+                theme.extended_palette().primary.base.color
+            } else {
+                look.unlit
+            }),
+            border: Border {
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+        },
+    };
+    scrollable::Style {
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        ..scrollable::default(theme, status)
+    }
+}
+
 /// A gradient from `top` to `bottom`.
 fn vertical(top: Color, bottom: Color) -> Background {
     // In iced, an angle of π runs from the top edge down.
@@ -622,5 +870,25 @@ fn fade(color: Color, faded: bool, alpha: f32) -> Color {
         Color { a: alpha, ..color }
     } else {
         color
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_meter_lights_a_cell_as_soon_as_progress_starts() {
+        assert_eq!(lit_cells(0.0, 30), 0);
+        assert_eq!(lit_cells(0.001, 30), 1);
+        assert_eq!(lit_cells(0.5, 30), 15);
+        assert_eq!(lit_cells(1.0, 30), 30);
+    }
+
+    #[test]
+    fn a_meter_clamps_out_of_range_progress() {
+        assert_eq!(lit_cells(-1.0, 30), 0);
+        assert_eq!(lit_cells(2.0, 30), 30);
+        assert_eq!(lit_cells(f32::NAN, 30), 0);
     }
 }

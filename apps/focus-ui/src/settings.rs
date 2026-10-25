@@ -331,7 +331,9 @@ impl App {
                     focus_core::Hotkey::ALL,
                     Some(draft.edited.parking_hotkey),
                     |hotkey| Message::Settings(Msg::ParkingHotkey(hotkey)),
-                ),
+                )
+                .style(style::picker)
+                .menu_style(style::menu),
             ]
             .spacing(12),
         );
@@ -410,6 +412,7 @@ impl App {
                             "Why do you need to stop a locked session?",
                             &self.stop_reason,
                         )
+                        .style(style::field)
                         .on_input(Message::StopReasonChanged)
                         .on_submit_maybe(confirm.clone()),
                     );

@@ -18,5 +18,6 @@ Polish step P2 asks for a window that feels like a physical focus device. The de
 ## Consequences
 
 - P2 is split: P2a shared style and fonts, P2b page touches (segmented strictness control, timer dial, section labels), P2c the theme setting.
+- The timer dial is drawn with iced's `canvas` feature (pulls in `lyon` for tessellation on wgpu). Pages style text boxes, drop-downs, sliders and the scroll bar through `style.rs` functions, since a custom iced `Theme` can't change those widgets' defaults.
 - A custom iced theme type (overriding every widget's default) was rejected as too much code; buttons name their key style explicitly instead.
 - The bundled fonts make the binary bigger, and their licence has to ship with the release (step 10).

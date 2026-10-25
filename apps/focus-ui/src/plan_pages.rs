@@ -106,6 +106,7 @@ impl App {
                 row![
                     text_input(placeholder, value)
                         .secure(true)
+                        .style(style::field)
                         .on_input(move |value| Message::SecretInput(key, value))
                         .on_submit_maybe(save.clone()),
                     button("Save").style(style::key_accent).on_press_maybe(save),

@@ -10,6 +10,7 @@
 mod agenda;
 mod configs;
 mod daemon;
+mod dial;
 mod friction;
 mod help;
 mod overview;
@@ -754,6 +755,7 @@ impl App {
         row![
             self.sidebar(),
             scrollable(container(main).padding([28, 32]).width(Length::Fill))
+                .style(style::scrollbar)
                 .height(Length::Fill)
                 .width(Length::Fill),
         ]
