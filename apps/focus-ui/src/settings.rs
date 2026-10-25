@@ -321,7 +321,7 @@ impl App {
     /// quiet until it's asked for.
     fn kill_switch_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
         let header = row![
-            heading("Emergency exit"),
+            heading("Stop Focus"),
             info(
                 "Ends any session, lifts blocking and closes Focus. With no session it closes at \
                  once; during one it waits 1 minute first (5 and a reason when Locked). Focus \

@@ -1,6 +1,6 @@
 //! The tray icon: closing the window hides it there and clicking the icon brings it back. There's
 //! no quit that only closes the window: Focus is either hidden (still working) or closed through
-//! the Emergency exit, which the menu opens. With no session that's "Close Focus" (no wait);
+//! the Stop Focus section in Settings (the emergency exit), which the menu opens. With no session that's "Close Focus" (no wait);
 //! during one it's "Stop Focus…", which waits. Windows only for now; Linux gets `ksni` in
 //! step 9, and until then closing the window minimises it.
 
@@ -17,7 +17,7 @@ use crate::Message;
 pub(crate) enum TrayAction {
     /// Come back from the tray.
     Show,
-    /// Start closing Focus through the Emergency exit in Settings.
+    /// Start closing Focus through the Stop Focus section in Settings.
     StopFocus,
 }
 

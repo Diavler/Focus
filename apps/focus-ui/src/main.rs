@@ -471,7 +471,7 @@ impl App {
             }
             Message::Tray(tray::TrayAction::Show) => return show_window(),
             Message::Tray(tray::TrayAction::StopFocus) => {
-                // The full window on Settings, with the Emergency exit asked for: it confirms at
+                // The full window on Settings, with the Stop Focus section asked for: it confirms at
                 // once with no session, and counts down during one.
                 let expand = self.expand();
                 let ask = match &self.status {
