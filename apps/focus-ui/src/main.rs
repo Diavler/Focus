@@ -3,9 +3,10 @@
 
 //! Iced desktop UI. Talks only to `focus-daemon` over IPC, so closing the window never ends a session.
 //!
-//! The window has a sidebar with four pages (Overview, Sessions, Calendar, Todoist) and a
-//! Settings page opened from Sessions. Each page lives in its own module as an `impl App` block; this file holds
-//! the state, the messages and how they change the state.
+//! The window has a sidebar with four pages (Overview, Sessions, Calendar, Todoist), and Rules and
+//! Settings keys at its foot that open as an overlay on top of the page. Each page lives in its own
+//! module as an `impl App` block; this file holds the state, the messages and how they change the
+//! state.
 
 mod agenda;
 mod configs;
@@ -28,7 +29,9 @@ use std::time::{Duration, Instant};
 use focus_core::ports::SecretKey;
 use focus_core::{BlockConfig, EditableSettings, ParkedItem, Strictness};
 use focus_install::{InstanceLock, Paths};
-use iced::widget::{Column, column, container, row, scrollable, space, text};
+use iced::widget::{
+    Column, button, center, column, container, opaque, row, scrollable, space, stack, text,
+};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use ipc_proto::{PlanView, Request, SourceState, StatusReport};
 use ipc_transport::Endpoint;
@@ -108,11 +111,16 @@ pub(crate) enum Page {
     /// Today's calendar and tasks; the window opens on it.
     Overview,
     Sessions,
-    /// Configurations, lists, automatic starts and limits.
-    Rules,
     Calendar,
     Todoist,
-    /// Focus's own settings, from the foot of the sidebar.
+}
+
+/// What opens on top of the page, from the keys at the sidebar's foot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Panel {
+    /// Configurations, lists, automatic starts and limits.
+    Rules,
+    /// Focus's own settings.
     Settings,
 }
 
@@ -132,6 +140,8 @@ pub(crate) struct App {
     /// Why the daemon can't be reached, if it can't.
     unreachable: Option<String>,
     page: Page,
+    /// The overlay open on top of the page, if any.
+    panel: Option<Panel>,
     configs: Vec<BlockConfig>,
     config_names: Vec<String>,
     selected: Option<String>,
@@ -216,6 +226,8 @@ pub(crate) enum Message {
     /// Boxed: the plan is much larger than the other messages.
     PlanLoaded(Box<Result<PlanView, String>>),
     Navigate(Page),
+    OpenPanel(Panel),
+    ClosePanel,
     ConfigPicked(String),
     StrictnessPicked(Strictness),
     MinutesChanged(u16),
@@ -273,6 +285,7 @@ impl App {
             status: None,
             unreachable: None,
             page: Page::Overview,
+            panel: None,
             configs: Vec::new(),
             config_names: Vec::new(),
             selected: None,
@@ -364,10 +377,13 @@ impl App {
             }
             Message::Navigate(page) => {
                 self.page = page;
-                if matches!(page, Page::Rules | Page::Settings) {
-                    return self.open_settings();
-                }
+                self.panel = None;
             }
+            Message::OpenPanel(panel) => {
+                self.panel = Some(panel);
+                return self.open_settings();
+            }
+            Message::ClosePanel => self.panel = None,
             Message::ConfigPicked(name) => self.selected = Some(name),
             Message::StrictnessPicked(strictness) => self.strictness = strictness,
             Message::MinutesChanged(minutes) => {
@@ -488,6 +504,7 @@ impl App {
             }
             Message::HotkeyPressed => {
                 self.page = Page::Sessions;
+                self.panel = None;
                 self.capturing = true;
                 return Task::batch([
                     iced::window::oldest().and_then(|id| {
@@ -780,6 +797,15 @@ impl App {
                 self.hotkey_attempt,
             ));
         }
+        if self.panel.is_some() {
+            subscriptions.push(iced::keyboard::listen().filter_map(|event| match event {
+                iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                } => Some(Message::ClosePanel),
+                _ => None,
+            }));
+        }
         if self.capturing {
             subscriptions.push(iced::window::events().filter_map(|(_, event)| {
                 (event == iced::window::Event::Unfocused).then_some(Message::WindowUnfocused)
@@ -819,22 +845,44 @@ impl App {
                 Page::Sessions => self.sessions_page(status),
                 Page::Calendar => self.calendar_page(status),
                 Page::Todoist => self.todoist_page(status),
-                Page::Rules => self.rules_page(status),
-                Page::Settings => self.settings_page(status),
             },
         };
+        let page = self.scrolling(content);
+        let Some((panel, status)) = self.panel.zip(self.status.as_ref()) else {
+            return row![self.sidebar(), page].into();
+        };
+        let content = match panel {
+            Panel::Rules => self.rules_page(status),
+            Panel::Settings => self.settings_page(status),
+        };
+        // Over the page only, so the sidebar still works. `opaque` stops clicks and hovers
+        // reaching the page underneath.
+        let overlay = opaque(style::scrim(
+            center(style::sheet(self.scrolling(content))).padding([24, 28]),
+        ));
+        row![self.sidebar(), stack![page, overlay]].into()
+    }
+
+    /// `content` with any error under it, scrolling in the space beside the sidebar.
+    fn scrolling<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let mut main: Column<'_, Message> = column![content].spacing(18);
         if let Some(error) = &self.error {
             main = main.push(style::toned(error.as_str(), Tone::Bad).size(14));
         }
-        row![
-            self.sidebar(),
-            scrollable(container(main).padding([28, 32]).width(Length::Fill))
-                .style(style::scrollbar)
-                .height(Length::Fill)
-                .width(Length::Fill),
-        ]
-        .into()
+        scrollable(container(main).padding([28, 32]).width(Length::Fill))
+            .style(style::scrollbar)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
+    }
+
+    /// The key that closes the open overlay (Escape does too).
+    pub(crate) fn close_panel_key(&self) -> Element<'_, Message> {
+        button(text("Close").size(14))
+            .padding([6, 12])
+            .on_press(Message::ClosePanel)
+            .style(style::key)
+            .into()
     }
 
     /// The app name, what's happening now, the pages, and the sources' sync status.
@@ -912,11 +960,6 @@ impl App {
                     Message::Navigate(Page::Sessions)
                 ),
                 nav(
-                    "Rules",
-                    self.page == Page::Rules,
-                    Message::Navigate(Page::Rules)
-                ),
-                nav(
                     "Calendar",
                     self.page == Page::Calendar,
                     Message::Navigate(Page::Calendar)
@@ -928,11 +971,19 @@ impl App {
                 ),
                 space::vertical(),
                 sources,
-                nav(
-                    "Settings",
-                    self.page == Page::Settings,
-                    Message::Navigate(Page::Settings)
-                ),
+                row![
+                    style::foot_key(
+                        "Rules",
+                        self.panel == Some(Panel::Rules),
+                        Message::OpenPanel(Panel::Rules)
+                    ),
+                    style::foot_key(
+                        "Settings",
+                        self.panel == Some(Panel::Settings),
+                        Message::OpenPanel(Panel::Settings)
+                    ),
+                ]
+                .spacing(8),
             ]
             .spacing(8),
         )

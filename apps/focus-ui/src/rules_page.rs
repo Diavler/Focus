@@ -1,4 +1,4 @@
-//! The Rules page: what sessions restrict (configurations and shared lists), what starts them by
+//! The Rules overlay: what sessions restrict (configurations and shared lists), what starts them by
 //! itself, and the limits that apply to every session. It edits the same settings draft as the
 //! Settings page, so both save the same way.
 
@@ -30,6 +30,7 @@ impl App {
         if let Some(draft) = &self.settings {
             header = header.push(self.save_status(draft));
         }
+        header = header.push(self.close_panel_key());
         let tabs = style::segmented(
             &[Tab::Configs, Tab::Lists, Tab::AutoStarts, Tab::Limits],
             self.settings_tab,

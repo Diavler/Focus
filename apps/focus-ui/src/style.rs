@@ -352,6 +352,51 @@ pub fn nav<'a>(label: &'a str, selected: bool, on_press: Message) -> Button<'a, 
         .style(move |theme: &Theme, status| key_style(theme, status, Face::Plain, selected))
 }
 
+/// A key at the sidebar's foot that opens an overlay: label centred, down while it's open.
+pub fn foot_key<'a>(label: &'a str, open: bool, on_press: Message) -> Button<'a, Message> {
+    button(text(label).size(15).width(Length::Fill).center())
+        .width(Length::Fill)
+        .padding([10, 8])
+        .on_press(on_press)
+        .style(move |theme: &Theme, status| key_style(theme, status, Face::Plain, open))
+}
+
+/// The dimmed glass over the window behind an overlay.
+pub fn scrim<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.45))),
+            ..container::Style::default()
+        })
+}
+
+/// An overlay's sheet: the page background, raised well above the window.
+pub fn sheet<'a>(content: impl Into<Element<'a, Message>>) -> Container<'a, Message> {
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .max_width(940)
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(
+                theme.extended_palette().background.base.color,
+            )),
+            text_color: Some(theme.extended_palette().background.base.text),
+            border: Border {
+                radius: 12.0.into(),
+                width: 1.0,
+                color: look(theme).panel_edge,
+            },
+            shadow: Shadow {
+                color: Color::from_rgba8(0, 0, 0, 0.5),
+                offset: Vector::new(0.0, 12.0),
+                blur_radius: 40.0,
+            },
+            ..container::Style::default()
+        })
+}
+
 /// An ordinary key: lifts on hover, sinks when pressed.
 pub fn key(theme: &Theme, status: button::Status) -> button::Style {
     key_style(theme, status, Face::Plain, false)

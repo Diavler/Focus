@@ -1,4 +1,4 @@
-//! The Settings page, opened from Sessions: automatic starts, configurations, shared lists, and
+//! The Settings overlay, opened from the sidebar's foot: automatic starts, configurations, shared lists, and
 //! general settings with the kill switch. Edits are kept in a draft until Save sends them to the
 //! daemon, which writes `settings.toml`.
 
@@ -195,6 +195,7 @@ impl App {
         if let Some(draft) = &self.settings {
             header = header.push(self.save_status(draft));
         }
+        header = header.push(self.close_panel_key());
         let page: Column<'a, Message> = column![header].spacing(18);
         let Some(draft) = &self.settings else {
             // The kill switch doesn't need the settings, so it's there even if they can't be read.
