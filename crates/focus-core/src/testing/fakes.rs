@@ -182,6 +182,7 @@ impl ConfigSource for FakeSettingsFile {
             auto_start: settings.auto_start,
             friction: settings.friction,
             parking_hotkey: settings.parking_hotkey,
+            theme: settings.theme,
         })
     }
 }

@@ -3,8 +3,8 @@
 use focus_core::ports::{SecretKey, Silencing};
 use focus_core::{
     BlockConfig, CalendarEvent, EditableSettings, EndEarlyResponse, Friction, Hotkey, ParkError,
-    ParkedItem, PlannedStart, SessionError, SessionState, StopError, Strictness, Task, Timestamp,
-    UnlockError, Verdict,
+    ParkedItem, PlannedStart, SessionError, SessionState, StopError, Strictness, Task, Theme,
+    Timestamp, UnlockError, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -238,6 +238,9 @@ pub struct StatusReport {
     /// The shortcut that opens the parking lot, from the settings.
     #[serde(default)]
     pub parking_hotkey: Hotkey,
+    /// Whether the window is light, dark or follows the system.
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 /// The parking lot at a glance.

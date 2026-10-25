@@ -9,6 +9,7 @@ use crate::auto_start::AutoStartRule;
 use crate::config::BlockConfig;
 use crate::friction::Friction;
 use crate::hotkey::Hotkey;
+use crate::theme::Theme;
 use crate::time::Timestamp;
 
 /// Everything the settings file says.
@@ -24,6 +25,8 @@ pub struct Settings {
     pub friction: Friction,
     /// The shortcut that opens the parking lot.
     pub parking_hotkey: Hotkey,
+    /// Whether the window is light, dark or follows the system.
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -35,6 +38,7 @@ impl Default for Settings {
             auto_start: Vec::new(),
             friction: Friction::default(),
             parking_hotkey: Hotkey::default(),
+            theme: Theme::default(),
         }
     }
 }

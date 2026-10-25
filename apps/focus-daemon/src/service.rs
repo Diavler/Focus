@@ -13,7 +13,8 @@ use focus_core::ports::{
 use focus_core::{
     AutoStartRule, BrowserPolicy, BrowserWatch, EditableSettings, Heartbeat, Hotkey, KillSwitch,
     KnownBrowser, PlannedStart, RuleAction, SessionError, SessionSpec, SessionState, StopPolicy,
-    Strictness, Timestamp, UnlockError, Verdict, apps_to_close, planned_starts, scheduled_configs,
+    Strictness, Theme, Timestamp, UnlockError, Verdict, apps_to_close, planned_starts,
+    scheduled_configs,
 };
 use ipc_proto::{
     BrowserStatus, DaemonError, ParkingStatus, PendingSummary, PlanStatus, PlanView, Request,
@@ -110,6 +111,8 @@ pub struct Service {
     silencing: Option<Silencing>,
     /// The parking lot's shortcut, from the last good settings.
     parking_hotkey: Hotkey,
+    /// The window's theme, from the last good settings.
+    theme: Theme,
     /// When parked items are sent to the task inbox next.
     inbox_schedule: InboxSchedule,
 }
@@ -150,6 +153,7 @@ impl Service {
             stopping: false,
             silencing: None,
             parking_hotkey: Hotkey::default(),
+            theme: Theme::default(),
             inbox_schedule: InboxSchedule::default(),
         };
         service.reload_settings();
@@ -377,6 +381,7 @@ impl Service {
                 self.auto_rules = desired.auto_start;
                 self.planned = planned;
                 self.parking_hotkey = desired.parking_hotkey;
+                self.theme = desired.theme;
             }
             Err(error) => tracing::warn!("{error}"),
         }
@@ -769,6 +774,7 @@ impl Service {
             },
             notifications: self.state.session.running().and(self.silencing),
             parking_hotkey: self.parking_hotkey,
+            theme: self.theme,
         }
     }
 
@@ -2318,5 +2324,15 @@ mod tests {
         ));
         service.reload_settings();
         assert_eq!(status(&mut service).parking_hotkey, Hotkey::CtrlAltP);
+    }
+
+    #[test]
+    fn the_theme_comes_from_the_settings() {
+        let harness = Harness::new();
+        let mut service = harness.open();
+        assert_eq!(status(&mut service).theme, Theme::System);
+        harness.write_settings(&format!("theme = \"light\"\n{SETTINGS}"));
+        service.reload_settings();
+        assert_eq!(status(&mut service).theme, Theme::Light);
     }
 }

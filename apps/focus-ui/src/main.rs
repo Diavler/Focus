@@ -172,7 +172,11 @@ pub(crate) struct App {
     action_pending: bool,
     /// What the action on its way does, so its answer can be handled.
     saving: Option<Saving>,
-    /// Focus's colours for the system's light or dark mode.
+    /// The system's light or dark mode, last reported.
+    system_mode: iced::theme::Mode,
+    /// The mode `theme` was built for.
+    theme_mode: iced::theme::Mode,
+    /// Focus's colours for the theme setting and the system's mode.
     theme: iced::Theme,
 }
 
@@ -277,6 +281,8 @@ impl App {
             plan_pending: false,
             action_pending: false,
             saving: None,
+            system_mode: iced::theme::Mode::Dark,
+            theme_mode: iced::theme::Mode::Dark,
             theme: style::theme(iced::theme::Mode::Dark),
         };
         let mut boot = vec![
@@ -300,6 +306,7 @@ impl App {
                     Ok(status) => {
                         let revision = status.parking_lot.revision;
                         self.status = Some(status);
+                        self.refresh_theme();
                         self.unreachable = None;
                         self.failed_polls = 0;
                         if self.parked_revision != Some(revision) && !self.parked_pending {
@@ -417,7 +424,10 @@ impl App {
                 self.stop_reason.clear();
                 return self.act(Request::CancelStop);
             }
-            Message::ThemeMode(mode) => self.theme = style::theme(mode),
+            Message::ThemeMode(mode) => {
+                self.system_mode = mode;
+                self.refresh_theme();
+            }
             Message::ParkInput(text) => self.park_input = text,
             Message::Park => {
                 let text = self.park_input.clone();
@@ -580,6 +590,7 @@ impl App {
             settings::Msg::StartAtLogin(on) => draft.edited.start_at_login = on,
             settings::Msg::Friction(edit) => friction::apply(&mut draft.edited.friction, edit),
             settings::Msg::ParkingHotkey(hotkey) => draft.edited.parking_hotkey = hotkey,
+            settings::Msg::Theme(theme) => draft.edited.theme = theme,
             settings::Msg::Save => {
                 let settings = draft.to_save();
                 draft.sent = Some(settings.clone());
@@ -725,6 +736,17 @@ impl App {
     /// Focus's colours (kept, since building a theme derives a whole palette).
     fn theme(&self) -> iced::Theme {
         self.theme.clone()
+    }
+
+    /// Rebuilds the theme if the setting or the system's mode now asks for another one. Follows
+    /// the system until the daemon has said what the setting is.
+    fn refresh_theme(&mut self) {
+        let chosen = self.status.as_ref().map(|status| status.theme);
+        let mode = style::mode_for(chosen.unwrap_or_default(), self.system_mode);
+        if mode != self.theme_mode {
+            self.theme_mode = mode;
+            self.theme = style::theme(mode);
+        }
     }
 
     fn view(&self) -> Element<'_, Message> {

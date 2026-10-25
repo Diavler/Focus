@@ -135,6 +135,7 @@ fn same_content<'a>(
         auto_start: _,
         friction,
         parking_hotkey,
+        theme,
         revision: _,
     } = settings;
     *start_at_login == other.start_at_login
@@ -142,6 +143,7 @@ fn same_content<'a>(
         && *configs == other.configs
         && *friction == other.friction
         && *parking_hotkey == other.parking_hotkey
+        && *theme == other.theme
         && auto_start.into_iter().eq(&other.auto_start)
 }
 
@@ -154,6 +156,7 @@ pub enum Msg {
     StartAtLogin(bool),
     Friction(crate::friction::Edit),
     ParkingHotkey(focus_core::Hotkey),
+    Theme(focus_core::Theme),
     Save,
     Discard,
     Reload,
@@ -337,8 +340,29 @@ impl App {
             ]
             .spacing(12),
         );
+        let theme = card(
+            column![
+                row![
+                    heading("Theme"),
+                    info(
+                        "System follows Windows' light or dark mode as it changes; Light and \
+                         Dark keep one look whatever the system says. Applies once saved."
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                style::segmented(
+                    &focus_core::Theme::ALL,
+                    draft.edited.theme,
+                    |theme| theme.to_string(),
+                    |theme| Message::Settings(Msg::Theme(theme)),
+                ),
+            ]
+            .spacing(12),
+        );
         column![
             start_at_login,
+            theme,
             shortcut,
             friction,
             self.kill_switch_card(status)
@@ -452,6 +476,7 @@ mod tests {
             auto_start: Vec::new(),
             friction: focus_core::Friction::default(),
             parking_hotkey: focus_core::Hotkey::default(),
+            theme: focus_core::Theme::default(),
             revision: revision.into(),
         }
     }

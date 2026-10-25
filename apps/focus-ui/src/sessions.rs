@@ -595,6 +595,7 @@ mod tests {
             parking_lot: ipc_proto::ParkingStatus::default(),
             notifications: None,
             parking_hotkey: focus_core::Hotkey::default(),
+            theme: focus_core::Theme::default(),
         }
     }
 

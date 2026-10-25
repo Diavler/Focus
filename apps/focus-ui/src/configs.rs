@@ -573,6 +573,7 @@ mod tests {
             auto_start: Vec::new(),
             friction: focus_core::Friction::default(),
             parking_hotkey: focus_core::Hotkey::default(),
+            theme: focus_core::Theme::default(),
             revision: "1".into(),
         }
     }
