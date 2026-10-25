@@ -81,6 +81,9 @@ impl App {
                     .placeholder("Park a thought for later…")
                     .on_action(Message::ParkInput)
                     .max_height(MAX_HEIGHT)
+                    // Long words and links break too, so the box grows instead of running off the
+                    // side.
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .style(style::editor)
                     .key_binding({
                         let park = park.clone();
