@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the settings have problems:\n\
-             - configs.writing: an allowlist needs at least one `allow` entry, or every site is blocked"
+             - profile \"writing\": an allowlist needs at least one Allow site, or every site is blocked"
         );
     }
 

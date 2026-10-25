@@ -165,7 +165,7 @@ impl FakeSettingsFile {
                     .iter()
                     .any(|config| config.name == rule.config)
             })
-            .map(|rule| format!("no configuration named \"{}\"", rule.config))
+            .map(|rule| format!("no profile named \"{}\"", rule.config))
     }
 }
 

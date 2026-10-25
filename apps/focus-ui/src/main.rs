@@ -394,7 +394,15 @@ impl App {
                 .map(Message::NativeWindow),
         ];
         if minimized {
-            boot.push(iced::window::oldest().and_then(|id| iced::window::minimize(id, true)));
+            // Started at login (or by the daemon): out of the way, in the tray if there is one.
+            let hide = app.tray.is_some();
+            boot.push(iced::window::oldest().and_then(move |id| {
+                if hide {
+                    iced::window::set_mode(id, iced::window::Mode::Hidden)
+                } else {
+                    iced::window::minimize(id, true)
+                }
+            }));
         }
         (app, Task::batch(boot))
     }
