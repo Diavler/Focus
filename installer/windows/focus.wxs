@@ -1,0 +1,63 @@
+<!--
+  Per-user MSI for Focus (WiX v5, ADR 0017). Built by scripts/package-windows.ps1 with
+  -d Version=<x.y.z> -d Stage=<folder holding the exes and licence files>.
+
+  Installs to %LOCALAPPDATA%\Programs\Focus without admin rights, so data\ beside the exes
+  stays writable (ADR 0004). Windows Installer never removes data\, since it didn't install it.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Focus" Manufacturer="Focus" Version="$(Version)" Language="1033"
+           UpgradeCode="4980A370-19D7-49B3-8E6D-28B941327C10" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Focus is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="FocusIcon" SourceFile="$(Stage)\focus-ui.exe" />
+    <Property Id="ARPPRODUCTICON" Value="FocusIcon" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Focus" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Per-user components need an HKCU key path (ICE38); it is removed on uninstall. -->
+    <Component Id="AppFiles" Directory="INSTALLFOLDER" Guid="1FA63D64-8931-40F4-8212-150F2127130A">
+      <RegistryValue Root="HKCU" Key="Software\Focus\Installer" Name="Files" Type="integer"
+                     Value="1" KeyPath="yes" />
+      <File Id="DaemonExe" Source="$(Stage)\focus-daemon.exe" />
+      <File Id="UiExe" Source="$(Stage)\focus-ui.exe" />
+      <File Id="NmhExe" Source="$(Stage)\focus-nmh.exe" />
+      <File Source="$(Stage)\LICENSE-MIT" />
+      <File Source="$(Stage)\LICENSE-APACHE" />
+      <File Source="$(Stage)\OFL.txt" />
+      <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      <RemoveRegistryKey Root="HKCU" Key="Software\Focus" Action="removeOnUninstall" />
+    </Component>
+
+    <Component Id="StartMenu" Directory="ProgramMenuFolder" Guid="91D3EA32-A0C9-4420-BF9D-9B271B49EBCD">
+      <Shortcut Id="FocusShortcut" Name="Focus" Target="[#UiExe]" WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\Focus\Installer" Name="StartMenu" Type="integer"
+                     Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- The browser extension's IDs are fixed, so the host registers itself with no input. -->
+    <CustomAction Id="RegisterHost" FileRef="NmhExe" ExeCommand="--register"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="UnregisterHost" FileRef="NmhExe" ExeCommand="--unregister"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <!-- The daemon adds this value when "Start at login" is on; it would point at a removed exe. -->
+    <CustomAction Id="RemoveAutostart" Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]reg.exe&quot; delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Focus /f"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RegisterHost" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="UnregisterHost" Before="RemoveFiles"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RemoveAutostart" Before="RemoveFiles"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

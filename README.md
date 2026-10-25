@@ -2,9 +2,18 @@
 
 An offline-first focus app for Windows and KDE Plasma (Wayland), written in Rust with a native [Iced](https://iced.rs) UI. It blocks distracting sites and apps during focus sessions, which you start by hand or from Google Calendar and Todoist, and it makes every bypass slow and deliberate. It needs no admin rights, no account and no server.
 
-**Status:** prototype complete on Windows (build step 6; KDE Plasma parity is step 9). The daemon runs sessions, starts at login, and restarts the UI during sessions; the UI restarts the daemon if it's killed. The browser extension blocks sites and hides feeds, and on Windows the daemon closes blocked apps and browsers without the extension. Add `--dry-run` to the daemon to see what it would do without doing it.
+**Status:** MVP on Windows, first release in progress (build step 10; KDE Plasma parity is step 9). The daemon runs sessions, starts at login, and restarts the UI during sessions; the UI restarts the daemon if it's killed. The browser extension blocks sites and hides feeds, and on Windows the daemon closes blocked apps and browsers without the extension. Add `--dry-run` to the daemon to see what it would do without doing it.
 
-Try it:
+## Install (Windows)
+
+From a [release](https://github.com/Diavler/FocusApp/releases), take either:
+
+- **MSI** (`Focus-<version>-windows-x64.msi`): installs for your user only, into `%LOCALAPPDATA%\Programs\Focus`, with no admin prompt. It adds a Start menu entry and registers the browser extension's native messaging host. Uninstall from Settings → Apps.
+- **Zip** (`Focus-<version>-windows-x64.zip`): unzip anywhere you can write to, run `focus-nmh.exe --register` once, then open `focus-ui.exe`. To remove it, run `focus-nmh.exe --unregister`, turn off "Start at login" and delete the folder.
+
+Either way, Focus keeps its settings and state in `data\` beside the exes, and uninstalling leaves that folder in place. Close Focus from the tray (**Close Focus…**) before you upgrade or uninstall. The browser extension is a separate download; see [extension/README.md](extension/README.md).
+
+## Build from source
 
 ```sh
 cargo run -p focus-daemon   # first run writes starter settings to target/debug/data/
@@ -53,6 +62,10 @@ cargo deny check
 bash scripts/check-core-deps.sh   # focus-core stays free of I/O and workspace deps
 cd extension && npm test && npm run build
 ```
+
+### Making a release
+
+`scripts/package-windows.ps1` builds the Windows zip and MSI into `target/release-artifacts/` (`-SkipMsi` if you don't have the WiX v5 tool: `dotnet tool install --global wix --version 5.0.2`). To publish, bump `version` in `[workspace.package]` of `Cargo.toml`, merge, then push a matching tag (`git tag v0.1.0 && git push origin v0.1.0`). `.github/workflows/release.yml` builds both files and attaches them to a **draft** GitHub release, which you check and publish by hand. See ADR 0017.
 
 ## License
 

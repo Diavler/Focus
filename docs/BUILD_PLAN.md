@@ -110,5 +110,5 @@ Bring KDE Plasma on Wayland up to the Windows feature set:
 **Done when:** the manual checklists of steps 3–8 pass on a KDE Plasma Wayland VM.
 
 ### 10. Release
-`cargo-dist`: portable zip and MSI for Windows; changelog; `v0.1.0` tag. Linux packages (`.deb`/`.rpm` or portable only; see ADR 0004) come with step 9.
+Windows portable zip and MSI; changelog; `v0.1.0` tag. Split (2026-10-25, ADR 0017): **10a** release workflow, zip and per-user WiX MSI, README install and release steps (cargo-dist dropped: one archive per package); **10b** extension packaging (Chromium zip to load unpacked, Firefox `.xpi` signed as unlisted on AMO); **10c** changelog, `v0.1.0` tag and the fresh-VM check. Linux packages (`.deb`/`.rpm` or portable only; see ADR 0004) come with step 9.
 **Done when:** a fresh Windows VM can install from the release and run a session without admin rights.
