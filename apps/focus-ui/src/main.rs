@@ -470,7 +470,15 @@ impl App {
                 });
             }
             Message::Tray(tray::TrayAction::Show) => return show_window(),
-            Message::Tray(tray::TrayAction::Quit) => return iced::exit(),
+            Message::Tray(tray::TrayAction::StopFocus) => {
+                // The full window, with Settings open; its Emergency exit sits at the bottom.
+                let expand = self.expand();
+                return Task::batch([
+                    expand,
+                    show_window(),
+                    self.update(Message::OpenPanel(Panel::Settings)),
+                ]);
+            }
             Message::OpenPanel(panel) => {
                 self.panel = Some(panel);
                 return self.open_settings();
