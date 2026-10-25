@@ -28,6 +28,8 @@ npm run build   # bundles into dist/chromium/ and dist/firefox/
 
 ## Try it in Chrome or Edge
 
+With the Windows MSI installed, the host is already registered; skip step 1 and `cargo build`, and just load the extension (step 3).
+
 1. Build the Rust side and register the host for your user: `cargo build`, then `target/debug/focus-nmh --register` (add `--dry-run` to see what it would change first).
 2. Start the daemon: `cargo run -p focus-daemon`.
 3. Open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick `extension/dist/chromium`.
@@ -39,6 +41,6 @@ To undo the registration: `target/debug/focus-nmh --unregister`.
 
 1. Register the host as above; `--register` covers Firefox too (a second manifest, and `HKCU\Software\Mozilla\NativeMessagingHosts` on Windows or `~/.mozilla/native-messaging-hosts` on Linux).
 2. Start the daemon.
-3. Open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `extension/dist/firefox/manifest.json`. A temporary add-on is gone after Firefox restarts; a lasting install needs Mozilla's signing (release step).
+3. Open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `extension/dist/firefox/manifest.json`. A temporary add-on is gone after Firefox restarts; a lasting install needs the signed `.xpi` from step 10b.
 4. In `about:addons` → Focus, allow **Run in Private Windows**, or Focus closes Firefox during sessions.
 5. Start a session and visit a blocked site.
