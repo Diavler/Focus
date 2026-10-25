@@ -8,15 +8,14 @@ use focus_core::{
     BlockConfig, BrowserPolicy, EndEarlyPolicy, EndReason, EndedSession, OverridePolicy,
     RunningSession, Strictness, Timestamp, ports::Silencing,
 };
-use iced::widget::{Column, button, column, pick_list, row, slider, space, text, text_input};
+use iced::widget::{button, column, container, pick_list, row, slider, space, text, text_input};
 use iced::{Alignment, Element, Length};
 use ipc_proto::StatusReport;
 
 use crate::agenda::clock;
-use crate::dial::dial;
 use crate::help::info;
 use crate::plan_pages::Line;
-use crate::style::{self, Tone, bold, caption, card, dot, heading, hero, pill, title, toned};
+use crate::style::{self, Tone, bold, caption, card, heading, hero, title, toned};
 use crate::{App, MINUTES, Message};
 
 impl App {
@@ -41,21 +40,25 @@ impl App {
                 .size(14),
             ));
         }
-        match status.session.running() {
-            Some(running) => page = page.push(self.running_card(running, status)),
-            None => {
-                page = page.push(self.idle_card(status));
-                page = page.push(self.next_start_card(status));
-                page = page.push(self.new_session_card());
-            }
-        }
-        page = page.push(self.parking_card(status));
+        // The session on the left, the parking lot beside it, as on the panel's face.
+        let main: Element<'a, Message> = match status.session.running() {
+            Some(running) => self.running_card(running, status),
+            None => self.new_session_card(status),
+        };
+        let mut side = column![self.parking_card(status)].spacing(18);
         if let Some(pending) = pending_summary(status) {
-            page = page.push(card(
+            side = side.push(card(
                 column![heading("Cooling off"), caption(pending)].spacing(8),
             ));
         }
-        page.push(protection_card(status)).into()
+        page.push(
+            row![
+                container(main).width(Length::FillPortion(3)),
+                side.width(Length::FillPortion(2)),
+            ]
+            .spacing(18),
+        )
+        .into()
     }
 
     fn running_card<'a>(
@@ -65,50 +68,46 @@ impl App {
     ) -> Element<'a, Message> {
         let spec = running.spec();
         let left = running.time_left(status.now);
-        let share_left = share(
-            left,
-            running
-                .ends_at()
-                .saturating_duration_since(running.started_at()),
-        );
-        let time = column![
-            style::lcd(format_duration(left)).size(34),
-            style::lcd("TIME LEFT").size(10),
-        ]
-        .spacing(2)
-        .align_x(Alignment::Center);
-        let progress = column![
-            row![
-                style::label("Progress"),
-                space::horizontal(),
-                style::label(&format!("{:.0}%", (1.0 - share_left) * 100.0)),
-            ],
-            style::meter(1.0 - share_left),
-        ]
-        .spacing(6);
+        let total = running
+            .ends_at()
+            .saturating_duration_since(running.started_at());
+        // Big digits over a bar of what's left, both behind the readout's glass.
+        let time = style::readout(
+            column![
+                row![
+                    style::lcd(format_duration(left)).size(54),
+                    space::horizontal(),
+                    style::label(&format!("of {}", format_duration(total))),
+                ]
+                .align_y(Alignment::Center),
+                style::meter(share(left, total)),
+            ]
+            .spacing(12),
+        )
+        .padding([18, 20])
+        .width(Length::Fill);
         hero(
             column![
                 row![
-                    pill("In session", Tone::Good),
-                    bold(format!("{} · {}", spec.config.name, spec.strictness)).size(16),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-                row![
-                    dial(share_left, time, 200.0),
                     column![
-                        caption(format!("Ends at {}.", clock(running.ends_at(), &Local))),
-                        caption(unlock_line(running, status)),
-                        self.do_not_disturb(status),
+                        style::label("Running"),
+                        bold(spec.config.name.as_str()).size(24)
                     ]
-                    .spacing(10),
+                    .spacing(2),
+                    space::horizontal(),
+                    style::tag(&spec.strictness.to_string()),
                 ]
-                .spacing(24)
                 .align_y(Alignment::Center),
-                progress,
+                time,
+                caption(format!(
+                    "Ends at {}. {}",
+                    clock(running.ends_at(), &Local),
+                    unlock_line(running, status)
+                )),
+                self.do_not_disturb(status),
                 self.end_controls(running, status),
             ]
-            .spacing(14),
+            .spacing(16),
         )
         .into()
     }
@@ -133,62 +132,38 @@ impl App {
         .into()
     }
 
-    fn idle_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
-        let mut body = column![heading("No session running")].spacing(8);
-        body = body.push(match status.session.ended() {
-            Some(ended) => caption(last_session_summary(ended)),
-            None => caption("Start one below, or let your calendar and Todoist start them."),
-        });
-        card(body).into()
-    }
-
-    /// The next session the plan will start.
-    fn next_start_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
-        let next = self.plan.as_ref().and_then(|plan| plan.upcoming.first());
-        let body: Element<'a, Message> = match next {
-            Some(start) => column![
-                bold(format!(
-                    "{} · {}",
-                    when_label(start.starts_at, status.now),
-                    start.title
-                ))
-                .size(15),
-                caption(format!(
-                    "Starts {} ({}) for {}.",
-                    start.config,
-                    start.strictness,
-                    format_duration(start.duration_from(start.starts_at.max(status.now)))
-                )),
-            ]
-            .spacing(4)
-            .into(),
-            None => caption(
-                "Nothing planned. Add automatic starts in Settings to start sessions from your \
-                 calendar or Todoist.",
-            )
-            .into(),
-        };
-        card(
+    /// The next session the plan will start, as a readout for the sidebar; `None` when nothing
+    /// is planned.
+    pub(crate) fn next_start_readout<'a>(
+        &'a self,
+        status: &'a StatusReport,
+    ) -> Option<Element<'a, Message>> {
+        let start = self.plan.as_ref()?.upcoming.first()?;
+        Some(
             column![
-                row![
-                    heading("Next automatic start"),
-                    info(
-                        "Sessions your calendar or Todoist will start by themselves, from the \
-                         rules under Settings → Automatic starts."
-                    ),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                body,
+                style::label("Next automatic start"),
+                style::readout(
+                    column![
+                        row![
+                            style::mono(when_label(start.starts_at, status.now)).size(13),
+                            space::horizontal(),
+                            style::mono(start.strictness.to_string().to_uppercase()).size(13),
+                        ]
+                        .spacing(6),
+                        style::mono(start.title.as_str()).size(12),
+                    ]
+                    .spacing(4),
+                )
+                .width(Length::Fill),
             ]
-            .spacing(10),
+            .spacing(6)
+            .into(),
         )
-        .into()
     }
 
-    fn new_session_card(&self) -> Element<'_, Message> {
-        let config = row![
-            style::label("Configuration").width(Length::Fixed(120.0)),
+    /// Starting a session by hand, under how the last one went (if there was one).
+    fn new_session_card<'a>(&'a self, status: &'a StatusReport) -> Element<'a, Message> {
+        let mut config = row![
             pick_list(
                 self.config_names.as_slice(),
                 self.selected.as_ref(),
@@ -203,51 +178,66 @@ impl App {
                  Configurations."
             ),
         ]
-        .spacing(12)
+        .spacing(10)
         .align_y(Alignment::Center);
-        let strictness = column![
-            row![
-                style::label("Strictness"),
-                info(
-                    "How hard the session is to get out of. Pick Deep or Locked when you \
-                     know you'll be tempted: the extra friction is the point."
-                ),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+        if let Some(summary) = self.selected_config().map(config_summary) {
+            config = config.push(caption(summary));
+        }
+        // The length on the readout's glass, set with the fader under it.
+        let duration = column![
+            style::readout(
+                row![
+                    style::lcd(format_duration(Duration::from_secs(
+                        u64::from(self.minutes) * 60
+                    )))
+                    .size(54),
+                    space::horizontal(),
+                    style::label("Duration"),
+                    info("How long the session runs. It ends by itself when the time is up."),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding([18, 20])
+            .width(Length::Fill),
+            slider(MINUTES, self.minutes, Message::MinutesChanged).style(style::fader),
+        ]
+        .spacing(10);
+        let can_start = self.selected.is_some() && !self.action_pending;
+        let controls = row![
             style::segmented(
                 &Strictness::ALL,
                 self.strictness,
                 |level| level.to_string(),
                 Message::StrictnessPicked,
             ),
-            caption(format!(
-                "{}: {}.",
-                self.strictness,
-                describe(self.strictness)
-            )),
+            info(
+                "How hard the session is to get out of. Pick Deep or Locked when you know \
+                 you'll be tempted: the extra friction is the point."
+            ),
+            space::horizontal(),
+            button(text("Start session").size(15))
+                .padding([10, 20])
+                .style(style::key_accent)
+                .on_press_maybe(can_start.then_some(Message::Start)),
         ]
-        .spacing(8);
-        let duration = column![
-            row![
-                style::label(&format!("Duration · {} min", self.minutes)),
-                info("How long the session runs. It ends by itself when the time is up."),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-            slider(MINUTES, self.minutes, Message::MinutesChanged).style(style::fader),
-        ]
-        .spacing(8);
-        let can_start = self.selected.is_some() && !self.action_pending;
-        let start = button(text("Start session").size(15))
-            .padding([10, 20])
-            .style(style::key_accent)
-            .on_press_maybe(can_start.then_some(Message::Start));
-        let mut body = column![heading("Start a session"), config].spacing(16);
-        if let Some(summary) = self.selected_config().map(config_summary) {
-            body = body.push(caption(summary));
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let mut body = column![heading("Start a session")].spacing(16);
+        if let Some(ended) = status.session.ended() {
+            body = body.push(caption(last_session_summary(ended)));
         }
-        card(body.push(strictness).push(duration).push(start)).into()
+        card(
+            body.push(config)
+                .push(duration)
+                .push(controls)
+                .push(caption(format!(
+                    "{}: {}.",
+                    self.strictness,
+                    describe(self.strictness)
+                ))),
+        )
+        .into()
     }
 
     /// End-early controls, which depend on the session's strictness.
@@ -318,33 +308,6 @@ impl App {
     }
 }
 
-/// Browser protection and start-at-login.
-fn protection_card(status: &StatusReport) -> Element<'_, Message> {
-    let mut lines: Column<'_, Message> = column![
-        row![
-            heading("Protection"),
-            info(
-                "During a session, browsers without the Focus extension (or whose extension \
-                 can't run in private windows) are closed, and so are the configuration's apps."
-            ),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-    ]
-    .spacing(8);
-    for line in browser_lines(status)
-        .into_iter()
-        .chain([login_line(status)])
-    {
-        lines = lines.push(
-            row![dot(line.tone), toned(line.text, line.tone).size(14)]
-                .spacing(8)
-                .align_y(Alignment::Center),
-        );
-    }
-    card(lines).into()
-}
-
 /// `14:00` today, or `Sun 25 · 14:00`; `Now` if it has started.
 fn when_label(at: Timestamp, now: Timestamp) -> String {
     if at <= now {
@@ -363,44 +326,35 @@ fn when_label(at: Timestamp, now: Timestamp) -> String {
     }
 }
 
-/// Which browsers are protected, and what to fix for the others.
+/// One short line per browser whose extension is checking in, or one saying none is. A browser
+/// whose extension can't run in private windows still counts, with a warning light: it's closed
+/// during sessions until that's allowed.
 pub(crate) fn browser_lines(status: &StatusReport) -> Vec<Line> {
-    if status.browsers.is_empty() {
-        return vec![Line {
-            text: "No browser extension is connected, so browsers are closed during sessions."
-                .to_owned(),
-            tone: Tone::Bad,
-        }];
-    }
-    status
+    let lines: Vec<Line> = status
         .browsers
         .iter()
-        .map(|browser| {
-            let name = browser_name(&browser.browser);
-            // The same limit the daemon enforces.
-            let stale = status.now.saturating_duration_since(browser.last_seen)
-                > BrowserPolicy::default().heartbeat_timeout;
-            if stale {
-                Line {
-                    text: format!("{name}: the extension stopped checking in."),
-                    tone: Tone::Bad,
-                }
-            } else if !browser.incognito_allowed {
-                Line {
-                    text: format!(
-                        "{name}: turn on \"Allow in Incognito\" for Focus (Extensions → Focus → \
-                         Details), or {name} is closed during sessions."
-                    ),
-                    tone: Tone::Bad,
-                }
-            } else {
-                Line {
-                    text: format!("{name}: protected."),
-                    tone: Tone::Good,
-                }
-            }
+        // The same limit the daemon enforces.
+        .filter(|browser| {
+            status.now.saturating_duration_since(browser.last_seen)
+                <= BrowserPolicy::default().heartbeat_timeout
         })
-        .collect()
+        .map(|browser| Line {
+            text: format!("{} connected", browser_name(&browser.browser)),
+            tone: if browser.incognito_allowed {
+                Tone::Good
+            } else {
+                Tone::Warn
+            },
+        })
+        .collect();
+    if lines.is_empty() {
+        vec![Line {
+            text: "No browser connected".to_owned(),
+            tone: Tone::Bad,
+        }]
+    } else {
+        lines
+    }
 }
 
 /// A browser's heartbeat name as people write it.
@@ -608,12 +562,14 @@ mod tests {
     }
 
     #[test]
-    fn warns_about_unprotected_browsers() {
+    fn names_the_connected_browsers() {
         let mut status = status_at(100_000);
         assert_eq!(
-            browser_lines(&status)[0].tone,
-            Tone::Bad,
-            "no extension at all"
+            browser_lines(&status),
+            vec![Line {
+                text: "No browser connected".into(),
+                tone: Tone::Bad
+            }]
         );
 
         status.browsers = vec![
@@ -621,16 +577,23 @@ mod tests {
             beat("edge", 99_000, false),
             beat("brave", 1_000, true),
         ];
-        let lines = browser_lines(&status);
         assert_eq!(
-            lines[0],
-            Line {
-                text: "Chrome: protected.".into(),
-                tone: Tone::Good
-            }
+            browser_lines(&status),
+            vec![
+                Line {
+                    text: "Chrome connected".into(),
+                    tone: Tone::Good
+                },
+                Line {
+                    text: "Edge connected".into(),
+                    tone: Tone::Warn
+                },
+            ],
+            "Brave stopped checking in"
         );
-        assert!(lines[1].tone == Tone::Bad && lines[1].text.contains("Allow in Incognito"));
-        assert!(lines[2].tone == Tone::Bad && lines[2].text.contains("stopped checking in"));
+
+        status.browsers = vec![beat("brave", 1_000, true)];
+        assert_eq!(browser_lines(&status)[0].text, "No browser connected");
     }
 
     #[test]

@@ -4,7 +4,9 @@
 use focus_core::ports::HotkeyError;
 use focus_core::{Hotkey, ParkedItem};
 use iced::futures::SinkExt;
-use iced::widget::{Column, button, column, row, space, text, text_input};
+use iced::keyboard::{Key, key::Named};
+use iced::widget::text_editor::{self, Binding};
+use iced::widget::{Column, button, column, row, space, text};
 use iced::{Alignment, Element, Subscription};
 use ipc_proto::{SourceState, StatusReport};
 
@@ -14,6 +16,9 @@ use crate::{App, Message};
 
 /// The id of the box the shortcut focuses.
 pub(crate) const INPUT: &str = "park-input";
+
+/// How tall the parking box grows before it scrolls instead.
+const MAX_HEIGHT: f32 = 200.0;
 
 /// The most items listed; older ones are counted instead.
 const SHOWN: usize = 8;
@@ -57,7 +62,7 @@ impl App {
             }
             hotkey => format!("Press {hotkey} from any app to park a thought here."),
         };
-        let park = (!self.park_input.trim().is_empty())
+        let park = (!self.park_input.text().trim().is_empty())
             .then_some(Message::Park)
             .and_then(|message| self.idle_then(message));
         let mut body: Column<'a, Message> = column![
@@ -72,16 +77,32 @@ impl App {
             .spacing(8)
             .align_y(Alignment::Center),
             caption(shortcut),
+            // Grows downward as the thought gets longer. Enter parks it; Shift+Enter breaks
+            // the line.
             row![
-                text_input("Park a thought for later…", &self.park_input)
+                iced::widget::text_editor(&self.park_input)
                     .id(INPUT)
-                    .style(style::field)
-                    .on_input(Message::ParkInput)
-                    .on_submit_maybe(park.clone()),
+                    .placeholder("Park a thought for later…")
+                    .on_action(Message::ParkInput)
+                    .max_height(MAX_HEIGHT)
+                    .style(style::editor)
+                    .key_binding({
+                        let park = park.clone();
+                        move |press| {
+                            let enter = press.key == Key::Named(Named::Enter)
+                                && !press.modifiers.shift()
+                                && matches!(press.status, text_editor::Status::Focused { .. });
+                            if enter {
+                                park.clone().map(Binding::Custom)
+                            } else {
+                                Binding::from_key_press(press)
+                            }
+                        }
+                    }),
                 button("Park").style(style::key_accent).on_press_maybe(park),
             ]
             .spacing(10)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Start),
         ]
         .spacing(12);
         if let Some(problem) = &self.hotkey_problem {

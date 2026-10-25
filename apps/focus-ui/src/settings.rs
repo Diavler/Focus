@@ -11,7 +11,7 @@ use crate::configs::{self, Target};
 use crate::help::info;
 use crate::rules;
 use crate::sessions::{format_duration, login_line, pending_summary};
-use crate::style::{self, Tone, caption, card, dot, heading, tab, title, toned};
+use crate::style::{self, Tone, caption, card, dot, heading, title, toned};
 use crate::{App, Message, Page};
 
 /// The tabs of the Settings page.
@@ -179,29 +179,20 @@ impl App {
         ]
         .spacing(12)
         .align_y(Alignment::Center);
-        let tabs = row![
-            tab(
-                "Automatic starts",
-                self.settings_tab == Tab::Rules,
-                Message::Settings(Msg::Tab(Tab::Rules))
-            ),
-            tab(
-                "Configurations",
-                self.settings_tab == Tab::Configs,
-                Message::Settings(Msg::Tab(Tab::Configs))
-            ),
-            tab(
-                "Lists",
-                self.settings_tab == Tab::Lists,
-                Message::Settings(Msg::Tab(Tab::Lists))
-            ),
-            tab(
-                "General",
-                self.settings_tab == Tab::General,
-                Message::Settings(Msg::Tab(Tab::General))
-            ),
-        ]
-        .spacing(8);
+        let tabs = style::segmented(
+            &[Tab::Rules, Tab::Configs, Tab::Lists, Tab::General],
+            self.settings_tab,
+            |tab| {
+                match tab {
+                    Tab::Rules => "Automatic starts",
+                    Tab::Configs => "Configurations",
+                    Tab::Lists => "Lists",
+                    Tab::General => "General",
+                }
+                .to_string()
+            },
+            |tab| Message::Settings(Msg::Tab(tab)),
+        );
         let mut page: Column<'a, Message> = column![header, tabs].spacing(18);
         if let Some(pending) = pending_summary(status) {
             page = page.push(card(

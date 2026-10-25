@@ -10,7 +10,6 @@
 mod agenda;
 mod configs;
 mod daemon;
-mod dial;
 mod friction;
 mod help;
 mod overview;
@@ -149,7 +148,7 @@ pub(crate) struct App {
     /// A parking-lot request is on its way.
     parked_pending: bool,
     /// A thought being typed into the parking lot.
-    park_input: String,
+    park_input: iced::widget::text_editor::Content,
     /// The window came up for the parking-lot shortcut, so it goes back down after parking.
     capturing: bool,
     /// Why the parking-lot shortcut couldn't be registered, if it couldn't.
@@ -223,7 +222,7 @@ pub(crate) enum Message {
     CancelStop,
     /// The system switched between light and dark mode (or said which at startup).
     ThemeMode(iced::theme::Mode),
-    ParkInput(String),
+    ParkInput(iced::widget::text_editor::Action),
     Park,
     Unpark(u64),
     ClearSentParked,
@@ -268,7 +267,7 @@ impl App {
             stop_reason: String::new(),
             parked: Vec::new(),
             parked_pending: false,
-            park_input: String::new(),
+            park_input: iced::widget::text_editor::Content::new(),
             capturing: false,
             hotkey_problem: None,
             hotkey_retry: false,
@@ -428,9 +427,9 @@ impl App {
                 self.system_mode = mode;
                 self.refresh_theme();
             }
-            Message::ParkInput(text) => self.park_input = text,
+            Message::ParkInput(action) => self.park_input.perform(action),
             Message::Park => {
-                let text = self.park_input.clone();
+                let text = self.park_input.text().trim_end().to_owned();
                 return self.act_saving(Saving::Park, Request::Park { text, url: None });
             }
             Message::Unpark(id) => return self.act(Request::Unpark { id }),
@@ -509,7 +508,7 @@ impl App {
             // A failed park leaves the window up, with the error, so the thought isn't lost.
             (Some(Saving::Park), Err(_)) => self.capturing = false,
             (Some(Saving::Park), Ok(())) => {
-                self.park_input.clear();
+                self.park_input = iced::widget::text_editor::Content::new();
                 let mut tasks = vec![self.fetch_parked(), self.fetch_status()];
                 if std::mem::take(&mut self.capturing) {
                     // Back to what the shortcut interrupted.
@@ -786,29 +785,33 @@ impl App {
 
     /// The app name, what's happening now, the pages, and the sources' sync status.
     fn sidebar(&self) -> Element<'_, Message> {
-        let now_line: Element<'_, Message> = match self
+        // What's happening, always on the readout: the session and its time left, or idle.
+        let (name, time) = match self
             .status
             .as_ref()
             .and_then(|status| Some((status, status.session.running()?)))
         {
-            Some((status, running)) => style::readout(
-                row![
-                    style::mono(running.spec().config.name.as_str()).size(13),
-                    space::horizontal(),
-                    style::mono(sessions::format_duration(running.time_left(status.now))).size(13),
-                ]
-                .spacing(6),
-            )
-            .width(Length::Fill)
-            .into(),
-            None => caption("Not in a session").into(),
+            Some((status, running)) => (
+                running.spec().config.name.to_uppercase(),
+                sessions::format_duration(running.time_left(status.now)),
+            ),
+            None => ("IDLE".to_string(), "--:--".to_string()),
         };
+        let now_line = style::readout(
+            row![
+                style::mono(name).size(13),
+                space::horizontal(),
+                style::mono(time).size(13),
+            ]
+            .spacing(6),
+        )
+        .width(Length::Fill);
         let on_sessions = matches!(self.page, Page::Sessions | Page::Settings);
         let mut sources = column![].spacing(6);
         if let Some(status) = &self.status {
             for (name, source) in [
-                ("Calendar", &status.plan.calendar),
-                ("Todoist", &status.plan.tasks),
+                ("Cal ", &status.plan.calendar),
+                ("Todo", &status.plan.tasks),
             ] {
                 let (label, tone) = match &source.state {
                     SourceState::Ok => ("synced", Tone::Good),
@@ -818,16 +821,32 @@ impl App {
                     SourceState::Unknown => ("checking", Tone::Quiet),
                 };
                 sources = sources.push(
-                    row![dot(tone), caption(format!("{name}: {label}"))]
+                    row![dot(tone), style::label(&format!("{name} {label}"))]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                );
+            }
+            // Which browsers the extension protects (a browser without it is closed in sessions).
+            for line in sessions::browser_lines(status) {
+                sources = sources.push(
+                    row![dot(line.tone), style::label(&line.text)]
                         .spacing(6)
                         .align_y(Alignment::Center),
                 );
             }
         }
+        let mut readouts = column![now_line].spacing(12);
+        if let Some(next) = self
+            .status
+            .as_ref()
+            .and_then(|status| self.next_start_readout(status))
+        {
+            readouts = readouts.push(next);
+        }
         style::sidebar(
             column![
                 style::brand(),
-                now_line,
+                readouts,
                 space::vertical().height(Length::Fixed(12.0)),
                 nav(
                     "Overview",
