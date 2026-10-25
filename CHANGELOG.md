@@ -2,12 +2,6 @@
 
 All notable changes to Focus. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-
-- Focus no longer fails to start with "VCRUNTIME140.dll was not found" on PCs without the Visual C++ Redistributable.
-
 ## [0.1.0] - 2026-10-25
 
 First release, Windows only (KDE Plasma comes later). Everything runs as your user: no admin rights, no account, no network needed.
