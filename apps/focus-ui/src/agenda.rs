@@ -4,13 +4,13 @@
 use std::fmt::Display;
 
 use chrono::{DateTime, Days, NaiveDate, NaiveTime, TimeZone};
-use focus_core::{CalendarEvent, PlanSource, PlannedStart, Task, Timestamp};
+use focus_core::{CalendarEvent, PlanSource, PlannedStart, Task, TaskPriority, Timestamp};
 use iced::widget::{Column, Text, column, container, row, text};
 use iced::{Alignment, Element, Length};
 use ipc_proto::PlanView;
 
 use crate::Message;
-use crate::style::{Tone, bold, caption, entry, pill, toned};
+use crate::style::{Tone, bold, caption, entry, pill, priority_flag, toned};
 
 /// A titled group of rows: one day of events, or tasks due at a similar time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +38,10 @@ pub struct Row {
     pub past: bool,
     /// Needs attention (an overdue task).
     pub warning: bool,
+    /// A task's priority, if it's flagged (P1 to P3).
+    pub priority: Option<TaskPriority>,
+    /// A task's project, if known.
+    pub project: Option<String>,
 }
 
 /// Events for `days` days from the day `view.now` falls on in `zone`, one group per day.
@@ -112,6 +116,8 @@ where
                 starts: planned.map(starts),
                 past: event.end <= now,
                 warning: false,
+                priority: None,
+                project: None,
             };
             (event, row)
         })
@@ -165,8 +171,15 @@ where
             .iter()
             .filter_map(|task| Some((due_day(task, zone)?, task)))
             .collect();
+        // Within a day, the most urgent first, then by time.
         due.sort_by_key(|(day, task)| {
-            (*day, task.due_at.is_none(), task.due_at, task.title.clone())
+            (
+                *day,
+                task.priority,
+                task.due_at.is_none(),
+                task.due_at,
+                task.title.clone(),
+            )
         });
         Self {
             view,
@@ -237,6 +250,8 @@ where
         starts: planned.map(starts),
         past: false,
         warning: day < today,
+        priority: (task.priority != TaskPriority::P4).then_some(task.priority),
+        project: task.project.clone(),
     }
 }
 
@@ -284,7 +299,8 @@ pub fn rows_view(rows: Vec<Row>) -> Column<'static, Message> {
     boxes(rows, |item| {
         let when = container(toned(item.when.clone(), item.when_tone()).size(14))
             .width(Length::Fixed(110.0));
-        let mut detail = column![item_title(item.title, item.past)].spacing(2);
+        let title = title_line(item.title, item.past, item.priority, item.project);
+        let mut detail = column![title].spacing(2);
         if let Some(note) = item.note {
             detail = detail.push(caption(note));
         }
@@ -306,7 +322,8 @@ pub fn compact_rows_view(rows: Vec<Row>) -> Column<'static, Message> {
         if let Some(note) = item.note {
             details = details.push(caption(note));
         }
-        let mut body = column![item_title(item.title, item.past), details].spacing(4);
+        let title = title_line(item.title, item.past, item.priority, item.project);
+        let mut body = column![title, details].spacing(4);
         if let Some(starts) = item.starts {
             body = body.push(pill(starts, Tone::Good));
         }
@@ -341,6 +358,24 @@ impl Row {
     pub fn when_tone(&self) -> Tone {
         if self.warning { Tone::Bad } else { Tone::Quiet }
     }
+}
+
+/// A row's title with a task's priority flag before it and its project after it.
+fn title_line(
+    title: String,
+    past: bool,
+    priority: Option<TaskPriority>,
+    project: Option<String>,
+) -> Element<'static, Message> {
+    let mut line = row![].spacing(8).align_y(Alignment::Center);
+    if let Some(priority) = priority {
+        line = line.push(priority_flag(priority));
+    }
+    line = line.push(item_title(title, past));
+    if let Some(project) = project {
+        line = line.push(pill(project, Tone::Quiet));
+    }
+    line.into()
 }
 
 /// A row's title: bold, or grey once it's over.
@@ -389,6 +424,8 @@ mod tests {
             due_date: Some(day.into()),
             due_at,
             duration: None,
+            priority: focus_core::TaskPriority::default(),
+            project: None,
         }
     }
 
@@ -492,5 +529,23 @@ mod tests {
         let report = &groups[1].rows[0];
         assert_eq!(report.note.as_deref(), Some("@deep"));
         assert_eq!(report.starts.as_deref(), Some("Starts coding (Deep)"));
+        assert_eq!(report.priority, None, "P4 isn't flagged");
+    }
+
+    #[test]
+    fn urgent_tasks_come_first_in_their_day_with_their_project() {
+        let mut plan = view();
+        let milk = plan
+            .tasks
+            .iter_mut()
+            .find(|task| task.title == "Buy milk")
+            .unwrap();
+        milk.priority = TaskPriority::P1;
+        milk.project = Some("Home".into());
+        let today = &task_groups(&plan, &zone())[1];
+        let titles: Vec<&str> = today.rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(titles, ["Buy milk", "Write the report"]);
+        assert_eq!(today.rows[0].priority, Some(TaskPriority::P1));
+        assert_eq!(today.rows[0].project.as_deref(), Some("Home"));
     }
 }

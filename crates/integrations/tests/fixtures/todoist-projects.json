@@ -1,0 +1,27 @@
+{
+  "results": [
+    {
+      "id": "6Jf8VQXxpwv56VQ7",
+      "name": "Uni",
+      "color": "berry_red",
+      "parent_id": null,
+      "child_order": 1,
+      "is_favorite": false,
+      "is_archived": false,
+      "inbox_project": false,
+      "view_style": "list"
+    },
+    {
+      "id": "6Jf8VQXxpwv56VQ8",
+      "name": "Inbox",
+      "color": "grey",
+      "parent_id": null,
+      "child_order": 0,
+      "is_favorite": false,
+      "is_archived": false,
+      "inbox_project": true,
+      "view_style": "list"
+    }
+  ],
+  "next_cursor": null
+}

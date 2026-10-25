@@ -1682,6 +1682,8 @@ mod tests {
             due_date: None,
             due_at: Some(harness.clock.now()),
             duration: Some(MINUTE * 25),
+            priority: focus_core::TaskPriority::default(),
+            project: None,
         }]));
         let mut service = harness.open();
         sync(&mut service);

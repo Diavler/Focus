@@ -1,12 +1,12 @@
 //! The `TaskSource` adapter for Todoist's API (v1), using a personal API token.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
-use focus_core::Task;
 use focus_core::ports::{SecretKey, Secrets, SourceError, TaskSource};
+use focus_core::{Task, TaskPriority};
 use rrule::Tz;
 use serde::Deserialize;
 
@@ -15,6 +15,9 @@ use crate::time::{local, to_timestamp};
 
 /// Todoist's task search, which takes the same filter queries as the app.
 const FILTER_URL: &str = "https://api.todoist.com/api/v1/tasks/filter";
+
+/// The user's projects, for the names tasks only refer to by ID.
+const PROJECTS_URL: &str = "https://api.todoist.com/api/v1/projects";
 
 /// Open tasks that could start a session soon. Tasks due later are fetched at a later sync.
 const QUERY: &str = "overdue | next 7 days";
@@ -62,6 +65,35 @@ impl<H: HttpGet> TodoistTasks<H> {
             reason: format!("couldn't read Todoist's answer: {error}"),
         })
     }
+
+    /// Project names by ID. Best effort: a failed lookup only means tasks show no project, so it
+    /// never fails the fetch.
+    fn project_names(&self, token: &str) -> HashMap<String, String> {
+        let mut names = HashMap::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let mut query = vec![("limit", PAGE_SIZE)];
+            if let Some(cursor) = cursor.as_deref() {
+                query.push(("cursor", cursor));
+            }
+            let page: Option<ProjectPage> = self
+                .http
+                .get(PROJECTS_URL, &query, Some(token))
+                .ok()
+                .and_then(|body| serde_json::from_str(&body).ok());
+            let Some(page) = page else { break };
+            names.extend(
+                page.results
+                    .into_iter()
+                    .map(|project| (project.id, project.name)),
+            );
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        names
+    }
 }
 
 /// What a failed Todoist request means for the user.
@@ -98,19 +130,28 @@ impl<H: HttpGet> TaskSource for TodoistTasks<H> {
     fn tasks(&self) -> Result<Vec<Task>, SourceError> {
         let token = todoist_token(self.secrets.as_ref())?;
         let token = token.as_str();
-        let mut tasks: Vec<Task> = Vec::new();
+        let mut raws: Vec<RawTask> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let page = self.page(token, cursor.as_deref())?;
             for raw in page.results {
                 if seen.insert(raw.id.clone()) {
-                    tasks.push(raw.into_task(self.zone));
+                    raws.push(raw);
                 }
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
-                return Ok(tasks);
+                // Only ask for project names if some task is in a project.
+                let names = if raws.iter().any(|raw| raw.project_id.is_some()) {
+                    self.project_names(token)
+                } else {
+                    HashMap::new()
+                };
+                return Ok(raws
+                    .into_iter()
+                    .map(|raw| raw.into_task(self.zone, &names))
+                    .collect());
             }
         }
         // A partial list would replace the cache as if it were complete, so refuse it.
@@ -135,6 +176,23 @@ struct RawTask {
     labels: Vec<String>,
     due: Option<RawDue>,
     duration: Option<RawDuration>,
+    /// 4 is the most urgent (shown as P1 in Todoist), 1 isn't flagged.
+    #[serde(default)]
+    priority: u8,
+    project_id: Option<String>,
+}
+
+/// One page of `projects`.
+#[derive(Debug, Deserialize)]
+struct ProjectPage {
+    results: Vec<RawProject>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawProject {
+    id: String,
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,8 +210,19 @@ struct RawDuration {
 }
 
 impl RawTask {
-    fn into_task(self, zone: Tz) -> Task {
+    fn into_task(self, zone: Tz, project_names: &HashMap<String, String>) -> Task {
         Task {
+            priority: match self.priority {
+                4 => TaskPriority::P1,
+                3 => TaskPriority::P2,
+                2 => TaskPriority::P3,
+                _ => TaskPriority::P4,
+            },
+            project: self
+                .project_id
+                .as_ref()
+                .and_then(|id| project_names.get(id))
+                .cloned(),
             due_date: self.due.as_ref().and_then(|due| due_day(&due.date, zone)),
             due_at: self.due.and_then(|due| due_time(&due.date, zone)),
             duration: self.duration.and_then(|duration| {
@@ -207,6 +276,7 @@ mod tests {
 
     const PAGE_1: &str = include_str!("../tests/fixtures/todoist-filter-page1.json");
     const PAGE_2: &str = include_str!("../tests/fixtures/todoist-filter-page2.json");
+    const PROJECTS: &str = include_str!("../tests/fixtures/todoist-projects.json");
     const TOKEN: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn first_page() -> [(&'static str, &'static str); 2] {
@@ -218,6 +288,7 @@ mod tests {
         Recorded::default()
             .with(FILTER_URL, &first_page(), Ok(PAGE_1))
             .with(FILTER_URL, &second, Ok(PAGE_2))
+            .with(PROJECTS_URL, &[("limit", PAGE_SIZE)], Ok(PROJECTS))
     }
 
     fn source(http: Recorded) -> TodoistTasks<Recorded> {
@@ -268,9 +339,39 @@ mod tests {
         );
         assert_eq!(
             source.http.tokens(),
-            [Some(TOKEN.to_owned()), Some(TOKEN.to_owned())],
-            "sends the trimmed token on every page"
+            vec![Some(TOKEN.to_owned()); 3],
+            "sends the trimmed token on every page and the project lookup"
         );
+    }
+
+    #[test]
+    fn reads_priorities_and_project_names() {
+        let tasks = source(recorded()).tasks().unwrap();
+        let priorities: Vec<TaskPriority> = tasks.iter().map(|task| task.priority).collect();
+        assert_eq!(
+            priorities,
+            [TaskPriority::P1, TaskPriority::P4, TaskPriority::P3],
+            "Todoist's 4 is P1, 1 is unflagged"
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|task| task.project.as_deref() == Some("Uni"))
+        );
+
+        // Without the project names, tasks still arrive, just without a project.
+        let second = [("query", QUERY), ("limit", PAGE_SIZE), ("cursor", "c2")];
+        let no_projects = Recorded::default()
+            .with(FILTER_URL, &first_page(), Ok(PAGE_1))
+            .with(FILTER_URL, &second, Ok(PAGE_2))
+            .with(
+                PROJECTS_URL,
+                &[("limit", PAGE_SIZE)],
+                Err(HttpError::Status(503)),
+            );
+        let tasks = source(no_projects).tasks().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().all(|task| task.project.is_none()));
     }
 
     #[test]

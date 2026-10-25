@@ -553,6 +553,8 @@ fn running_state() -> PersistedState {
                 due_date: Some("2020-01-01".into()),
                 due_at: Some(SANE_EPOCH),
                 duration: Some(Duration::from_secs(25 * 60)),
+                priority: crate::TaskPriority::default(),
+                project: None,
             }],
         }),
     };

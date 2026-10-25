@@ -31,6 +31,23 @@ impl CalendarEvent {
     }
 }
 
+/// How urgent a task is, ranked as Todoist does: P1 is the most urgent, P4 (the default) isn't
+/// flagged. Sorts most urgent first.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+pub enum TaskPriority {
+    /// Most urgent.
+    P1,
+    /// High.
+    P2,
+    /// Medium.
+    P3,
+    /// Not flagged.
+    #[default]
+    P4,
+}
+
 /// One open task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -47,6 +64,12 @@ pub struct Task {
     pub due_at: Option<Timestamp>,
     /// How long it's planned to take, if set.
     pub duration: Option<Duration>,
+    /// How urgent it is.
+    #[serde(default)]
+    pub priority: TaskPriority,
+    /// The project it's in, by name, if known.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// The items from one successful fetch.

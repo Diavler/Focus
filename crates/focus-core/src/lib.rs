@@ -44,7 +44,7 @@ pub use login::{LoginSetting, Settings};
 pub use matcher::evaluate;
 pub use parking::{MAX_PARKED, MAX_PARKED_TEXT, ParkError, ParkedItem, ParkingLot};
 pub use pattern::{PatternError, UrlPattern};
-pub use plan::{CalendarEvent, Fetched, PlanCache, Task};
+pub use plan::{CalendarEvent, Fetched, PlanCache, Task, TaskPriority};
 pub use rule::{Rule, RuleAction, Verdict};
 pub use session::{
     EndEarlyResponse, EndReason, EndedSession, RunningSession, SessionError, SessionSpec,

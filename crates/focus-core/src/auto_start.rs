@@ -272,6 +272,8 @@ mod tests {
             due_date: None,
             due_at,
             duration: None,
+            priority: crate::TaskPriority::default(),
+            project: None,
         }
     }
 
